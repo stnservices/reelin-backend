@@ -18,7 +18,38 @@ from app.dependencies import get_current_user
 from app.models.social_account import OAuthProvider
 from app.models.user import UserAccount
 from app.services.social_auth import SocialAuthService
+from app.services.account_deletion import account_deletion_service
 from app.schemas.social_account import SocialAccountResponse
+
+
+async def check_pending_deletion_for_mobile(user: UserAccount, db: AsyncSession) -> None:
+    """
+    Check if user's account is pending deletion and raise appropriate error for mobile.
+    This is similar to the check in auth.py login endpoint.
+    """
+    if user.deletion_scheduled_at:
+        deletion_info = await account_deletion_service.check_pending_deletion(user, db)
+        if deletion_info:
+            # Return special response for pending deletion
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "account_pending_deletion",
+                    "message": "Your account is scheduled for deletion",
+                    "deletion_scheduled_at": deletion_info["deletion_scheduled_at"].isoformat(),
+                    "permanent_deletion_at": deletion_info["permanent_deletion_at"].isoformat(),
+                    "days_remaining": deletion_info["days_remaining"],
+                    "can_recover": deletion_info["can_recover"],
+                    "recovery_token": create_access_token({"sub": str(user.id)}, is_mobile=True)
+                }
+            )
+        else:
+            # Grace period expired but background job hasn't run yet
+            # Clear the pending deletion state so user can use their account normally
+            user.deletion_scheduled_at = None
+            user.is_active = True
+            await db.commit()
+            await db.refresh(user)
 
 
 class GoogleMobileAuthRequest(BaseModel):
@@ -175,6 +206,9 @@ async def google_mobile_auth(
             refresh_token=None,
         )
 
+        # Check for pending deletion (same as email login)
+        await check_pending_deletion_for_mobile(user, db)
+
         # Create JWT tokens
         token_data = {"sub": str(user.id)}
         access_token = create_access_token(token_data)
@@ -198,6 +232,8 @@ async def google_mobile_auth(
             detail=f"Invalid ID token: {str(e)}",
         )
     except Exception as e:
+        if isinstance(e, HTTPException):
+            raise
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Authentication failed: {str(e)}",
@@ -340,6 +376,9 @@ async def facebook_mobile_auth(
             refresh_token=None,
         )
 
+        # Check for pending deletion (same as email login)
+        await check_pending_deletion_for_mobile(user, db)
+
         # Create JWT tokens
         token_data = {"sub": str(user.id)}
         access_token = create_access_token(token_data)
@@ -445,6 +484,9 @@ async def apple_mobile_auth(
             access_token=None,
             refresh_token=None,
         )
+
+        # Check for pending deletion (same as email login)
+        await check_pending_deletion_for_mobile(user, db)
 
         # Create JWT tokens
         token_data = {"sub": str(user.id)}

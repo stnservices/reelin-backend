@@ -299,6 +299,7 @@ class UserResponse(BaseModel):
     is_active: bool
     is_verified: bool
     is_pro: bool = False
+    has_password: bool = True  # True for email accounts, False for social-only
     created_at: datetime
     last_login: Optional[datetime] = None
     profile: Optional[UserProfileResponse] = None

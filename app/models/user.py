@@ -39,6 +39,11 @@ class UserAccount(Base):
     pro_plan_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # 'monthly', 'yearly'
     pro_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Account deletion - grace period support
+    deletion_scheduled_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )  # When user requested deletion (NULL = not scheduled)
+
     # Relationships
     profile: Mapped["UserProfile"] = relationship(
         "UserProfile", back_populates="user", uselist=False, lazy="joined"

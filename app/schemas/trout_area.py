@@ -146,8 +146,8 @@ class TAEventSettingsBase(BaseModel):
     """Base schema for TA event settings."""
     match_duration_minutes: int = Field(default=15, ge=5, le=60)
     legs_per_match: int = Field(default=1, ge=1, le=5)
-    matches_per_round: Optional[int] = None
-    total_rounds: Optional[int] = None
+    matches_per_leg: Optional[int] = None
+    total_legs: Optional[int] = None
     pairing_algorithm: PairingAlgorithmAPI = PairingAlgorithmAPI.ROUND_ROBIN_FULL
     qualification_top_n: int = Field(default=16, ge=2)
     requalification_spots: int = Field(default=8, ge=0)
@@ -167,8 +167,8 @@ class TAEventSettingsUpdate(BaseModel):
     """Update schema for TA event settings."""
     match_duration_minutes: Optional[int] = Field(default=None, ge=5, le=60)
     legs_per_match: Optional[int] = Field(default=None, ge=1, le=5)
-    matches_per_round: Optional[int] = None
-    total_rounds: Optional[int] = None
+    matches_per_leg: Optional[int] = None
+    total_legs: Optional[int] = None
     pairing_algorithm: Optional[PairingAlgorithmAPI] = None
     qualification_top_n: Optional[int] = Field(default=None, ge=2)
     requalification_spots: Optional[int] = Field(default=None, ge=0)
@@ -187,8 +187,8 @@ class TAEventSettingsResponse(BaseModel):
     event_id: int
     match_duration_minutes: Optional[int] = None
     legs_per_match: int = 5  # Maps to number_of_legs
-    matches_per_round: Optional[int] = None
-    total_rounds: Optional[int] = None
+    matches_per_leg: Optional[int] = None
+    total_legs: Optional[int] = None
     pairing_algorithm: PairingAlgorithmAPI = PairingAlgorithmAPI.ROUND_ROBIN_FULL
     qualification_top_n: int = 16  # Maps to knockout_qualifiers
     requalification_spots: int = 8  # Maps to requalification_slots
@@ -198,7 +198,7 @@ class TAEventSettingsResponse(BaseModel):
     bracket_config: dict[str, Any] = {}
     additional_rules: dict[str, Any] = {}
     current_phase: TATournamentPhaseAPI = TATournamentPhaseAPI.QUALIFIER
-    current_round: int = 1
+    current_leg: int = 1
     draw_completed: bool = False
     created_at: datetime
     updated_at: datetime
@@ -221,10 +221,10 @@ class TAEventSettingsResponse(BaseModel):
             # Get from additional_rules
             add_rules = getattr(values, "additional_rules", {}) or {}
             data["current_phase"] = add_rules.get("current_phase", "qualifier")
-            data["current_round"] = add_rules.get("current_round", 1)
+            data["current_leg"] = add_rules.get("current_leg", add_rules.get("current_round", 1))
             data["draw_completed"] = add_rules.get("draw_completed", False)
-            data["total_rounds"] = add_rules.get("total_rounds")
-            data["matches_per_round"] = add_rules.get("matches_per_round")
+            data["total_legs"] = add_rules.get("total_legs", add_rules.get("total_rounds"))
+            data["matches_per_leg"] = add_rules.get("matches_per_leg", add_rules.get("matches_per_round"))
             data["bracket_config"] = add_rules.get("bracket_config", {})
             return data
         return values
@@ -280,14 +280,14 @@ class TALineupListResponse(BaseModel):
 class TAGenerateLineupRequest(BaseModel):
     """Request schema for generating TA lineups."""
     algorithm: PairingAlgorithmAPI = PairingAlgorithmAPI.ROUND_ROBIN_FULL
-    custom_rounds: Optional[int] = Field(default=None, ge=1, le=50)
+    custom_legs: Optional[int] = Field(default=None, ge=1, le=50)
     shuffle_seed: Optional[int] = None  # For reproducible shuffling
 
-    @field_validator("custom_rounds")
+    @field_validator("custom_legs")
     @classmethod
-    def validate_custom_rounds(cls, v, info):
+    def validate_custom_legs(cls, v, info):
         if info.data.get("algorithm") == PairingAlgorithmAPI.ROUND_ROBIN_CUSTOM and v is None:
-            raise ValueError("custom_rounds is required for ROUND_ROBIN_CUSTOM algorithm")
+            raise ValueError("custom_legs is required for ROUND_ROBIN_CUSTOM algorithm")
         return v
 
 
@@ -298,8 +298,8 @@ class TAGenerateLineupResponse(BaseModel):
     real_participants: int
     has_ghost: bool
     algorithm: str
-    total_rounds: int
-    matches_per_round: int
+    total_legs: int
+    matches_per_leg: int
     total_matches: int
     estimated_duration: str
     lineups: list[TALineupResponse]
@@ -312,7 +312,7 @@ class TAGenerateLineupResponse(BaseModel):
 
 class TAMatchBase(BaseModel):
     """Base schema for TA match."""
-    round_number: int = Field(..., ge=1)
+    leg_number: int = Field(..., ge=1)
     match_number: int = Field(..., ge=1)
 
 
@@ -320,6 +320,7 @@ class TAMatchResultUpdate(BaseModel):
     """Update schema for editing TA match results."""
     competitor_a_catches: Optional[int] = Field(default=None, ge=0, description="Catches for competitor A")
     competitor_b_catches: Optional[int] = Field(default=None, ge=0, description="Catches for competitor B")
+    status: Optional[str] = Field(default=None, description="Match status override")
 
 
 class TAMatchResponse(TAMatchBase):
@@ -360,7 +361,7 @@ class TAMatchListResponse(BaseModel):
     """Response schema for listing matches."""
     items: list[TAMatchResponse]
     total: int
-    by_round: dict[int, list[TAMatchResponse]] = {}
+    by_leg: dict[int, list[TAMatchResponse]] = {}
 
 
 # =============================================================================
@@ -694,23 +695,40 @@ class TAEventStatisticsResponse(BaseModel):
 # Schedule Schemas (for mobile app)
 # =============================================================================
 
-class TARoundResponse(BaseModel):
-    """Response schema for a round in the schedule."""
-    round_number: int
+class TALegResponse(BaseModel):
+    """Response schema for a leg (mansă) in the schedule."""
+    leg_number: int
     phase: TATournamentPhaseAPI
     matches: list[TAMatchResponse]
     matches_completed: int
     total_matches: int
     is_current: bool = False
+    is_completed: bool = False
+
+
+# Keep TARoundResponse as alias for backwards compatibility
+TARoundResponse = TALegResponse
 
 
 class TAScheduleResponse(BaseModel):
     """Response schema for TA event schedule."""
-    rounds: list[TARoundResponse]
-    current_round: Optional[int] = None
-    total_rounds: int
+    legs: list[TALegResponse]
+    current_leg: Optional[int] = None
+    total_legs: int
     matches_completed: int
     total_matches: int
+    # Backwards compatibility aliases
+    rounds: list[TALegResponse] = []
+    current_round: Optional[int] = None
+    total_rounds: int = 0
+
+    @model_validator(mode="after")
+    def sync_aliases(self):
+        """Keep backwards compatibility aliases in sync."""
+        self.rounds = self.legs
+        self.current_round = self.current_leg
+        self.total_rounds = self.total_legs
+        return self
 
 
 # Forward references

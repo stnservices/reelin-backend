@@ -2,6 +2,7 @@
 
 import csv
 import io
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -21,6 +22,16 @@ from app.models.catch import Catch, CatchStatus, EventScoreboard
 from app.models.fish import Fish
 
 router = APIRouter()
+
+
+def sanitize_filename(name: str) -> str:
+    """Sanitize event name for use in filename."""
+    # Replace spaces with underscores
+    name = name.replace(" ", "_")
+    # Remove special characters except underscores and hyphens
+    name = re.sub(r"[^a-zA-Z0-9_\-]", "", name)
+    # Truncate to reasonable length
+    return name[:50]
 
 
 @router.get("/{event_id}/public-stats")
@@ -536,7 +547,9 @@ async def export_participants(
 
     # Return as streaming response
     output.seek(0)
-    filename = f"{event.slug}-participants-{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
+    event_name_safe = sanitize_filename(event.name)
+    start_date_str = event.start_date.strftime("%d%m%Y") if event.start_date else "nodate"
+    filename = f"{event_name_safe}_{start_date_str}_participants.csv"
 
     return StreamingResponse(
         iter([output.getvalue()]),
@@ -638,8 +651,10 @@ async def export_catches(
 
     # Return as streaming response
     output.seek(0)
-    status_suffix = f"-{status_filter}" if status_filter else ""
-    filename = f"{event.slug}-catches{status_suffix}-{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
+    event_name_safe = sanitize_filename(event.name)
+    start_date_str = event.start_date.strftime("%d%m%Y") if event.start_date else "nodate"
+    status_suffix = f"_{status_filter}" if status_filter else ""
+    filename = f"{event_name_safe}_{start_date_str}_catches{status_suffix}.csv"
 
     return StreamingResponse(
         iter([output.getvalue()]),
@@ -727,7 +742,9 @@ async def export_leaderboard(
 
     # Return as streaming response
     output.seek(0)
-    filename = f"{event.slug}-leaderboard-{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
+    event_name_safe = sanitize_filename(event.name)
+    start_date_str = event.start_date.strftime("%d%m%Y") if event.start_date else "nodate"
+    filename = f"{event_name_safe}_{start_date_str}_leaderboard.csv"
 
     return StreamingResponse(
         iter([output.getvalue()]),
@@ -827,7 +844,9 @@ async def export_summary(
 
     # Return as streaming response
     output.seek(0)
-    filename = f"{event.slug}-summary-{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
+    event_name_safe = sanitize_filename(event.name)
+    start_date_str = event.start_date.strftime("%d%m%Y") if event.start_date else "nodate"
+    filename = f"{event_name_safe}_{start_date_str}_summary.csv"
 
     return StreamingResponse(
         iter([output.getvalue()]),

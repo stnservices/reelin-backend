@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 TESTING = os.environ.get("TESTING", "").lower() in ("1", "true", "yes")
 from jose import JWTError
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -42,9 +43,17 @@ from app.schemas.user import (
 )
 from app.schemas.common import MessageResponse
 from app.services.email import get_email_service
+from app.services.account_deletion import account_deletion_service
 
 router = APIRouter()
 settings = get_settings()
+
+
+class AccountPendingDeletionResponse(Exception):
+    """Custom exception for accounts pending deletion."""
+    def __init__(self, deletion_info: dict, user_id: int):
+        self.deletion_info = deletion_info
+        self.user_id = user_id
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -129,6 +138,35 @@ async def login(
             detail="Incorrect email or password",
         )
 
+    # Check if account is pending deletion BEFORE checking is_active
+    # (because we set is_active=False when scheduling deletion, but users should still be able to recover)
+    if user.deletion_scheduled_at:
+        deletion_info = await account_deletion_service.check_pending_deletion(user, db)
+        if deletion_info:
+            # Return special response for pending deletion
+            # This allows the mobile app to show a recovery dialog
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "account_pending_deletion",
+                    "message": "Your account is scheduled for deletion",
+                    "deletion_scheduled_at": deletion_info["deletion_scheduled_at"].isoformat(),
+                    "permanent_deletion_at": deletion_info["permanent_deletion_at"].isoformat(),
+                    "days_remaining": deletion_info["days_remaining"],
+                    "can_recover": deletion_info["can_recover"],
+                    # Include a recovery token so user can recover without full re-auth
+                    "recovery_token": create_access_token({"sub": str(user.id)}, is_mobile=credentials.is_mobile)
+                }
+            )
+        else:
+            # Grace period expired but background job hasn't run yet
+            # Clear the pending deletion state so user can use their account normally
+            user.deletion_scheduled_at = None
+            user.is_active = True
+            await db.commit()
+            await db.refresh(user)
+
+    # Check is_active (for accounts that are deactivated but NOT pending deletion)
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -202,15 +240,23 @@ async def refresh_token(
             detail="Token has been revoked",
         )
 
-    # Verify user exists and is active
+    # Verify user exists
     user_query = select(UserAccount).where(UserAccount.id == user_id)
     result = await db.execute(user_query)
     user = result.scalar_one_or_none()
 
-    if not user or not user.is_active:
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found or inactive",
+            detail="User not found",
+        )
+
+    # Allow refresh for pending deletion accounts (so they can recover)
+    # But reject permanently deactivated accounts
+    if not user.is_active and not user.deletion_scheduled_at:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account is deactivated",
         )
 
     # Blacklist old refresh token (token rotation)
@@ -227,7 +273,15 @@ async def refresh_token(
     new_access_token = create_access_token(token_payload)
     new_refresh_token = create_refresh_token(token_payload)
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Token already blacklisted (race condition or duplicate request)
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has already been used",
+        )
 
     return {
         "access_token": new_access_token,

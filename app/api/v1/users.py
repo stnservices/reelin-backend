@@ -28,8 +28,38 @@ from app.schemas.user import (
 from app.schemas.common import MessageResponse
 from app.core.permissions import AdminOnly, OrganizerOrAdmin
 from app.core.security import get_password_hash
+from app.services.account_deletion import account_deletion_service, AccountDeletionError
 
 router = APIRouter()
+
+
+# ============== Account Deletion Schemas ==============
+
+
+class AccountDeletionRequest(BaseModel):
+    """Request to delete account."""
+    confirmation: str = Field(..., description="Must be 'DELETE' to confirm")
+    password: Optional[str] = Field(None, description="Password for verification (required for password-based accounts)")
+
+
+class AccountDeletionResponse(BaseModel):
+    """Response after scheduling account deletion."""
+    message: str
+    deletion_scheduled_at: str
+    permanent_deletion_at: str
+    grace_period_days: int
+    can_recover: bool
+
+
+class AccountRecoveryRequest(BaseModel):
+    """Request to recover account."""
+    confirm_recovery: bool = Field(..., description="Must be true to confirm recovery")
+
+
+class AccountRecoveryResponse(BaseModel):
+    """Response after account recovery."""
+    message: str
+    recovered_at: str
 
 
 @router.get("", response_model=UserListResponse)
@@ -221,6 +251,114 @@ async def update_my_profile(
         following_count=following_count,
         created_at=profile.created_at,
     )
+
+
+# ============== Account Deletion Endpoints ==============
+# NOTE: Must be defined BEFORE /{user_id} route to avoid path conflicts
+
+
+@router.delete("/me", response_model=AccountDeletionResponse)
+async def delete_my_account(
+    request: AccountDeletionRequest,
+    current_user: UserAccount = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Schedule account for deletion with grace period.
+
+    User must confirm by sending confirmation='DELETE'.
+    For password-based accounts, password verification is required.
+
+    After scheduling, user has a grace period (default 30 days) to recover
+    their account by logging back in.
+    """
+    # Validate confirmation - accept both DELETE (English) and STERGE (Romanian)
+    if request.confirmation.upper() not in ("DELETE", "STERGE"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="confirmation_invalid"  # Generic code for frontend to show localized message
+        )
+
+    try:
+        result = await account_deletion_service.schedule_deletion(
+            user_id=current_user.id,
+            password=request.password,
+            db=db
+        )
+
+        return AccountDeletionResponse(
+            message=result["message"],
+            deletion_scheduled_at=result["deletion_scheduled_at"].isoformat(),
+            permanent_deletion_at=result["permanent_deletion_at"].isoformat(),
+            grace_period_days=result["grace_period_days"],
+            can_recover=result["can_recover"]
+        )
+
+    except AccountDeletionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+
+@router.post("/me/recover", response_model=AccountRecoveryResponse)
+async def recover_my_account(
+    request: AccountRecoveryRequest,
+    current_user: UserAccount = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Cancel scheduled deletion and recover account.
+
+    This endpoint is called after user logs in with an account
+    that is pending deletion and chooses to recover it.
+    """
+    if not request.confirm_recovery:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Set confirm_recovery to true to recover your account"
+        )
+
+    try:
+        result = await account_deletion_service.recover_account(
+            user_id=current_user.id,
+            db=db
+        )
+
+        return AccountRecoveryResponse(
+            message=result["message"],
+            recovered_at=result["recovered_at"].isoformat()
+        )
+
+    except AccountDeletionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+
+@router.get("/me/deletion-status")
+async def get_my_deletion_status(
+    current_user: UserAccount = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get current account deletion status.
+
+    Returns null if account is not pending deletion.
+    """
+    result = await account_deletion_service.check_pending_deletion(current_user, db)
+
+    if not result:
+        return {"pending_deletion": False}
+
+    return {
+        "pending_deletion": True,
+        "deletion_scheduled_at": result["deletion_scheduled_at"].isoformat(),
+        "permanent_deletion_at": result["permanent_deletion_at"].isoformat(),
+        "days_remaining": result["days_remaining"],
+        "can_recover": result["can_recover"]
+    }
 
 
 # ============== User Search Endpoint (for organizers) ==============

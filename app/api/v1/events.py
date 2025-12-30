@@ -75,6 +75,39 @@ async def list_event_types(
     return result.scalars().all()
 
 
+@router.get("/types/my-accessible")
+async def get_my_accessible_event_types(
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(get_current_user),
+):
+    """
+    Get event types the current user can create.
+
+    Returns only event types the user has been granted access to,
+    along with whether they can create national events.
+    """
+    from app.services.organizer_permissions import OrganizerPermissionService
+
+    permission_service = OrganizerPermissionService(db)
+    summary = await permission_service.get_user_permissions_summary(current_user.id)
+
+    return {
+        "event_types": [
+            {
+                "id": et.id,
+                "name": et.name,
+                "code": et.code,
+                "format_code": et.format_code,
+                "description": et.description,
+                "icon_url": et.icon_url,
+                "is_active": et.is_active,
+            }
+            for et in summary["event_types"]
+        ],
+        "can_create_national": summary["can_create_national"],
+    }
+
+
 @router.get("/scoring-configs", response_model=list[ScoringConfigResponse])
 async def list_scoring_configs(
     event_type_id: Optional[int] = None,
@@ -866,6 +899,30 @@ async def create_event(
             status_code=http_status.HTTP_400_BAD_REQUEST,
             detail="Invalid event type",
         )
+
+    # Check organizer permissions (admins bypass permission checks)
+    if not is_admin:
+        from app.services.organizer_permissions import OrganizerPermissionService
+        permission_service = OrganizerPermissionService(db)
+
+        # Check event type access
+        has_event_type_access = await permission_service.check_event_type_access(
+            current_user.id, event_data.event_type_id
+        )
+        if not has_event_type_access:
+            raise HTTPException(
+                status_code=http_status.HTTP_403_FORBIDDEN,
+                detail=f"You don't have permission to create {event_type.name} events. Contact the platform administrator for access.",
+            )
+
+        # Check national event permission if needed
+        if event_data.is_national_event:
+            has_national_permission = await permission_service.check_national_permission(current_user.id)
+            if not has_national_permission:
+                raise HTTPException(
+                    status_code=http_status.HTTP_403_FORBIDDEN,
+                    detail="You don't have permission to create national events. Contact the platform administrator for access.",
+                )
 
     # Verify scoring config exists
     scoring_config_query = select(ScoringConfig).where(

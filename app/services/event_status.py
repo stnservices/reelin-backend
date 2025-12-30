@@ -17,8 +17,9 @@ from app.core.exceptions import (
 from app.models.admin import AdminActionLog, AdminActionType
 from app.models.enrollment import EnrollmentStatus, EventEnrollment
 from app.models.event import Event, EventStatus
-from app.models.team import TeamMember
+from app.models.team import Team, TeamMember
 from app.models.user import UserAccount
+from app.models.trout_area import TALineup, TAGameCard
 
 logger = logging.getLogger(__name__)
 
@@ -141,14 +142,23 @@ class EventStatusService:
                 details={"pending_count": pending_count},
             )
 
-        # For team events, all approved users must be in teams
+        # For team events, all approved users must be in active teams
         if event.is_team_event:
+            # Subquery to get enrollment IDs that are in active teams with active membership
+            active_team_members_subquery = (
+                select(TeamMember.enrollment_id)
+                .join(Team, TeamMember.team_id == Team.id)
+                .where(
+                    TeamMember.is_active == True,
+                    Team.is_active == True,
+                    Team.event_id == event.id,
+                )
+            )
+
             assigned_query = select(func.count(EventEnrollment.id)).where(
                 EventEnrollment.event_id == event.id,
                 EventEnrollment.status == EnrollmentStatus.APPROVED.value,
-                EventEnrollment.id.in_(
-                    select(TeamMember.enrollment_id).where(TeamMember.is_active == True)
-                ),
+                EventEnrollment.id.in_(active_team_members_subquery),
             )
             assigned_result = await self.db.execute(assigned_query)
             assigned_count = assigned_result.scalar() or 0
@@ -156,8 +166,37 @@ class EventStatusService:
             unassigned_count = approved_count - assigned_count
             if unassigned_count > 0:
                 raise PreconditionFailedError(
-                    message=f"Cannot start team event: {unassigned_count} participant(s) not assigned to teams",
+                    message=f"Cannot start team event: {unassigned_count} participant(s) not assigned to active teams",
                     details={"unassigned_count": unassigned_count},
+                )
+
+        # For Trout Area events, check lineups and game cards exist
+        if event.event_type and event.event_type.code == "trout_area":
+            # Check for lineups
+            lineup_query = select(func.count(TALineup.id)).where(
+                TALineup.event_id == event.id,
+                TALineup.is_ghost == False,
+            )
+            lineup_result = await self.db.execute(lineup_query)
+            lineup_count = lineup_result.scalar() or 0
+
+            if lineup_count == 0:
+                raise PreconditionFailedError(
+                    message="Cannot start Trout Area event: No lineups generated. Please generate lineups first.",
+                    details={"lineup_count": 0},
+                )
+
+            # Check for game cards
+            gamecard_query = select(func.count(TAGameCard.id)).where(
+                TAGameCard.event_id == event.id,
+            )
+            gamecard_result = await self.db.execute(gamecard_query)
+            gamecard_count = gamecard_result.scalar() or 0
+
+            if gamecard_count == 0:
+                raise PreconditionFailedError(
+                    message="Cannot start Trout Area event: No game cards generated. Please generate lineups first.",
+                    details={"gamecard_count": 0},
                 )
 
     async def update_status(

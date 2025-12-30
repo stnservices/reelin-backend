@@ -13,9 +13,20 @@ Key features:
 - Real-time ranking updates
 """
 
+import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
+
+
+def sanitize_filename(name: str) -> str:
+    """Sanitize event name for use in filename."""
+    # Replace spaces with underscores
+    name = name.replace(" ", "_")
+    # Remove special characters except underscores and hyphens
+    name = re.sub(r"[^a-zA-Z0-9_\-]", "", name)
+    # Truncate to reasonable length
+    return name[:50]
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select, and_
@@ -349,7 +360,7 @@ async def create_event_settings(
         event_id=event_id,
         match_duration_minutes=data.match_duration_minutes,
         number_of_legs=data.legs_per_match,
-        max_rounds_per_leg=data.matches_per_round or 1,
+        max_rounds_per_leg=data.matches_per_leg or 1,
         knockout_qualifiers=data.qualification_top_n,
         requalification_slots=data.requalification_spots,
         has_requalification=data.enable_requalification,
@@ -392,24 +403,7 @@ async def update_event_settings(
     event = await get_ta_event(event_id, db, request)
     settings = event.ta_settings
 
-    # Check if lineups exist
-    lineup_count_query = select(func.count()).select_from(TALineup).where(
-        TALineup.event_id == event_id
-    )
-    lineup_result = await db.execute(lineup_count_query)
-    has_lineups = lineup_result.scalar() > 0
-
     update_data = data.model_dump(exclude_unset=True)
-
-    # Prevent changing critical settings after lineups are generated
-    if has_lineups:
-        restricted_fields = ["pairing_algorithm", "is_team_event", "team_size"]
-        for field in restricted_fields:
-            if field in update_data:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Cannot change {field} after lineups are generated",
-                )
 
     for field, value in update_data.items():
         if hasattr(settings, field):
@@ -437,10 +431,10 @@ async def get_event_schedule(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """
-    Get TA event schedule with all rounds and matches.
+    Get TA event schedule with all legs (manse) and matches.
 
     This endpoint provides a structured view of the competition schedule,
-    organized by rounds with match details.
+    organized by legs with match details.
     """
     event = await get_ta_event(event_id, db, request)
     settings = event.ta_settings
@@ -464,28 +458,32 @@ async def get_event_schedule(
 
     if not matches:
         return {
+            "legs": [],
+            "current_leg": None,
+            "total_legs": 0,
+            "matches_completed": 0,
+            "total_matches": 0,
+            # Backwards compatibility
             "rounds": [],
             "current_round": None,
             "total_rounds": 0,
-            "matches_completed": 0,
-            "total_matches": 0,
         }
 
-    # Group matches by round
-    rounds_dict: dict[int, list] = {}
+    # Group matches by leg (round_number in DB = leg)
+    legs_dict: dict[int, list] = {}
     total_completed = 0
-    current_round_num = None
+    current_leg_num = None
 
     for match in matches:
-        round_num = match.round_number
-        if round_num not in rounds_dict:
-            rounds_dict[round_num] = []
+        leg_num = match.round_number  # round_number in model = leg
+        if leg_num not in legs_dict:
+            legs_dict[leg_num] = []
 
         # Build match response with player names
         match_data = TAMatchResponse(
             id=match.id,
             event_id=match.event_id,
-            round_number=match.round_number,
+            leg_number=match.round_number,  # Map to leg_number for API
             match_number=match.match_number,
             phase=TATournamentPhaseAPI(match.phase) if match.phase else TATournamentPhaseAPI.QUALIFIER,
             player_a_id=match.competitor_a_id,
@@ -507,41 +505,47 @@ async def get_event_schedule(
             player_a_avatar=match.competitor_a.avatar_url if match.competitor_a else None,
             player_b_avatar=match.competitor_b.avatar_url if match.competitor_b else None,
         )
-        rounds_dict[round_num].append(match_data)
+        legs_dict[leg_num].append(match_data)
 
         if match.status == TAMatchStatus.COMPLETED:
             total_completed += 1
         elif match.status == TAMatchStatus.IN_PROGRESS:
-            current_round_num = round_num
+            current_leg_num = leg_num
 
-    # If no in-progress match, find the first incomplete round
-    if current_round_num is None:
-        for round_num in sorted(rounds_dict.keys()):
-            round_matches = rounds_dict[round_num]
-            if any(m.status != TAMatchStatusAPI.COMPLETED for m in round_matches):
-                current_round_num = round_num
+    # If no in-progress match, find the first incomplete leg
+    if current_leg_num is None:
+        for leg_num in sorted(legs_dict.keys()):
+            leg_matches = legs_dict[leg_num]
+            if any(m.status != TAMatchStatusAPI.COMPLETED for m in leg_matches):
+                current_leg_num = leg_num
                 break
 
-    # Build rounds response
-    rounds_list = []
-    for round_num in sorted(rounds_dict.keys()):
-        round_matches = rounds_dict[round_num]
-        completed_in_round = sum(1 for m in round_matches if m.status == TAMatchStatusAPI.COMPLETED)
-        rounds_list.append(TARoundResponse(
-            round_number=round_num,
-            phase=round_matches[0].phase if round_matches else TATournamentPhaseAPI.QUALIFIER,
-            matches=round_matches,
-            matches_completed=completed_in_round,
-            total_matches=len(round_matches),
-            is_current=(round_num == current_round_num),
+    # Build legs response
+    legs_list = []
+    for leg_num in sorted(legs_dict.keys()):
+        leg_matches = legs_dict[leg_num]
+        completed_in_leg = sum(1 for m in leg_matches if m.status == TAMatchStatusAPI.COMPLETED)
+        is_completed = completed_in_leg == len(leg_matches)
+        legs_list.append(TARoundResponse(
+            leg_number=leg_num,
+            phase=leg_matches[0].phase if leg_matches else TATournamentPhaseAPI.QUALIFIER,
+            matches=leg_matches,
+            matches_completed=completed_in_leg,
+            total_matches=len(leg_matches),
+            is_current=(leg_num == current_leg_num),
+            is_completed=is_completed,
         ))
 
     return {
-        "rounds": rounds_list,
-        "current_round": current_round_num,
-        "total_rounds": len(rounds_list),
+        "legs": legs_list,
+        "current_leg": current_leg_num,
+        "total_legs": len(legs_list),
         "matches_completed": total_completed,
         "total_matches": len(matches),
+        # Backwards compatibility aliases
+        "rounds": legs_list,
+        "current_round": current_leg_num,
+        "total_rounds": len(legs_list),
     }
 
 
@@ -589,7 +593,7 @@ async def get_my_current_match(
     return TAMatchResponse(
         id=match.id,
         event_id=match.event_id,
-        round_number=match.round_number,
+        leg_number=match.round_number,  # Map to leg_number for API
         match_number=match.match_number,
         phase=TATournamentPhaseAPI(match.phase) if match.phase else TATournamentPhaseAPI.QUALIFIER,
         player_a_id=match.competitor_a_id,
@@ -849,16 +853,23 @@ async def generate_lineups(
     event = await get_ta_event(event_id, db, request)
     settings = event.ta_settings
 
-    # Check if lineups already exist
-    existing_query = select(func.count()).select_from(TALineup).where(
-        TALineup.event_id == event_id
+    # Delete existing lineups, matches, and game cards if regenerating
+    # First delete game cards (depends on matches)
+    await db.execute(
+        TAGameCard.__table__.delete().where(TAGameCard.event_id == event_id)
     )
-    existing_result = await db.execute(existing_query)
-    if existing_result.scalar() > 0:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=get_error_message("ta_already_has_lineup", request),
-        )
+    # Delete standings
+    await db.execute(
+        TAQualifierStanding.__table__.delete().where(TAQualifierStanding.event_id == event_id)
+    )
+    # Delete matches
+    await db.execute(
+        TAMatch.__table__.delete().where(TAMatch.event_id == event_id)
+    )
+    # Delete lineups
+    await db.execute(
+        TALineup.__table__.delete().where(TALineup.event_id == event_id)
+    )
 
     # Get enrolled participants
     enrollments_query = (
@@ -893,148 +904,192 @@ async def generate_lineups(
             "name": name,
         })
 
-    # Generate pairings
-    pairing_service = TAPairingService()
+    # ========================================================================
+    # Use Django-style TA rotation algorithm for lineup generation
+    # ========================================================================
+    import random
+
+    # 1. Shuffle participants and assign draw numbers
+    random.shuffle(participants)
+
+    # Add ghost if odd number
+    N = len(participants)
+    has_ghost = N % 2 == 1
+    if has_ghost:
+        participants.append({
+            "user_id": None,
+            "enrollment_id": None,
+            "name": "GHOST",
+            "is_ghost": True,
+        })
+        N += 1
+
+    # Mark non-ghost participants
+    for p in participants:
+        if "is_ghost" not in p:
+            p["is_ghost"] = False
+
+    # Assign draw numbers (1 to N)
+    for i, p in enumerate(participants, start=1):
+        p["draw_number"] = i
+
+    # Update enrollments with draw numbers
+    for p in participants:
+        if not p["is_ghost"] and p["enrollment_id"]:
+            for enrollment in enrollments:
+                if enrollment.id == p["enrollment_id"]:
+                    enrollment.draw_number = p["draw_number"]
+                    break
+
+    # 2. Calculate number of legs based on algorithm
     algorithm = map_pairing_algorithm(data.algorithm)
+    if algorithm == PairingAlgorithm.ROUND_ROBIN_FULL:
+        total_legs = N - 1
+    elif algorithm == PairingAlgorithm.ROUND_ROBIN_HALF:
+        total_legs = N // 2
+    elif algorithm == PairingAlgorithm.ROUND_ROBIN_CUSTOM:
+        total_legs = min(data.custom_legs or 1, N - 1)
+    else:  # SIMPLE_PAIRS
+        total_legs = 1
 
-    try:
-        pairing_result = pairing_service.generate_pairing(
-            participants=participants,
-            algorithm=algorithm,
-            custom_rounds=data.custom_rounds,
-        )
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
+    matches_per_leg = N // 2
 
-    # Create lineup entries
+    # 3. Initialize seat rotation: sector_draw[seat-1] = draw_number at that seat
+    sector_draw = list(range(1, N + 1))
+
+    # 4. Determine special leg (one-time +4 for even seats)
+    special_leg = None
+    if total_legs % 2 == 0:
+        special_leg = (total_legs // 2) + 1
+
+    # 5. Create lineups and matches for each leg
     created_lineups = []
-    for round_matches in pairing_result.rounds:
-        for match in round_matches:
-            # Only create lineup for round 1 (initial positions)
-            if match.round_number == 1:
-                # Player A
-                if not match.participant_a.is_ghost:
-                    lineup_a = TALineup(
-                        event_id=event_id,
-                        leg_number=1,  # Initial leg
-                        user_id=match.participant_a.user_id,
-                        enrollment_id=match.participant_a.enrollment_id,
-                        draw_number=match.participant_a.id,
-                        sector=1,  # Default sector
-                        seat_number=match.seat_a,
-                        is_ghost=False,
-                    )
-                    db.add(lineup_a)
-                    created_lineups.append(lineup_a)
-                else:
-                    # Ghost participant
-                    lineup_a = TALineup(
-                        event_id=event_id,
-                        leg_number=1,
-                        user_id=None,
-                        enrollment_id=None,
-                        draw_number=match.participant_a.id,
-                        sector=1,
-                        seat_number=match.seat_a,
-                        is_ghost=True,
-                    )
-                    db.add(lineup_a)
-                    created_lineups.append(lineup_a)
 
-                # Player B
-                if not match.participant_b.is_ghost:
-                    lineup_b = TALineup(
-                        event_id=event_id,
-                        leg_number=1,
-                        user_id=match.participant_b.user_id,
-                        enrollment_id=match.participant_b.enrollment_id,
-                        draw_number=match.participant_b.id,
-                        sector=1,
-                        seat_number=match.seat_b,
-                        is_ghost=False,
-                    )
-                    db.add(lineup_b)
-                    created_lineups.append(lineup_b)
-                else:
-                    lineup_b = TALineup(
-                        event_id=event_id,
-                        leg_number=1,
-                        user_id=None,
-                        enrollment_id=None,
-                        draw_number=match.participant_b.id,
-                        sector=1,
-                        seat_number=match.seat_b,
-                        is_ghost=True,
-                    )
-                    db.add(lineup_b)
-                    created_lineups.append(lineup_b)
+    for leg in range(1, total_legs + 1):
+        # Create lineup entries for this leg
+        for seat in range(1, N + 1):
+            draw_num = sector_draw[seat - 1]
+            participant = participants[draw_num - 1]
 
-    # Create matches and game cards
-    for round_matches in pairing_result.rounds:
-        for match in round_matches:
-            # Each match is for leg_number = round_number (legs = rounds in TA)
+            lineup = TALineup(
+                event_id=event_id,
+                leg_number=leg,
+                user_id=participant["user_id"],
+                enrollment_id=participant["enrollment_id"],
+                draw_number=draw_num,
+                sector=1,
+                seat_number=seat,
+                is_ghost=participant["is_ghost"],
+            )
+            db.add(lineup)
+            created_lineups.append(lineup)
+
+        # Create matches by pairing adjacent seats: (1,2), (3,4), etc.
+        match_num = 1
+        for i in range(0, N, 2):
+            seat_a = i + 1
+            seat_b = i + 2
+
+            draw_a = sector_draw[seat_a - 1]
+            draw_b = sector_draw[seat_b - 1]
+
+            p_a = participants[draw_a - 1]
+            p_b = participants[draw_b - 1]
+
+            is_ghost_match = p_a["is_ghost"] or p_b["is_ghost"]
+            ghost_side = "A" if p_a["is_ghost"] else ("B" if p_b["is_ghost"] else None)
+
             ta_match = TAMatch(
                 event_id=event_id,
                 phase=TATournamentPhase.QUALIFIER.value,
-                leg_number=match.round_number,
-                round_number=match.round_number,
-                match_number=match.match_number,
-                competitor_a_id=match.participant_a.user_id if not match.participant_a.is_ghost else None,
-                competitor_b_id=match.participant_b.user_id if not match.participant_b.is_ghost else None,
-                seat_a=match.seat_a,
-                seat_b=match.seat_b,
-                is_ghost_match=match.participant_a.is_ghost or match.participant_b.is_ghost,
-                ghost_side="A" if match.participant_a.is_ghost else ("B" if match.participant_b.is_ghost else None),
+                leg_number=leg,
+                round_number=leg,
+                match_number=match_num,
+                competitor_a_id=p_a["user_id"],
+                competitor_b_id=p_b["user_id"],
+                seat_a=seat_a,
+                seat_b=seat_b,
+                is_ghost_match=is_ghost_match,
+                ghost_side=ghost_side,
                 status=TAMatchStatus.SCHEDULED.value,
             )
             db.add(ta_match)
             await db.flush()
 
-            # Create game cards (per-user, per-leg) for this match
-            user_a_id = match.participant_a.user_id if not match.participant_a.is_ghost else None
-            user_b_id = match.participant_b.user_id if not match.participant_b.is_ghost else None
-            is_a_ghost = match.participant_a.is_ghost
-            is_b_ghost = match.participant_b.is_ghost
-
-            # Card for Player A (if not ghost)
-            if not is_a_ghost:
+            # Create game cards
+            if not p_a["is_ghost"]:
                 card_a = TAGameCard(
                     event_id=event_id,
                     match_id=ta_match.id,
-                    leg_number=match.round_number,
-                    user_id=user_a_id,
-                    my_seat=match.seat_a,
-                    opponent_id=user_b_id,
-                    opponent_seat=match.seat_b if not is_b_ghost else None,
-                    is_ghost_opponent=is_b_ghost,
+                    leg_number=leg,
+                    user_id=p_a["user_id"],
+                    my_seat=seat_a,
+                    opponent_id=p_b["user_id"],
+                    opponent_seat=seat_b if not p_b["is_ghost"] else None,
+                    is_ghost_opponent=p_b["is_ghost"],
                     status=TAGameCardStatus.DRAFT.value,
                 )
                 db.add(card_a)
 
-            # Card for Player B (if not ghost)
-            if not is_b_ghost:
+            if not p_b["is_ghost"]:
                 card_b = TAGameCard(
                     event_id=event_id,
                     match_id=ta_match.id,
-                    leg_number=match.round_number,
-                    user_id=user_b_id,
-                    my_seat=match.seat_b,
-                    opponent_id=user_a_id,
-                    opponent_seat=match.seat_a if not is_a_ghost else None,
-                    is_ghost_opponent=is_a_ghost,
+                    leg_number=leg,
+                    user_id=p_b["user_id"],
+                    my_seat=seat_b,
+                    opponent_id=p_a["user_id"],
+                    opponent_seat=seat_a if not p_a["is_ghost"] else None,
+                    is_ghost_opponent=p_a["is_ghost"],
                     status=TAGameCardStatus.DRAFT.value,
                 )
                 db.add(card_b)
 
-    # Update settings with draw info (store in additional_rules since model doesn't have these columns)
+            match_num += 1
+
+        # 6. Rotate seats for next leg (unless last leg)
+        if leg < total_legs:
+            next_leg = leg + 1
+            for seat in range(1, N + 1):
+                old_draw = sector_draw[seat - 1]
+
+                # Special leg: even seats get +4
+                if special_leg and next_leg == special_leg and seat % 2 == 0:
+                    new_draw = old_draw + 4
+                    if new_draw > N:
+                        new_draw -= N
+                    sector_draw[seat - 1] = new_draw
+                else:
+                    # Normal rotation: odd seats -2, even seats +2
+                    if seat % 2 == 1:
+                        new_draw = old_draw - 2
+                        if new_draw < 1:
+                            new_draw += N
+                        sector_draw[seat - 1] = new_draw
+                    else:
+                        new_draw = old_draw + 2
+                        if new_draw > N:
+                            new_draw -= N
+                        sector_draw[seat - 1] = new_draw
+
+    # Build pairing_result-like object for response
+    real_participants = len(enrollments)
+    total_matches = total_legs * matches_per_leg
+
+    # Update settings with algorithm and draw info
+    settings.pairing_algorithm = data.algorithm.value if hasattr(data.algorithm, 'value') else data.algorithm
+    if data.custom_legs:
+        settings.custom_legs = data.custom_legs
+    settings.total_rounds = total_legs  # Keep model field name
+    settings.matches_per_round = matches_per_leg  # Keep model field name
     settings.additional_rules = {
         **settings.additional_rules,
         "draw_completed": True,
-        "total_rounds": pairing_result.total_rounds,
-        "matches_per_round": pairing_result.matches_per_round,
+        "total_legs": total_legs,
+        "matches_per_leg": matches_per_leg,
+        # Backwards compatibility
+        "total_rounds": total_legs,
+        "matches_per_round": matches_per_leg,
     }
     settings.updated_at = datetime.now(timezone.utc)
 
@@ -1045,7 +1100,7 @@ async def generate_lineups(
         num_participants=len(participants),
         algorithm=algorithm,
         match_duration_minutes=settings.match_duration_minutes,
-        custom_rounds=data.custom_rounds,
+        custom_rounds=data.custom_legs,
     )
 
     # Refresh lineups for response
@@ -1070,19 +1125,16 @@ async def generate_lineups(
         lineup_items.append(item)
 
     return {
-        "message": get_error_message("lineup_created", request, count=len(participants)),
-        "total_participants": pairing_result.total_participants,
-        "real_participants": pairing_result.real_participants,
-        "has_ghost": pairing_result.has_ghost,
+        "message": get_error_message("lineup_created", request, count=real_participants),
+        "total_participants": N,
+        "real_participants": real_participants,
+        "has_ghost": has_ghost,
         "algorithm": data.algorithm.value,
-        "total_rounds": pairing_result.total_rounds,
-        "matches_per_round": pairing_result.matches_per_round,
-        "total_matches": pairing_result.total_matches,
+        "total_legs": total_legs,
+        "matches_per_leg": matches_per_leg,
+        "total_matches": total_matches,
         "estimated_duration": duration["total_duration_formatted"],
         "lineups": lineup_items,
-        "schedule_preview": {
-            "participant_schedules": pairing_result.participant_schedule,
-        },
     }
 
 
@@ -1095,7 +1147,7 @@ async def list_matches(
     event_id: int,
     request: Request,
     phase: Optional[TATournamentPhaseAPI] = None,
-    round_number: Optional[int] = None,
+    leg_number: Optional[int] = Query(None, alias="leg"),
     status_filter: Optional[str] = Query(None, alias="status"),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -1104,7 +1156,7 @@ async def list_matches(
 
     Filters:
     - phase: Filter by tournament phase
-    - round_number: Filter by round number
+    - leg: Filter by leg number (mansă)
     - status: Filter by match status
     """
     await get_ta_event(event_id, db, request)
@@ -1116,8 +1168,8 @@ async def list_matches(
 
     if phase:
         query = query.where(TAMatch.phase == phase.value)
-    if round_number:
-        query = query.where(TAMatch.round_number == round_number)
+    if leg_number:
+        query = query.where(TAMatch.round_number == leg_number)
     if status_filter:
         query = query.where(TAMatch.status == status_filter)
 
@@ -1128,14 +1180,14 @@ async def list_matches(
 
     # Build response with user info
     items = []
-    by_round: dict[int, list] = {}
+    by_leg: dict[int, list] = {}
 
     for match in matches:
         item = TAMatchResponse(
             id=match.id,
             event_id=match.event_id,
             phase=TATournamentPhaseAPI(match.phase),
-            round_number=match.round_number,
+            leg_number=match.round_number,  # Map to leg_number for API
             match_number=match.match_number,
             player_a_id=match.competitor_a_id,
             player_b_id=match.competitor_b_id,
@@ -1154,14 +1206,15 @@ async def list_matches(
         )
         items.append(item)
 
-        if match.round_number not in by_round:
-            by_round[match.round_number] = []
-        by_round[match.round_number].append(item)
+        leg_num = match.round_number
+        if leg_num not in by_leg:
+            by_leg[leg_num] = []
+        by_leg[leg_num].append(item)
 
     return {
         "items": items,
         "total": len(items),
-        "by_round": by_round,
+        "by_leg": by_leg,
     }
 
 
@@ -1227,7 +1280,7 @@ async def get_match(
         "id": match.id,
         "event_id": match.event_id,
         "phase": TATournamentPhaseAPI(match.phase),
-        "round_number": match.round_number,
+        "leg_number": match.round_number,  # Map to leg_number for API
         "match_number": match.match_number,
         "player_a_id": match.competitor_a_id,
         "player_b_id": match.competitor_b_id,
@@ -1344,7 +1397,7 @@ async def edit_match_results(
         "id": match.id,
         "event_id": match.event_id,
         "phase": TATournamentPhaseAPI(match.phase),
-        "round_number": match.round_number,
+        "leg_number": match.round_number,  # Map to leg_number for API
         "match_number": match.match_number,
         "player_a_id": match.competitor_a_id,
         "player_b_id": match.competitor_b_id,
@@ -1723,8 +1776,363 @@ async def validate_opponent_card(
 
 
 # =============================================================================
+# Admin Game Card Endpoints (Validator/Organizer)
+# =============================================================================
+
+@router.get("/events/{event_id}/game-cards", response_model=TAMyGameCardsResponse)
+async def get_user_game_cards(
+    event_id: int,
+    request: Request,
+    user_id: Optional[int] = Query(None, description="User ID to fetch cards for"),
+    current_user: UserAccount = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Get game cards for a specific user (admin/validator access).
+
+    If user_id is not provided, returns cards for current user.
+    Requires validator/organizer/admin permissions to fetch other users' cards.
+    """
+    event = await get_ta_event(event_id, db, request)
+
+    target_user_id = user_id if user_id else current_user.id
+
+    # If fetching another user's cards, check permissions
+    if target_user_id != current_user.id:
+        # Check if current user is organizer, validator, or admin
+        user_roles = set(current_user.profile.roles or []) if current_user.profile else set()
+        is_admin = "administrator" in user_roles
+        is_organizer = "organizer" in user_roles
+        is_event_owner = event.created_by_id == current_user.id
+
+        if not (is_admin or is_organizer or is_event_owner):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to view other users' game cards",
+            )
+
+    query = (
+        select(TAGameCard)
+        .options(
+            selectinload(TAGameCard.user).selectinload(UserAccount.profile),
+            selectinload(TAGameCard.opponent).selectinload(UserAccount.profile),
+        )
+        .where(
+            TAGameCard.event_id == event_id,
+            TAGameCard.user_id == target_user_id,
+        )
+        .order_by(TAGameCard.leg_number)
+    )
+    result = await db.execute(query)
+    cards = result.scalars().all()
+
+    # Determine current leg (first non-validated leg)
+    current_leg = None
+    for card in cards:
+        if not card.is_validated:
+            current_leg = card.leg_number
+            break
+
+    items = []
+    for card in cards:
+        items.append(TAGameCardResponse(
+            id=card.id,
+            event_id=card.event_id,
+            match_id=card.match_id,
+            leg_number=card.leg_number,
+            user_id=card.user_id,
+            my_catches=card.my_catches,
+            my_seat=card.my_seat,
+            opponent_id=card.opponent_id,
+            opponent_catches=card.opponent_catches,
+            opponent_seat=card.opponent_seat,
+            is_submitted=card.is_submitted,
+            is_validated=card.is_validated,
+            validated_at=card.validated_at,
+            i_validated_opponent=card.i_validated_opponent,
+            i_validated_at=card.i_validated_at,
+            is_disputed=card.is_disputed,
+            dispute_reason=card.dispute_reason,
+            status=TAGameCardStatusAPI(card.status),
+            is_ghost_opponent=card.is_ghost_opponent,
+            submitted_at=card.submitted_at,
+            created_at=card.created_at,
+            updated_at=card.updated_at,
+            user_name=card.user.profile.full_name if card.user and card.user.profile else None,
+            user_avatar=card.user.avatar_url if card.user else None,
+            opponent_name=card.opponent.profile.full_name if card.opponent and card.opponent.profile else None,
+        ))
+
+    return {
+        "items": items,
+        "total": len(items),
+        "current_leg": current_leg,
+        "event_id": event_id,
+    }
+
+
+@router.patch(
+    "/events/{event_id}/game-cards/{card_id}/admin-update",
+    response_model=TAGameCardResponse,
+)
+async def admin_update_game_card(
+    event_id: int,
+    card_id: int,
+    request: Request,
+    my_catches: Optional[int] = None,
+    is_submitted: Optional[bool] = None,
+    is_validated: Optional[bool] = None,
+    i_validated_opponent: Optional[bool] = None,
+    current_user: UserAccount = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Admin/Validator update of a game card.
+
+    Allows organizers and validators to manually update game card data
+    for situations where users cannot submit themselves.
+    """
+    event = await get_ta_event(event_id, db, request)
+
+    # Check permissions - must be organizer, validator, or admin
+    user_roles = set(current_user.profile.roles or []) if current_user.profile else set()
+    is_admin = "administrator" in user_roles
+    is_organizer = "organizer" in user_roles
+    is_validator = "validator" in user_roles
+    is_event_owner = event.created_by_id == current_user.id
+
+    if not (is_admin or is_organizer or is_validator or is_event_owner):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to update game cards",
+        )
+
+    # Get the card
+    query = (
+        select(TAGameCard)
+        .options(
+            selectinload(TAGameCard.user).selectinload(UserAccount.profile),
+            selectinload(TAGameCard.opponent).selectinload(UserAccount.profile),
+            selectinload(TAGameCard.match),
+        )
+        .where(
+            TAGameCard.id == card_id,
+            TAGameCard.event_id == event_id,
+        )
+    )
+    result = await db.execute(query)
+    card = result.scalar_one_or_none()
+
+    if not card:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=get_error_message("ta_game_card_not_found", request),
+        )
+
+    # Update fields
+    if my_catches is not None:
+        card.my_catches = my_catches
+    if is_submitted is not None:
+        card.is_submitted = is_submitted
+        if is_submitted and not card.submitted_at:
+            card.submitted_at = datetime.now(timezone.utc)
+    if is_validated is not None:
+        card.is_validated = is_validated
+        if is_validated and not card.validated_at:
+            card.validated_at = datetime.now(timezone.utc)
+            card.validated_by_id = current_user.id
+    if i_validated_opponent is not None:
+        card.i_validated_opponent = i_validated_opponent
+        if i_validated_opponent and not card.i_validated_at:
+            card.i_validated_at = datetime.now(timezone.utc)
+
+    card.updated_at = datetime.now(timezone.utc)
+
+    # Update status based on new state
+    if card.is_disputed:
+        card.status = TAGameCardStatus.DISPUTED.value
+    elif card.is_validated and card.i_validated_opponent:
+        card.status = TAGameCardStatus.COMPLETED.value
+    elif card.is_validated:
+        card.status = TAGameCardStatus.VALIDATED.value
+    elif card.is_submitted:
+        card.status = TAGameCardStatus.SUBMITTED.value
+
+    # Check if match should be completed
+    if card.match and card.is_validated and card.i_validated_opponent:
+        # Get opponent's card
+        opp_card_query = select(TAGameCard).where(
+            TAGameCard.match_id == card.match_id,
+            TAGameCard.user_id == card.opponent_id,
+        )
+        opp_result = await db.execute(opp_card_query)
+        opp_card = opp_result.scalar_one_or_none()
+
+        if opp_card and opp_card.is_validated and opp_card.i_validated_opponent:
+            # Both cards validated, update match
+            match = card.match
+            match.player_a_catches = card.my_catches if match.player_a_id == card.user_id else opp_card.my_catches
+            match.player_b_catches = opp_card.my_catches if match.player_a_id == card.user_id else card.my_catches
+            match.status = TAMatchStatus.COMPLETED.value
+            match.completed_at = datetime.now(timezone.utc)
+
+            # Calculate outcomes
+            a_catches = match.player_a_catches or 0
+            b_catches = match.player_b_catches or 0
+
+            if a_catches > b_catches:
+                match.player_a_outcome = TAMatchOutcome.VICTORY.value
+                match.player_b_outcome = TAMatchOutcome.LOSS.value
+            elif b_catches > a_catches:
+                match.player_a_outcome = TAMatchOutcome.LOSS.value
+                match.player_b_outcome = TAMatchOutcome.VICTORY.value
+            else:
+                if a_catches == 0:
+                    match.player_a_outcome = TAMatchOutcome.TIE_ZERO.value
+                    match.player_b_outcome = TAMatchOutcome.TIE_ZERO.value
+                else:
+                    match.player_a_outcome = TAMatchOutcome.TIE.value
+                    match.player_b_outcome = TAMatchOutcome.TIE.value
+
+    await db.commit()
+    await db.refresh(card)
+
+    return {
+        "id": card.id,
+        "event_id": card.event_id,
+        "match_id": card.match_id,
+        "leg_number": card.leg_number,
+        "user_id": card.user_id,
+        "my_catches": card.my_catches,
+        "my_seat": card.my_seat,
+        "opponent_id": card.opponent_id,
+        "opponent_catches": card.opponent_catches,
+        "opponent_seat": card.opponent_seat,
+        "is_submitted": card.is_submitted,
+        "is_validated": card.is_validated,
+        "validated_at": card.validated_at,
+        "i_validated_opponent": card.i_validated_opponent,
+        "i_validated_at": card.i_validated_at,
+        "is_disputed": card.is_disputed,
+        "dispute_reason": card.dispute_reason,
+        "status": TAGameCardStatusAPI(card.status),
+        "is_ghost_opponent": card.is_ghost_opponent,
+        "submitted_at": card.submitted_at,
+        "created_at": card.created_at,
+        "updated_at": card.updated_at,
+        "user_name": card.user.profile.full_name if card.user and card.user.profile else None,
+        "user_avatar": card.user.avatar_url if card.user else None,
+        "opponent_name": card.opponent.profile.full_name if card.opponent and card.opponent.profile else None,
+    }
+
+
+# =============================================================================
 # Standings Endpoints
 # =============================================================================
+
+@router.post("/events/{event_id}/standings/recalculate", response_model=MessageResponse)
+async def recalculate_standings(
+    event_id: int,
+    request: Request,
+    current_user: UserAccount = Depends(EventOwnerOrAdmin()),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Recalculate all standings for a TA event.
+
+    This rebuilds the qualifier standings table from all completed matches.
+    Useful after manual match edits or data corrections.
+    """
+    from app.services.ta_ranking import TARankingService
+
+    event = await get_ta_event(event_id, db, request)
+
+    # Get all completed matches
+    matches_query = select(TAMatch).where(
+        TAMatch.event_id == event_id,
+        TAMatch.status == TAMatchStatus.COMPLETED.value,
+    )
+    result = await db.execute(matches_query)
+    matches = result.scalars().all()
+
+    # Clear existing standings
+    await db.execute(
+        TAQualifierStanding.__table__.delete().where(TAQualifierStanding.event_id == event_id)
+    )
+
+    # Rebuild standings from matches
+    ranking_service = TARankingService(db)
+
+    # Accumulate stats by user
+    user_stats: dict[int, dict] = {}
+
+    for match in matches:
+        if match.competitor_a_id:
+            if match.competitor_a_id not in user_stats:
+                user_stats[match.competitor_a_id] = {
+                    "total_points": Decimal("0"),
+                    "total_catches": 0,
+                    "matches_played": 0,
+                    "victories": 0,
+                    "ties": 0,
+                    "losses": 0,
+                }
+            stats = user_stats[match.competitor_a_id]
+            stats["total_points"] += match.competitor_a_points or Decimal("0")
+            stats["total_catches"] += match.competitor_a_catches or 0
+            stats["matches_played"] += 1
+            if match.competitor_a_outcome_code == "V":
+                stats["victories"] += 1
+            elif match.competitor_a_outcome_code in ["T", "T0"]:
+                stats["ties"] += 1
+            else:
+                stats["losses"] += 1
+
+        if match.competitor_b_id:
+            if match.competitor_b_id not in user_stats:
+                user_stats[match.competitor_b_id] = {
+                    "total_points": Decimal("0"),
+                    "total_catches": 0,
+                    "matches_played": 0,
+                    "victories": 0,
+                    "ties": 0,
+                    "losses": 0,
+                }
+            stats = user_stats[match.competitor_b_id]
+            stats["total_points"] += match.competitor_b_points or Decimal("0")
+            stats["total_catches"] += match.competitor_b_catches or 0
+            stats["matches_played"] += 1
+            if match.competitor_b_outcome_code == "V":
+                stats["victories"] += 1
+            elif match.competitor_b_outcome_code in ["T", "T0"]:
+                stats["ties"] += 1
+            else:
+                stats["losses"] += 1
+
+    # Create standing records
+    for user_id, stats in user_stats.items():
+        standing = TAQualifierStanding(
+            event_id=event_id,
+            user_id=user_id,
+            rank=0,  # Will be calculated
+            total_points=stats["total_points"],
+            total_catches=stats["total_catches"],
+            total_length=0.0,
+            matches_played=stats["matches_played"],
+            victories=stats["victories"],
+            ties=stats["ties"],
+            losses=stats["losses"],
+        )
+        db.add(standing)
+
+    await db.flush()
+
+    # Recalculate ranks
+    await ranking_service._recalculate_ranks(event_id)
+    await db.commit()
+
+    return {"message": f"Standings recalculated for {len(user_stats)} participants"}
+
 
 @router.get(
     "/events/{event_id}/standings",
@@ -1911,6 +2319,99 @@ async def get_event_statistics(
     return stats
 
 
+@router.get("/events/{event_id}/standings/export")
+async def export_standings_csv(
+    event_id: int,
+    request: Request,
+    current_user: UserAccount = Depends(EventOwnerOrAdmin()),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Export TA standings to CSV.
+
+    Includes:
+    - QUALIFIER PHASE: Rankings from qualifier legs
+    - FINAL RANKING: Overall standings with points, catches, wins/ties/losses
+    """
+    from fastapi.responses import StreamingResponse
+    from io import StringIO
+    import csv
+
+    event = await get_ta_event(event_id, db, request, require_settings=False)
+    event_name_safe = sanitize_filename(event.name) if event.name else f"Event_{event_id}"
+    start_date_str = event.start_date.strftime("%d%m%Y") if event.start_date else "nodate"
+
+    # Get rankings
+    ranking_service = TARankingService(db)
+    rankings = await ranking_service.compute_leg_ranking(event_id)
+
+    # Create CSV content
+    output = StringIO()
+    writer = csv.writer(output)
+
+    # === SECTION: Event Info ===
+    writer.writerow(["TA Competition Results"])
+    writer.writerow(["Event:", event.name or f"Event {event_id}"])
+    writer.writerow(["Export Date:", datetime.now().strftime("%Y-%m-%d %H:%M")])
+    writer.writerow([])
+
+    # === SECTION: Qualifier Phase Rankings ===
+    writer.writerow(["=== QUALIFIER PHASE RANKINGS ==="])
+    writer.writerow([])
+
+    # Header
+    writer.writerow([
+        "Rank", "Draw #", "Name",
+        "Points", "Catches", "Victories", "Ties", "Losses",
+        "Matches Played", "Win Rate %"
+    ])
+
+    # Data rows
+    for idx, ranking in enumerate(rankings, 1):
+        matches_played = ranking.get("victories", 0) + ranking.get("ties", 0) + ranking.get("losses", 0)
+        win_rate = (ranking.get("victories", 0) / matches_played * 100) if matches_played > 0 else 0
+
+        writer.writerow([
+            idx,
+            ranking.get("draw_number", ""),
+            ranking.get("full_name", ranking.get("user_name", f"User {ranking.get('user_id', '')}")),
+            ranking.get("total_points", 0),
+            ranking.get("captures", ranking.get("total_catches", 0)),
+            ranking.get("victories", 0),
+            ranking.get("ties", 0),
+            ranking.get("losses", 0),
+            matches_played,
+            f"{win_rate:.1f}",
+        ])
+
+    writer.writerow([])
+
+    # === SECTION: Final Ranking (same as qualifier for now) ===
+    writer.writerow(["=== FINAL RANKING ==="])
+    writer.writerow([])
+    writer.writerow([
+        "Position", "Name", "Total Points", "Total Catches"
+    ])
+
+    for idx, ranking in enumerate(rankings, 1):
+        writer.writerow([
+            idx,
+            ranking.get("full_name", ranking.get("user_name", f"User {ranking.get('user_id', '')}")),
+            ranking.get("total_points", 0),
+            ranking.get("captures", ranking.get("total_catches", 0)),
+        ])
+
+    # Return CSV file
+    output.seek(0)
+    filename = f"{event_name_safe}_{start_date_str}_TA_Standings.csv"
+
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
 @router.get("/events/{event_id}/team-standings")
 async def get_team_standings(
     event_id: int,
@@ -1960,6 +2461,154 @@ async def get_team_standings(
 # =============================================================================
 # Duration Estimate Endpoint
 # =============================================================================
+
+@router.get("/events/{event_id}/lineups/export")
+async def export_lineups_excel(
+    event_id: int,
+    request: Request,
+    current_user: UserAccount = Depends(EventOwnerOrAdmin()),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Export TA lineups and game cards to Excel.
+
+    Sheet 1: Lineup - Grid (rows=legs, cols=seats) with draw numbers
+    Sheet 2: User Seat Rotation - Draw#, Username, then seat for each leg
+    Sheet 3: Seat-Leg Pivot - Grid (rows=seats, cols=legs) with draw numbers
+    """
+    from fastapi.responses import StreamingResponse
+    from openpyxl import Workbook
+    from openpyxl.styles import PatternFill, Font
+    from io import BytesIO
+
+    event = await get_ta_event(event_id, db, request, require_settings=False)
+
+    # Get lineups
+    lineup_query = (
+        select(TALineup)
+        .options(selectinload(TALineup.user).selectinload(UserAccount.profile))
+        .where(TALineup.event_id == event_id)
+        .order_by(TALineup.leg_number, TALineup.seat_number)
+    )
+    result = await db.execute(lineup_query)
+    lineups = result.scalars().all()
+
+    if not lineups:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No lineup data found for this event",
+        )
+
+    # Build lookup structures
+    distinct_legs = sorted(set(l.leg_number for l in lineups))
+    distinct_seats = sorted(set(l.seat_number for l in lineups if l.seat_number))
+
+    # seat_draw[leg][seat] = draw_number
+    # ghost_map[(leg, seat)] = is_ghost
+    seat_draw: dict[int, dict[int, int]] = {}
+    ghost_map: dict[tuple[int, int], bool] = {}
+
+    # data_cards[draw_num] = { 'user_name': ..., 'legs': { leg: seat, ... } }
+    data_cards: dict[int, dict] = {}
+
+    for lineup in lineups:
+        leg = lineup.leg_number
+        seat = lineup.seat_number
+        draw_num = lineup.draw_number
+
+        # Build seat_draw grid
+        if leg not in seat_draw:
+            seat_draw[leg] = {}
+        seat_draw[leg][seat] = draw_num
+
+        # Track ghosts
+        ghost_map[(leg, seat)] = lineup.is_ghost
+
+        # Build user cards (skip ghosts)
+        if not lineup.is_ghost and draw_num:
+            if draw_num not in data_cards:
+                user_name = (
+                    f"{lineup.user.profile.last_name} {lineup.user.profile.first_name}".strip()
+                    if lineup.user and lineup.user.profile else f"User {lineup.user_id}"
+                )
+                data_cards[draw_num] = {"user_name": user_name, "legs": {}}
+            data_cards[draw_num]["legs"][leg] = seat
+
+    # Create Excel workbook
+    wb = Workbook()
+    ghost_fill = PatternFill(fill_type='solid', start_color='90EE90', end_color='90EE90')
+    bold_font = Font(bold=True)
+
+    # ===================== SHEET #1: Lineup Grid (Legs x Seats) =====================
+    ws_lineup = wb.active
+    ws_lineup.title = "Lineup"
+
+    # Header row: "Leg", then seats
+    ws_lineup.cell(row=1, column=1, value="Leg").font = bold_font
+    for col_idx, seat_num in enumerate(distinct_seats, start=2):
+        ws_lineup.cell(row=1, column=col_idx, value=f"#S{seat_num:02d}").font = bold_font
+
+    # Data rows: one per leg
+    for row_idx, leg_num in enumerate(distinct_legs, start=2):
+        ws_lineup.cell(row=row_idx, column=1, value=leg_num)
+        for col_idx, seat_num in enumerate(distinct_seats, start=2):
+            draw_val = seat_draw.get(leg_num, {}).get(seat_num, "")
+            cell = ws_lineup.cell(row=row_idx, column=col_idx, value=draw_val)
+            if ghost_map.get((leg_num, seat_num), False):
+                cell.fill = ghost_fill
+
+    # ===================== SHEET #2: User Seat Rotation =====================
+    ws_rotation = wb.create_sheet(title="User Seat Rotation")
+
+    # Header: Draw#, Username, then Leg X Seat columns
+    ws_rotation.cell(row=1, column=1, value="Draw #").font = bold_font
+    ws_rotation.cell(row=1, column=2, value="Username").font = bold_font
+    for col_idx, leg_num in enumerate(distinct_legs, start=3):
+        ws_rotation.cell(row=1, column=col_idx, value=f"Leg {leg_num} Seat").font = bold_font
+
+    # Data rows: one per user (sorted by draw number)
+    sorted_draw_numbers = sorted(data_cards.keys())
+    for row_idx, draw_num in enumerate(sorted_draw_numbers, start=2):
+        info = data_cards[draw_num]
+        ws_rotation.cell(row=row_idx, column=1, value=draw_num)
+        ws_rotation.cell(row=row_idx, column=2, value=info["user_name"])
+
+        for col_idx, leg_num in enumerate(distinct_legs, start=3):
+            seat_val = info["legs"].get(leg_num, "")
+            ws_rotation.cell(row=row_idx, column=col_idx, value=seat_val)
+
+    # ===================== SHEET #3: Seat-Leg Pivot (Seats x Legs) =====================
+    ws_pivot = wb.create_sheet(title="Seat-Leg Pivot")
+
+    # Header: "Seat", then Leg columns
+    ws_pivot.cell(row=1, column=1, value="Seat").font = bold_font
+    for col_idx, leg_num in enumerate(distinct_legs, start=2):
+        ws_pivot.cell(row=1, column=col_idx, value=f"Leg {leg_num}").font = bold_font
+
+    # Data rows: one per seat
+    for row_idx, seat_num in enumerate(distinct_seats, start=2):
+        ws_pivot.cell(row=row_idx, column=1, value=f"Seat {seat_num}")
+        for col_idx, leg_num in enumerate(distinct_legs, start=2):
+            draw_val = seat_draw.get(leg_num, {}).get(seat_num, "")
+            cell = ws_pivot.cell(row=row_idx, column=col_idx, value=draw_val)
+            if ghost_map.get((leg_num, seat_num), False):
+                cell.fill = ghost_fill
+
+    # Save to BytesIO and return
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    event_name_safe = sanitize_filename(event.name) if event.name else f"Event_{event_id}"
+    start_date_str = event.start_date.strftime("%d%m%Y") if event.start_date else "nodate"
+    filename = f"{event_name_safe}_{start_date_str}_TA_Lineup.xlsx"
+
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
 
 @router.post("/duration-estimate", response_model=TADurationEstimateResponse)
 async def estimate_duration(

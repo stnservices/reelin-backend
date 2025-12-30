@@ -86,23 +86,57 @@ class MessageResponse(BaseModel):
 
 
 @router.get("/plans", response_model=list[PlanInfo])
-async def get_plans():
+async def get_plans(
+    db: AsyncSession = Depends(get_db),
+):
     """
     Get available Pro subscription plans.
 
-    Returns list of available plans with pricing.
+    Returns list of available plans with pricing from admin settings.
     """
-    plans = stripe_subscription_service.get_plans()
+    from app.models.pro import ProSettings
+
+    # Fetch prices from admin settings
+    monthly_price = 4.99  # Default
+    yearly_price = 39.99  # Default
+
+    try:
+        monthly_query = select(ProSettings).where(ProSettings.key == "monthly_price_eur")
+        monthly_result = await db.execute(monthly_query)
+        monthly_setting = monthly_result.scalar_one_or_none()
+        if monthly_setting:
+            monthly_price = float(monthly_setting.value)
+
+        yearly_query = select(ProSettings).where(ProSettings.key == "yearly_price_eur")
+        yearly_result = await db.execute(yearly_query)
+        yearly_setting = yearly_result.scalar_one_or_none()
+        if yearly_setting:
+            yearly_price = float(yearly_setting.value)
+    except Exception:
+        pass  # Use defaults on error
+
+    # Calculate savings
+    yearly_monthly_equivalent = yearly_price / 12
+    monthly_yearly_cost = monthly_price * 12
+    savings = monthly_yearly_cost - yearly_price
+
     return [
         PlanInfo(
-            id=p["id"],
-            name=p["name"],
-            price=p["price"],
-            currency=p["currency"],
-            interval=p["interval"],
-            description=p.get("description"),
-        )
-        for p in plans
+            id="monthly",
+            name="Monthly",
+            price=monthly_price,
+            currency="EUR",
+            interval="month",
+            description=None,
+        ),
+        PlanInfo(
+            id="yearly",
+            name="Yearly",
+            price=yearly_price,
+            currency="EUR",
+            interval="year",
+            description=f"Save €{savings:.2f}/year" if savings > 0 else None,
+        ),
     ]
 
 
@@ -187,7 +221,7 @@ async def create_checkout(
             detail="Invalid plan type. Must be 'monthly' or 'yearly'.",
         )
 
-    # Check if user already has active subscription
+    # Check if user already has active subscription in our database
     subscription_query = select(ProSubscription).where(
         ProSubscription.user_id == current_user.id,
         ProSubscription.status.in_([
@@ -204,9 +238,24 @@ async def create_checkout(
             detail="You already have an active subscription. Use the customer portal to manage it.",
         )
 
+    # Get existing customer ID if available
+    customer_id = current_user.pro_stripe_customer_id
+
+    # SAFEGUARD: Also check Stripe directly for active subscriptions
+    # This prevents duplicate subscriptions when webhooks fail to update our database
+    if customer_id:
+        has_stripe_subscription = await stripe_subscription_service.has_active_subscription(customer_id)
+        if has_stripe_subscription:
+            logger.warning(
+                f"User {current_user.id} has active Stripe subscription but no local record. "
+                "Possible webhook failure. Blocking new checkout."
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You already have an active subscription. Use the customer portal to manage it.",
+            )
+
     try:
-        # Get existing customer ID if available
-        customer_id = current_user.pro_stripe_customer_id
 
         url, session_id = await stripe_subscription_service.create_checkout_session(
             user_id=current_user.id,

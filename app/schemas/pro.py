@@ -181,8 +181,9 @@ class SubscriptionCancel(BaseModel):
 
 class RefundCreate(BaseModel):
     """Schema for creating a refund."""
-    amount: Optional[Decimal] = Field(None, description="Amount to refund (null for full refund)")
+    amount: Optional[Decimal] = Field(None, description="Amount to refund in EUR (null for full refund)")
     reason: str = Field(..., min_length=5, max_length=500, description="Reason for refund")
+    payment_intent_id: Optional[str] = Field(None, description="Specific payment intent to refund (null for latest)")
 
 
 # ============================================================================

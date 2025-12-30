@@ -7,7 +7,7 @@ from app.models.event_validator import EventValidator
 from app.models.enrollment import EventEnrollment
 from app.models.catch import Catch, EventScoreboard, RankingMovement
 from app.models.club import Club, ClubMembership
-from app.models.location import Country, City, FishingSpot
+from app.models.location import Country, City, FishingSpot, MeetingPoint
 from app.models.fish import Fish
 from app.models.notification import Notification, UserNotificationPreferences, UserDeviceToken, DeviceType, CatchNotificationLevel
 from app.models.sponsor import Sponsor
@@ -111,6 +111,7 @@ __all__ = [
     "Country",
     "City",
     "FishingSpot",
+    "MeetingPoint",
     # Fish
     "Fish",
     # Notification

@@ -64,6 +64,7 @@ class EventTypeResponse(BaseModel):
     id: int
     name: str
     code: str
+    format_code: str  # sf, ta, tsf - determines which wizard/format to use
     description: Optional[str] = None
     icon_url: Optional[str] = None
     is_active: bool
@@ -77,7 +78,10 @@ class ScoringConfigResponse(BaseModel):
     id: int
     name: str
     code: str
+    format_code: str  # sf, ta, tsf
     description: Optional[str] = None
+    calculation_info: Optional[str] = None  # Detailed scoring explanation
+    team_scoring_info: Optional[str] = None  # Team scoring explanation
     default_top_x: int = 10
     default_catch_slots: int = 5
     rules: Dict[str, Any] = {}

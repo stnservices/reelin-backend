@@ -818,6 +818,10 @@ async def cancel_subscription(
     current_user: UserAccount = Depends(AdminOnly),
 ) -> dict:
     """Cancel a user's Pro subscription. Admin only."""
+    import stripe
+    from app.config import get_settings
+    app_settings = get_settings()
+
     query = select(UserAccount).where(UserAccount.id == user_id)
     result = await db.execute(query)
     user = result.scalar_one_or_none()
@@ -835,19 +839,31 @@ async def cancel_subscription(
         )
 
     now = datetime.now(timezone.utc)
+    stripe_cancelled = False
 
-    # TODO: If user has Stripe subscription, cancel it via Stripe API
-    if user.pro_stripe_subscription_id:
-        # stripe.Subscription.modify(user.pro_stripe_subscription_id, cancel_at_period_end=True)
-        # For now, just update local state
-        pass
+    # Cancel Stripe subscription if exists
+    if user.pro_stripe_subscription_id and app_settings.stripe_secret_key:
+        stripe.api_key = app_settings.stripe_secret_key
+        try:
+            if data.immediate:
+                # Cancel immediately
+                stripe.Subscription.cancel(user.pro_stripe_subscription_id)
+            else:
+                # Cancel at period end
+                stripe.Subscription.modify(
+                    user.pro_stripe_subscription_id,
+                    cancel_at_period_end=True
+                )
+            stripe_cancelled = True
+        except stripe.error.StripeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Failed to cancel Stripe subscription: {str(e)}",
+            )
 
     if data.immediate:
         user.is_pro = False
         user.pro_expires_at = now
-    else:
-        # Cancel at end of period - keep Pro status until expiration
-        pass
 
     # Log the action
     await log_pro_action(
@@ -859,6 +875,7 @@ async def cancel_subscription(
         details={
             "immediate": data.immediate,
             "stripe_subscription_id": user.pro_stripe_subscription_id,
+            "stripe_cancelled": stripe_cancelled,
         },
     )
 
@@ -866,6 +883,7 @@ async def cancel_subscription(
 
     return {
         "message": "Subscription cancelled" + (" immediately" if data.immediate else " at end of period"),
+        "stripe_cancelled": stripe_cancelled,
     }
 
 
@@ -877,6 +895,10 @@ async def refund_payment(
     current_user: UserAccount = Depends(AdminOnly),
 ) -> dict:
     """Refund a payment for a user. Admin only."""
+    import stripe
+    from app.config import get_settings
+    app_settings = get_settings()
+
     query = select(UserAccount).where(UserAccount.id == user_id)
     result = await db.execute(query)
     user = result.scalar_one_or_none()
@@ -893,8 +915,46 @@ async def refund_payment(
             detail="User has no Stripe customer ID - cannot process refund",
         )
 
-    # TODO: Process refund via Stripe API
-    # stripe.Refund.create(customer=user.pro_stripe_customer_id, amount=data.amount)
+    if not app_settings.stripe_secret_key:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Stripe not configured",
+        )
+
+    stripe.api_key = app_settings.stripe_secret_key
+    refund_result = None
+
+    try:
+        # Get the latest payment intent for this customer
+        if data.payment_intent_id:
+            # Refund specific payment
+            refund_result = stripe.Refund.create(
+                payment_intent=data.payment_intent_id,
+                amount=int(data.amount * 100) if data.amount else None,  # Convert to cents
+                reason="requested_by_customer",
+            )
+        else:
+            # Get customer's latest charge
+            charges = stripe.Charge.list(customer=user.pro_stripe_customer_id, limit=1)
+            if not charges.data:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="No charges found for this customer",
+                )
+
+            charge = charges.data[0]
+            refund_result = stripe.Refund.create(
+                charge=charge.id,
+                amount=int(data.amount * 100) if data.amount else None,
+                reason="requested_by_customer",
+            )
+    except stripe.error.StripeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Stripe refund failed: {str(e)}",
+        )
+
+    refunded_amount = refund_result.amount / 100 if refund_result else data.amount
 
     # Log the action
     await log_pro_action(
@@ -904,8 +964,9 @@ async def refund_payment(
         action=ProAction.REFUND.value,
         reason=data.reason,
         details={
-            "amount": str(data.amount) if data.amount else "full",
+            "amount": str(refunded_amount),
             "stripe_customer_id": user.pro_stripe_customer_id,
+            "refund_id": refund_result.id if refund_result else None,
         },
     )
 
@@ -913,8 +974,240 @@ async def refund_payment(
 
     return {
         "message": "Refund processed successfully",
-        "amount": str(data.amount) if data.amount else "full",
+        "amount": str(refunded_amount),
+        "refund_id": refund_result.id if refund_result else None,
+        "currency": refund_result.currency if refund_result else "eur",
     }
+
+
+# ============================================================================
+# Payment History Endpoints
+# ============================================================================
+
+@router.get("/payments/{user_id}")
+async def get_user_payments(
+    user_id: int,
+    limit: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+) -> dict:
+    """Get payment history for a user from Stripe. Admin only."""
+    import stripe
+    from app.config import get_settings
+    app_settings = get_settings()
+
+    query = select(UserAccount).where(UserAccount.id == user_id)
+    result = await db.execute(query)
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    if not user.pro_stripe_customer_id:
+        return {"payments": [], "has_more": False}
+
+    if not app_settings.stripe_secret_key:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Stripe not configured",
+        )
+
+    stripe.api_key = app_settings.stripe_secret_key
+
+    try:
+        # Get invoices for this customer
+        invoices = stripe.Invoice.list(
+            customer=user.pro_stripe_customer_id,
+            limit=limit,
+        )
+
+        payments = []
+        for invoice in invoices.data:
+            payments.append({
+                "id": invoice.id,
+                "number": invoice.number,
+                "amount": invoice.amount_paid / 100,  # Convert from cents
+                "currency": invoice.currency.upper(),
+                "status": invoice.status,
+                "created": datetime.fromtimestamp(invoice.created, tz=timezone.utc).isoformat(),
+                "paid_at": datetime.fromtimestamp(invoice.status_transitions.paid_at, tz=timezone.utc).isoformat() if invoice.status_transitions.paid_at else None,
+                "invoice_pdf": invoice.invoice_pdf,
+                "hosted_invoice_url": invoice.hosted_invoice_url,
+                "description": invoice.description or f"Pro subscription",
+                "payment_intent_id": invoice.payment_intent,
+                "refunded": False,  # Would check charges for refund status
+            })
+
+        return {
+            "payments": payments,
+            "has_more": invoices.has_more,
+        }
+    except stripe.error.StripeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to fetch payments: {str(e)}",
+        )
+
+
+@router.post("/payments/{user_id}/sync")
+async def sync_subscription_from_stripe(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+) -> dict:
+    """Sync user's subscription status from Stripe. Admin only."""
+    import stripe
+    from app.config import get_settings
+    app_settings = get_settings()
+    from app.models.pro import ProSubscription, SubscriptionStatus
+
+    query = select(UserAccount).where(UserAccount.id == user_id)
+    result = await db.execute(query)
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    if not user.pro_stripe_customer_id:
+        return {"message": "User has no Stripe customer ID", "synced": False}
+
+    if not app_settings.stripe_secret_key:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Stripe not configured",
+        )
+
+    stripe.api_key = app_settings.stripe_secret_key
+
+    try:
+        # Get active subscriptions from Stripe
+        subscriptions = stripe.Subscription.list(
+            customer=user.pro_stripe_customer_id,
+            status="active",
+            limit=1,
+        )
+
+        changes = []
+
+        if subscriptions.data:
+            sub = subscriptions.data[0]
+            plan_type = sub.metadata.get("plan_type", "monthly")
+
+            # Update user account
+            if not user.is_pro:
+                user.is_pro = True
+                changes.append("Set is_pro=True")
+
+            if user.pro_stripe_subscription_id != sub.id:
+                user.pro_stripe_subscription_id = sub.id
+                changes.append(f"Updated subscription ID to {sub.id}")
+
+            if user.pro_plan_type != plan_type:
+                user.pro_plan_type = plan_type
+                changes.append(f"Updated plan type to {plan_type}")
+
+            # Update or create pro_subscriptions record
+            sub_query = select(ProSubscription).where(
+                ProSubscription.stripe_subscription_id == sub.id
+            )
+            sub_result = await db.execute(sub_query)
+            pro_sub = sub_result.scalar_one_or_none()
+
+            if not pro_sub:
+                pro_sub = ProSubscription(
+                    user_id=user_id,
+                    stripe_subscription_id=sub.id,
+                    stripe_customer_id=user.pro_stripe_customer_id,
+                    plan_type=plan_type,
+                    status=SubscriptionStatus.ACTIVE.value,
+                    current_period_start=datetime.fromtimestamp(sub.current_period_start, tz=timezone.utc),
+                    current_period_end=datetime.fromtimestamp(sub.current_period_end, tz=timezone.utc),
+                )
+                db.add(pro_sub)
+                changes.append("Created pro_subscriptions record")
+            else:
+                pro_sub.status = SubscriptionStatus.ACTIVE.value
+                pro_sub.current_period_end = datetime.fromtimestamp(sub.current_period_end, tz=timezone.utc)
+                changes.append("Updated pro_subscriptions record")
+
+        else:
+            # No active subscription in Stripe
+            if user.is_pro and user.pro_stripe_subscription_id:
+                # Check if there's a manual grant
+                grant = await check_user_has_active_grant(db, user_id)
+                if not grant:
+                    user.is_pro = False
+                    changes.append("Set is_pro=False (no active subscription or grant)")
+
+        if changes:
+            # Log the sync action
+            await log_pro_action(
+                db=db,
+                admin_id=current_user.id,
+                user_id=user_id,
+                action="sync_from_stripe",
+                details={"changes": changes},
+            )
+            await db.commit()
+
+        return {
+            "message": "Subscription synced from Stripe",
+            "synced": True,
+            "changes": changes,
+        }
+    except stripe.error.StripeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to sync from Stripe: {str(e)}",
+        )
+
+
+@router.post("/payments/resend-invoice")
+async def resend_invoice(
+    invoice_id: str = Query(..., description="Stripe invoice ID"),
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+) -> dict:
+    """Resend an invoice email to the customer. Admin only."""
+    import stripe
+    from app.config import get_settings
+    app_settings = get_settings()
+
+    if not app_settings.stripe_secret_key:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Stripe not configured",
+        )
+
+    stripe.api_key = app_settings.stripe_secret_key
+
+    try:
+        invoice = stripe.Invoice.retrieve(invoice_id)
+
+        if invoice.status == "draft":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot resend draft invoice",
+            )
+
+        # Send invoice email
+        stripe.Invoice.send_invoice(invoice_id)
+
+        return {
+            "message": "Invoice email sent successfully",
+            "invoice_id": invoice_id,
+        }
+    except stripe.error.StripeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to resend invoice: {str(e)}",
+        )
 
 
 # ============================================================================
@@ -1128,3 +1421,146 @@ async def update_setting(
         updater_name=current_user.profile.full_name if current_user.profile else None,
         updated_at=setting.updated_at,
     )
+
+
+# ============================================================================
+# Account Deletion Management Endpoints
+# ============================================================================
+
+from app.services.account_deletion import account_deletion_service, AccountDeletionError
+from pydantic import BaseModel, Field
+
+
+class PendingDeletionUser(BaseModel):
+    """User pending deletion."""
+    id: int
+    email: str
+    first_name: str
+    last_name: str
+    deletion_scheduled_at: datetime
+    permanent_deletion_at: datetime
+    days_remaining: int
+    can_recover: bool
+
+
+class DeletedUser(BaseModel):
+    """Permanently deleted user."""
+    id: int
+    display_name: str
+    deleted_at: Optional[datetime]
+
+
+class ForceRecoverRequest(BaseModel):
+    """Request to force recover an account."""
+    reason: str = Field(..., min_length=5, max_length=500)
+
+
+@router.get("/deleted-users/pending")
+async def list_pending_deletion_users(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+) -> dict:
+    """
+    List users with pending deletion (in grace period).
+    Admin only.
+    """
+    result = await account_deletion_service.get_pending_deletion_users(db, page, page_size)
+
+    # Enrich with user details
+    items = []
+    for item in result["items"]:
+        user_query = (
+            select(UserAccount)
+            .options(selectinload(UserAccount.profile))
+            .where(UserAccount.id == item["id"])
+        )
+        user_result = await db.execute(user_query)
+        user = user_result.scalar_one_or_none()
+
+        if user:
+            items.append({
+                "id": user.id,
+                "email": item["email"],  # Keep original email (not yet anonymized)
+                "first_name": user.profile.first_name if user.profile else "",
+                "last_name": user.profile.last_name if user.profile else "",
+                "deletion_scheduled_at": item["deletion_scheduled_at"].isoformat(),
+                "permanent_deletion_at": item["permanent_deletion_at"].isoformat(),
+                "days_remaining": item["days_remaining"],
+                "can_recover": item["can_recover"]
+            })
+
+    return {
+        "items": items,
+        "total": result["total"],
+        "page": result["page"],
+        "page_size": result["page_size"],
+        "total_pages": result["total_pages"],
+        "grace_period_days": result["grace_period_days"]
+    }
+
+
+@router.get("/deleted-users/permanent")
+async def list_permanently_deleted_users(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+) -> dict:
+    """
+    List permanently deleted (anonymized) users.
+    Admin only.
+    """
+    return await account_deletion_service.get_deleted_users(db, page, page_size)
+
+
+@router.post("/deleted-users/{user_id}/recover")
+async def force_recover_user(
+    user_id: int,
+    data: ForceRecoverRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+) -> dict:
+    """
+    Force recover a user's account (admin action).
+    Only works for accounts in grace period (not yet permanently deleted).
+    Admin only.
+    """
+    try:
+        result = await account_deletion_service.admin_force_recover(
+            user_id=user_id,
+            admin_id=current_user.id,
+            reason=data.reason,
+            db=db
+        )
+
+        return {
+            "message": result["message"],
+            "recovered_at": result["recovered_at"].isoformat(),
+            "admin_id": result["admin_id"]
+        }
+
+    except AccountDeletionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+
+@router.post("/deleted-users/process-expired")
+async def process_expired_deletions(
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+) -> dict:
+    """
+    Manually trigger processing of expired account deletions.
+    This is normally run by a background job daily.
+    Admin only.
+    """
+    count = await account_deletion_service.process_expired_deletions(db)
+
+    return {
+        "message": f"Processed {count} expired account deletions",
+        "accounts_anonymized": count
+    }

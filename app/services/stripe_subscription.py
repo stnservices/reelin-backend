@@ -386,6 +386,34 @@ class StripeSubscriptionService:
             logger.error(f"Failed to get subscription: {e}")
             return None
 
+    async def has_active_subscription(self, customer_id: str) -> bool:
+        """
+        Check if a customer has any active subscriptions in Stripe.
+
+        This is a safeguard to prevent duplicate subscriptions when webhooks fail.
+
+        Args:
+            customer_id: Stripe customer ID
+
+        Returns:
+            True if customer has active subscriptions
+        """
+        if not self._is_configured():
+            return False
+
+        try:
+            subscriptions = stripe.Subscription.list(
+                customer=customer_id,
+                status="active",
+                limit=1,
+            )
+            return len(subscriptions.data) > 0
+
+        except StripeError as e:
+            logger.error(f"Failed to check active subscriptions: {e}")
+            # Return False to allow checkout attempt (Stripe will prevent duplicates)
+            return False
+
     def get_plans(self) -> list:
         """
         Get available subscription plans.

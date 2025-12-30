@@ -636,11 +636,12 @@ class TARankingService:
         settings_result = await self.db.execute(settings_query)
         settings = settings_result.scalar_one_or_none()
 
-        # Count participants from lineups
+        # Count UNIQUE participants from lineups (not all lineup entries)
         from app.models.trout_area import TALineup
-        lineup_query = select(func.count()).select_from(TALineup).where(
+        lineup_query = select(func.count(func.distinct(TALineup.user_id))).where(
             TALineup.event_id == event_id,
             TALineup.is_ghost == False,
+            TALineup.user_id.isnot(None),
         )
         lineup_result = await self.db.execute(lineup_query)
         total_participants = lineup_result.scalar() or 0

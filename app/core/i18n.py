@@ -100,6 +100,77 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         # Generic errors
         "server_error": "An unexpected error occurred. Please try again later",
         "rate_limited": "Too many requests. Please wait before trying again",
+
+        # Trout Area (TA) errors
+        "ta_event_not_found": "Trout Area event not found",
+        "ta_settings_not_found": "Trout Area settings not configured for this event",
+        "ta_lineup_not_found": "Lineup entry not found",
+        "ta_match_not_found": "Match not found",
+        "ta_game_card_not_found": "Game card not found",
+        "ta_bracket_not_found": "Tournament bracket not found",
+        "ta_invalid_event_type": "This event is not a Trout Area competition",
+        "ta_already_has_lineup": "Lineups have already been generated for this event",
+        "ta_not_enough_participants": "Not enough participants to generate lineups (minimum: {min})",
+        "ta_invalid_pairing_algorithm": "Invalid pairing algorithm: {algorithm}",
+        "ta_invalid_round_count": "Invalid number of rounds (min: 1, max: {max})",
+        "ta_match_already_completed": "This match has already been completed",
+        "ta_match_not_started": "This match has not started yet",
+        "ta_invalid_outcome": "Invalid match outcome: {outcome}",
+        "ta_game_card_locked": "This game card is locked and cannot be modified",
+        "ta_invalid_phase_transition": "Cannot transition from {current} to {target} phase",
+        "ta_qualification_incomplete": "Qualification phase is not complete",
+        "ta_bracket_generation_failed": "Failed to generate knockout bracket",
+        "ta_self_validation_required": "Both competitors must validate before match completion",
+        "ta_already_validated": "You have already validated this game card",
+        "ta_cannot_validate_own_card": "Cannot validate your own game card in TA events",
+        "ta_match_in_progress": "Match is currently in progress",
+        "ta_draw_already_done": "Draw has already been performed for this event",
+        "ta_invalid_seat": "Invalid seat assignment",
+        "ta_participant_not_in_match": "You are not a participant in this match",
+
+        # Trout Shore Fishing (TSF) errors
+        "tsf_event_not_found": "Trout Shore Fishing event not found",
+        "tsf_settings_not_found": "TSF settings not configured for this event",
+        "tsf_invalid_event_type": "This event is not a Trout Shore Fishing competition",
+        "tsf_day_not_found": "Competition day not found",
+        "tsf_leg_not_found": "Competition leg not found",
+        "tsf_position_not_found": "Position record not found",
+        "tsf_invalid_day_number": "Invalid day number (valid: 1 to {max})",
+        "tsf_invalid_leg_number": "Invalid leg number (valid: 1 to {max})",
+        "tsf_day_not_active": "This competition day is not active",
+        "tsf_leg_not_active": "This competition leg is not active",
+        "tsf_lineup_not_found": "TSF lineup not found",
+        "tsf_position_already_submitted": "Position has already been submitted for this leg",
+        "tsf_invalid_position": "Invalid position value (must be between 1 and {max})",
+        "tsf_duplicate_position": "This position is already assigned to another participant",
+        "tsf_standings_not_calculated": "Standings have not been calculated yet",
+        "tsf_day_already_completed": "This competition day has already been completed",
+        "tsf_sector_assignment_conflict": "Sector assignment conflict detected",
+
+        # Entry editing permissions
+        "cannot_edit_others_entry": "You can only edit entries you created",
+        "leg_completed_cannot_edit": "Cannot edit after leg completion",
+        "match_completed_cannot_edit": "Cannot edit completed match results",
+
+        # Pairing/Lineup messages
+        "pairing_generated": "Pairing schedule generated successfully",
+        "pairing_info_rounds": "{rounds} rounds, {matches} total matches",
+        "pairing_info_duration": "Estimated duration: {duration}",
+        "lineup_created": "Lineups created successfully for {count} participants",
+        "lineup_ghost_added": "Ghost participant added for odd number of participants",
+        "draw_completed": "Draw completed successfully",
+        "bracket_generated": "Tournament bracket generated successfully",
+
+        # Ranking movement messages
+        "ranking_updated": "Rankings updated successfully",
+        "position_improved": "Position improved by {places} places",
+        "position_dropped": "Position dropped by {places} places",
+        "new_leader": "New leader in the competition!",
+
+        # Organizer permission errors
+        "organizer_no_event_type_access": "You don't have permission to create {event_type_name} events. Contact the platform administrator for access.",
+        "organizer_no_national_permission": "You don't have permission to create national events. Contact the platform administrator for access.",
+        "organizer_no_access": "You don't have permission to create events. Contact the platform administrator for access.",
     },
     "ro": {
         # Authentication errors
@@ -192,6 +263,77 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         # Generic errors
         "server_error": "A apărut o eroare neașteptată. Încercați mai târziu",
         "rate_limited": "Prea multe cereri. Așteptați înainte de a încerca din nou",
+
+        # Trout Area (TA) errors
+        "ta_event_not_found": "Evenimentul Trout Area nu a fost găsit",
+        "ta_settings_not_found": "Setările Trout Area nu sunt configurate pentru acest eveniment",
+        "ta_lineup_not_found": "Înregistrarea din lineup nu a fost găsită",
+        "ta_match_not_found": "Meciul nu a fost găsit",
+        "ta_game_card_not_found": "Fișa de joc nu a fost găsită",
+        "ta_bracket_not_found": "Tabloul turneului nu a fost găsit",
+        "ta_invalid_event_type": "Acest eveniment nu este o competiție Trout Area",
+        "ta_already_has_lineup": "Lineup-urile au fost deja generate pentru acest eveniment",
+        "ta_not_enough_participants": "Nu sunt suficienți participanți pentru generarea lineup-urilor (minim: {min})",
+        "ta_invalid_pairing_algorithm": "Algoritm de împerechere invalid: {algorithm}",
+        "ta_invalid_round_count": "Număr de runde invalid (min: 1, max: {max})",
+        "ta_match_already_completed": "Acest meci a fost deja finalizat",
+        "ta_match_not_started": "Acest meci nu a început încă",
+        "ta_invalid_outcome": "Rezultat al meciului invalid: {outcome}",
+        "ta_game_card_locked": "Această fișă de joc este blocată și nu poate fi modificată",
+        "ta_invalid_phase_transition": "Nu se poate trece din faza {current} în faza {target}",
+        "ta_qualification_incomplete": "Faza de calificare nu este completă",
+        "ta_bracket_generation_failed": "Generarea tabloului turneului a eșuat",
+        "ta_self_validation_required": "Ambii competitori trebuie să valideze înainte de finalizarea meciului",
+        "ta_already_validated": "Ați validat deja această fișă de joc",
+        "ta_cannot_validate_own_card": "Nu puteți valida propria fișă de joc în evenimentele TA",
+        "ta_match_in_progress": "Meciul este în desfășurare",
+        "ta_draw_already_done": "Tragerea la sorți a fost deja efectuată pentru acest eveniment",
+        "ta_invalid_seat": "Atribuire de loc invalidă",
+        "ta_participant_not_in_match": "Nu sunteți participant în acest meci",
+
+        # Trout Shore Fishing (TSF) errors
+        "tsf_event_not_found": "Evenimentul TSF nu a fost găsit",
+        "tsf_settings_not_found": "Setările TSF nu sunt configurate pentru acest eveniment",
+        "tsf_invalid_event_type": "Acest eveniment nu este o competiție Trout Shore Fishing",
+        "tsf_day_not_found": "Ziua de competiție nu a fost găsită",
+        "tsf_leg_not_found": "Manșa de competiție nu a fost găsită",
+        "tsf_position_not_found": "Înregistrarea poziției nu a fost găsită",
+        "tsf_invalid_day_number": "Număr de zi invalid (valid: 1 până la {max})",
+        "tsf_invalid_leg_number": "Număr de manșă invalid (valid: 1 până la {max})",
+        "tsf_day_not_active": "Această zi de competiție nu este activă",
+        "tsf_leg_not_active": "Această manșă de competiție nu este activă",
+        "tsf_lineup_not_found": "Lineup-ul TSF nu a fost găsit",
+        "tsf_position_already_submitted": "Poziția a fost deja înregistrată pentru această manșă",
+        "tsf_invalid_position": "Valoare poziție invalidă (trebuie să fie între 1 și {max})",
+        "tsf_duplicate_position": "Această poziție este deja atribuită altui participant",
+        "tsf_standings_not_calculated": "Clasamentele nu au fost calculate încă",
+        "tsf_day_already_completed": "Această zi de competiție a fost deja finalizată",
+        "tsf_sector_assignment_conflict": "Conflict detectat în atribuirea sectorului",
+
+        # Entry editing permissions
+        "cannot_edit_others_entry": "Poți edita doar intrările pe care le-ai creat",
+        "leg_completed_cannot_edit": "Nu se poate edita după finalizarea manșei",
+        "match_completed_cannot_edit": "Nu se pot edita rezultatele meciului finalizat",
+
+        # Pairing/Lineup messages
+        "pairing_generated": "Programul de împerechere a fost generat cu succes",
+        "pairing_info_rounds": "{rounds} runde, {matches} meciuri totale",
+        "pairing_info_duration": "Durată estimată: {duration}",
+        "lineup_created": "Lineup-urile au fost create cu succes pentru {count} participanți",
+        "lineup_ghost_added": "Participant fantomă adăugat pentru număr impar de participanți",
+        "draw_completed": "Tragerea la sorți a fost finalizată cu succes",
+        "bracket_generated": "Tabloul turneului a fost generat cu succes",
+
+        # Ranking movement messages
+        "ranking_updated": "Clasamentele au fost actualizate cu succes",
+        "position_improved": "Poziția s-a îmbunătățit cu {places} locuri",
+        "position_dropped": "Poziția a scăzut cu {places} locuri",
+        "new_leader": "Nou lider în competiție!",
+
+        # Organizer permission errors
+        "organizer_no_event_type_access": "Nu aveți permisiunea de a crea evenimente de tip {event_type_name}. Contactați administratorul platformei pentru acces.",
+        "organizer_no_national_permission": "Nu aveți permisiunea de a crea evenimente naționale. Contactați administratorul platformei pentru acces.",
+        "organizer_no_access": "Nu aveți permisiunea de a crea evenimente. Contactați administratorul platformei pentru acces.",
     },
 }
 

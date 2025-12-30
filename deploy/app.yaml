@@ -1,0 +1,363 @@
+# DigitalOcean App Platform Deployment Specification
+# Reelin V2 - Fishing Tournament Platform
+#
+# Deploy with: doctl apps create --spec deploy/app.yaml
+# Update with: doctl apps update <app-id> --spec deploy/app.yaml
+#
+# Prerequisites:
+# 1. Create DO Spaces bucket: reelin-prod
+# 2. Generate Spaces access keys
+# 3. Configure Stripe production keys
+# 4. Set up custom domain DNS
+
+name: reelin
+region: fra  # Frankfurt - closest to Romania
+
+# =============================================================================
+# DOMAINS
+# =============================================================================
+domains:
+  - domain: api.reelin.ro
+    type: PRIMARY
+    zone: reelin.ro
+  - domain: admin.reelin.ro
+    type: ALIAS
+    zone: reelin.ro
+
+# =============================================================================
+# SERVICES (Web-facing)
+# =============================================================================
+services:
+  # ---------------------------------------------------------------------------
+  # Backend API (FastAPI)
+  # ---------------------------------------------------------------------------
+  - name: backend
+    github:
+      repo: stnservices/reelin-backend
+      branch: main
+      deploy_on_push: true
+    dockerfile_path: Dockerfile
+    http_port: 8000
+    instance_size_slug: professional-xs  # 1 vCPU, 2 GB RAM, $25/mo
+    instance_count: 2
+
+    # Health check
+    health_check:
+      http_path: /api/v1/health
+      initial_delay_seconds: 30
+      period_seconds: 10
+      timeout_seconds: 5
+      success_threshold: 1
+      failure_threshold: 3
+
+    # Routing
+    routes:
+      - path: /api
+        preserve_path_prefix: true
+      - path: /docs
+      - path: /redoc
+      - path: /openapi.json
+
+    # Autoscaling (Professional plans only)
+    autoscaling:
+      min_instance_count: 1
+      max_instance_count: 4
+      metrics:
+        - type: CPU
+          percent: 70
+
+    # CORS headers handled by FastAPI
+    cors:
+      allow_origins:
+        - https://admin.reelin.ro
+        - https://reelin.ro
+        - https://www.reelin.ro
+      allow_methods:
+        - GET
+        - POST
+        - PUT
+        - PATCH
+        - DELETE
+        - OPTIONS
+      allow_headers:
+        - Content-Type
+        - Authorization
+        - X-Requested-With
+      allow_credentials: true
+
+    # Environment variables
+    envs:
+      # Database (injected from managed DB)
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: ${db.DATABASE_URL}
+
+      # Redis/Valkey (injected from managed DB)
+      - key: REDIS_URL
+        scope: RUN_TIME
+        value: ${redis.DATABASE_URL}
+
+      # Security (set these in DO dashboard)
+      - key: SECRET_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: JWT_SECRET_KEY
+        scope: RUN_TIME
+        type: SECRET
+
+      # DO Spaces
+      - key: DO_SPACES_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: DO_SPACES_SECRET
+        scope: RUN_TIME
+        type: SECRET
+      - key: DO_SPACES_BUCKET
+        scope: RUN_TIME
+        value: reelin-prod
+      - key: DO_SPACES_REGION
+        scope: RUN_TIME
+        value: fra1
+      - key: DO_SPACES_ENDPOINT
+        scope: RUN_TIME
+        value: https://fra1.digitaloceanspaces.com
+      - key: DO_SPACES_CDN_ENDPOINT
+        scope: RUN_TIME
+        value: https://reelin-prod.fra1.cdn.digitaloceanspaces.com
+
+      # Stripe
+      - key: STRIPE_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: STRIPE_WEBHOOK_SECRET
+        scope: RUN_TIME
+        type: SECRET
+      - key: STRIPE_MONTHLY_PRICE_ID
+        scope: RUN_TIME
+        type: SECRET
+      - key: STRIPE_YEARLY_PRICE_ID
+        scope: RUN_TIME
+        type: SECRET
+
+      # Firebase (Push Notifications)
+      - key: FIREBASE_CREDENTIALS_JSON
+        scope: RUN_TIME
+        type: SECRET
+
+      # App config
+      - key: ENVIRONMENT
+        scope: RUN_TIME
+        value: production
+      - key: DEBUG
+        scope: RUN_TIME
+        value: "false"
+      - key: ALLOWED_HOSTS
+        scope: RUN_TIME
+        value: api.reelin.ro,reelin.ro
+      - key: CORS_ORIGINS
+        scope: RUN_TIME
+        value: https://admin.reelin.ro,https://reelin.ro
+
+      # Admin user (for initial seed)
+      - key: ADMIN_EMAIL
+        scope: RUN_TIME
+        value: admin@reelin.ro
+      - key: ADMIN_PASSWORD
+        scope: RUN_TIME
+        type: SECRET
+
+  # ---------------------------------------------------------------------------
+  # Frontend Admin Dashboard (Next.js)
+  # ---------------------------------------------------------------------------
+  - name: frontend
+    github:
+      repo: stnservices/reelin-frontend
+      branch: main
+      deploy_on_push: true
+    build_command: npm run build
+    run_command: npm start
+    http_port: 3000
+    instance_size_slug: basic-s  # 1 vCPU, 1 GB RAM, $12/mo (scalable)
+    instance_count: 2
+
+    # Health check
+    health_check:
+      http_path: /
+      initial_delay_seconds: 20
+      period_seconds: 10
+
+    # Routing - default to frontend for non-API routes
+    routes:
+      - path: /
+
+    # Autoscaling
+    autoscaling:
+      min_instance_count: 1
+      max_instance_count: 3
+      metrics:
+        - type: CPU
+          percent: 80
+
+    # Environment variables
+    envs:
+      - key: NEXT_PUBLIC_API_URL
+        scope: BUILD_TIME
+        value: https://api.reelin.ro
+      - key: NEXT_PUBLIC_APP_URL
+        scope: BUILD_TIME
+        value: https://admin.reelin.ro
+      - key: NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
+        scope: BUILD_TIME
+        type: SECRET
+      - key: NODE_ENV
+        scope: RUN_TIME
+        value: production
+
+# =============================================================================
+# WORKERS (Background processes)
+# =============================================================================
+workers:
+  # ---------------------------------------------------------------------------
+  # Celery Worker (Background Tasks)
+  # ---------------------------------------------------------------------------
+  - name: celery-worker
+    github:
+      repo: stnservices/reelin-backend
+      branch: main
+      deploy_on_push: true
+    dockerfile_path: Dockerfile
+    run_command: celery -A app.celery_app worker -l info -c 4 -Q default,leaderboard
+    instance_size_slug: basic-s  # 1 vCPU, 1 GB RAM, $12/mo
+    instance_count: 1
+
+    # Environment (same as backend)
+    envs:
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: ${db.DATABASE_URL}
+      - key: REDIS_URL
+        scope: RUN_TIME
+        value: ${redis.DATABASE_URL}
+      - key: SECRET_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: DO_SPACES_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: DO_SPACES_SECRET
+        scope: RUN_TIME
+        type: SECRET
+      - key: DO_SPACES_BUCKET
+        scope: RUN_TIME
+        value: reelin-prod
+      - key: DO_SPACES_REGION
+        scope: RUN_TIME
+        value: fra1
+      - key: DO_SPACES_ENDPOINT
+        scope: RUN_TIME
+        value: https://fra1.digitaloceanspaces.com
+      - key: FIREBASE_CREDENTIALS_JSON
+        scope: RUN_TIME
+        type: SECRET
+      - key: ENVIRONMENT
+        scope: RUN_TIME
+        value: production
+
+  # ---------------------------------------------------------------------------
+  # Celery Beat (Scheduled Tasks) - Optional
+  # ---------------------------------------------------------------------------
+  # Uncomment if you have scheduled tasks (cron jobs)
+  # - name: celery-beat
+  #   github:
+  #     repo: stnservices/reelin-backend
+  #     branch: main
+  #   dockerfile_path: Dockerfile
+  #   run_command: celery -A app.celery_app beat -l info
+  #   instance_size_slug: basic-xxs  # 1 vCPU, 512 MB RAM, $5/mo
+  #   instance_count: 1
+  #   envs:
+  #     - key: DATABASE_URL
+  #       scope: RUN_TIME
+  #       value: ${db.DATABASE_URL}
+  #     - key: REDIS_URL
+  #       scope: RUN_TIME
+  #       value: ${redis.DATABASE_URL}
+
+# =============================================================================
+# JOBS (One-time or on-deploy tasks)
+# =============================================================================
+jobs:
+  # ---------------------------------------------------------------------------
+  # Database Migration Job (runs on every deploy)
+  # ---------------------------------------------------------------------------
+  - name: db-migrate
+    github:
+      repo: stnservices/reelin-backend
+      branch: main
+    dockerfile_path: Dockerfile
+    run_command: alembic upgrade head
+    instance_size_slug: basic-xxs
+    instance_count: 1
+    kind: PRE_DEPLOY  # Run before new version goes live
+
+    envs:
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: ${db.DATABASE_URL}
+
+  # ---------------------------------------------------------------------------
+  # Production Seed Job (run manually once after first deploy)
+  # ---------------------------------------------------------------------------
+  # Run via: doctl apps create-deployment <app-id> --run-job seed-production
+  - name: seed-production
+    github:
+      repo: stnservices/reelin-backend
+      branch: main
+    dockerfile_path: Dockerfile
+    run_command: python -m scripts.seed_production
+    instance_size_slug: basic-xxs
+    instance_count: 1
+    kind: FAILED_DEPLOY  # Won't run automatically, trigger manually
+
+    envs:
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: ${db.DATABASE_URL}
+      - key: ADMIN_EMAIL
+        scope: RUN_TIME
+        value: admin@reelin.ro
+      - key: ADMIN_PASSWORD
+        scope: RUN_TIME
+        type: SECRET
+
+# =============================================================================
+# DATABASES (Managed)
+# =============================================================================
+databases:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL
+  # ---------------------------------------------------------------------------
+  - name: db
+    engine: PG
+    version: "16"
+    size: db-s-1vcpu-2gb  # 2 GB RAM, $30/mo
+    num_nodes: 1
+    production: true
+
+  # ---------------------------------------------------------------------------
+  # Valkey (Redis-compatible)
+  # ---------------------------------------------------------------------------
+  - name: redis
+    engine: VALKEY
+    version: "8"
+    size: db-s-1vcpu-1gb  # 1 GB RAM, $15/mo
+    num_nodes: 1
+    production: true
+
+# =============================================================================
+# ALERTS (Optional)
+# =============================================================================
+alerts:
+  - rule: DEPLOYMENT_FAILED
+  - rule: DOMAIN_FAILED
+  - rule: DEPLOYMENT_LIVE
