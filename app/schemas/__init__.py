@@ -29,6 +29,28 @@ from app.schemas.achievement import (
     AchievementUnlockNotification,
 )
 
+# Trout Area schemas
+from app.schemas.trout_area import (
+    TAPointsRuleResponse,
+    TAEventSettingsResponse,
+    TALineupResponse,
+    TAMatchResponse,
+    TAGameCardResponse,
+    TAQualifierStandingResponse,
+    TADurationEstimateResponse,
+)
+
+# Trout Shore Fishing schemas
+from app.schemas.trout_shore import (
+    TSFEventSettingsResponse,
+    TSFDayResponse,
+    TSFLegResponse,
+    TSFLineupResponse,
+    TSFLegPositionResponse,
+    TSFDayStandingResponse,
+    TSFFinalStandingResponse,
+)
+
 __all__ = [
     # User
     "UserCreate",
@@ -57,4 +79,20 @@ __all__ = [
     "UserAchievementsListResponse",
     "AchievementGalleryResponse",
     "AchievementUnlockNotification",
+    # Trout Area
+    "TAPointsRuleResponse",
+    "TAEventSettingsResponse",
+    "TALineupResponse",
+    "TAMatchResponse",
+    "TAGameCardResponse",
+    "TAQualifierStandingResponse",
+    "TADurationEstimateResponse",
+    # Trout Shore Fishing
+    "TSFEventSettingsResponse",
+    "TSFDayResponse",
+    "TSFLegResponse",
+    "TSFLineupResponse",
+    "TSFLegPositionResponse",
+    "TSFDayStandingResponse",
+    "TSFFinalStandingResponse",
 ]

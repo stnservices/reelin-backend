@@ -36,6 +36,9 @@ from app.api.v1.forecast import router as forecast_router
 from app.api.v1.analytics import router as analytics_router
 from app.api.v1.recommendations import router as recommendations_router
 from app.api.v1.admin_settings import router as admin_settings_router
+from app.api.v1.admin_organizer_permissions import router as admin_organizer_permissions_router
+from app.api.v1.trout_area import router as trout_area_router
+from app.api.v1.trout_shore import router as trout_shore_router
 
 router = APIRouter()
 
@@ -73,3 +76,6 @@ router.include_router(forecast_router, tags=["Forecast"])
 router.include_router(analytics_router, tags=["Analytics"])
 router.include_router(recommendations_router, tags=["Recommendations"])
 router.include_router(admin_settings_router, prefix="/admin/settings", tags=["Admin Settings"])
+router.include_router(admin_organizer_permissions_router, prefix="/admin/organizer-permissions", tags=["Admin Organizer Permissions"])
+router.include_router(trout_area_router, prefix="/ta", tags=["Trout Area (TA)"])
+router.include_router(trout_shore_router, prefix="/tsf", tags=["Trout Shore Fishing (TSF)"])

@@ -48,6 +48,37 @@ from app.models.recommendation import RecommendationDismissal
 from app.models.app_settings import AppSettings
 from app.models.ai_analysis import CatchAiAnalysis, AiAnalysisStatus
 from app.models.ml_model import MLModel, MLPredictionLog
+from app.models.organizer_permissions import OrganizerEventTypeAccess, NationalEventOrganizer
+
+# Trout Area (TA) models
+from app.models.trout_area import (
+    TAPointsRule,
+    TAEventSettings,
+    TALineup,
+    TAGameCard,
+    TAMatch,
+    TAKnockoutBracket,
+    TAKnockoutMatch,
+    TAQualifierStanding,
+    TAMatchOutcome,
+    TATournamentPhase,
+    TAMatchStatus,
+    TAGameCardStatus,
+)
+
+# Trout Shore Fishing (TSF) models
+from app.models.trout_shore import (
+    TSFEventSettings,
+    TSFDay,
+    TSFLeg,
+    TSFLineup,
+    TSFSectorValidator,
+    TSFLegPosition,
+    TSFDayStanding,
+    TSFFinalStanding,
+    TSFDayStatus,
+    TSFLegStatus,
+)
 
 __all__ = [
     # User
@@ -155,4 +186,31 @@ __all__ = [
     # ML Models
     "MLModel",
     "MLPredictionLog",
+    # Organizer Permissions
+    "OrganizerEventTypeAccess",
+    "NationalEventOrganizer",
+    # Trout Area (TA)
+    "TAPointsRule",
+    "TAEventSettings",
+    "TALineup",
+    "TAGameCard",
+    "TAMatch",
+    "TAKnockoutBracket",
+    "TAKnockoutMatch",
+    "TAQualifierStanding",
+    "TAMatchOutcome",
+    "TATournamentPhase",
+    "TAMatchStatus",
+    "TAGameCardStatus",
+    # Trout Shore Fishing (TSF)
+    "TSFEventSettings",
+    "TSFDay",
+    "TSFLeg",
+    "TSFLineup",
+    "TSFSectorValidator",
+    "TSFLegPosition",
+    "TSFDayStanding",
+    "TSFFinalStanding",
+    "TSFDayStatus",
+    "TSFLegStatus",
 ]
