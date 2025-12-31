@@ -1011,7 +1011,7 @@ async def generate_lineups(
                 seat_b=seat_b,
                 is_ghost_match=is_ghost_match,
                 ghost_side=ghost_side,
-                status=TAMatchStatus.SCHEDULED.value,
+                status=TAMatchStatus.IN_PROGRESS.value,  # TA matches are continuous, no manual start needed
             )
             db.add(ta_match)
             await db.flush()
