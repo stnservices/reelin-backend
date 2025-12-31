@@ -3,22 +3,23 @@ Trout Area (TA) Pairing & Lineup Generation Service.
 
 Supports multiple pairing algorithms for TA competitions:
 
-1. ROUND_ROBIN_FULL - Everyone plays everyone once (N-1 rounds for N participants)
-2. ROUND_ROBIN_HALF - Everyone plays half the field (N/2 rounds)
-3. ROUND_ROBIN_CUSTOM - Specify exact number of rounds (1 to N-1)
+1. ROUND_ROBIN_FULL - Extended format (N legs for N participants) - MORE matches
+2. ROUND_ROBIN_HALF - Standard TA format (N/2 legs) - normal duration
+3. ROUND_ROBIN_CUSTOM - Specify exact number of legs (1 to N)
 4. SIMPLE_PAIRS - Basic n/2 single-leg pairing (fastest, for quick events)
 
 Features:
 - Ghost participant handling for odd numbers
-- No duplicate matches within the specified rounds
-- Fair distribution (everyone plays same number of matches)
+- Adjacent seat matching (1-2, 3-4, 5-6, etc.) - side-by-side matches
+- TA rotation algorithm: odd seat → -2, even seat → +2
+- Special leg at middle with +4 rotation for even seats
 - Visual schedule/map generation
 - Seat rotation patterns between legs
 
-Classic Round-Robin (Circle Method):
-- Fix participant 1 in position
-- Rotate others clockwise each round
-- Creates all unique pairings without duplicates
+TA Rotation Algorithm (from Django production code):
+- Matches are ALWAYS between adjacent seats (side-by-side)
+- Each leg, participants rotate using: odd seat → -2, even seat → +2
+- Special leg at middle (total_legs/2 + 1) where even seats get +4
 """
 
 from dataclasses import dataclass, field
@@ -30,10 +31,10 @@ import json
 
 class PairingAlgorithm(str, Enum):
     """Available pairing algorithms for TA events."""
-    ROUND_ROBIN_FULL = "round_robin_full"      # N-1 rounds, everyone plays everyone
-    ROUND_ROBIN_HALF = "round_robin_half"      # N/2 rounds, everyone plays half
-    ROUND_ROBIN_CUSTOM = "round_robin_custom"  # User-specified number of rounds
-    SIMPLE_PAIRS = "simple_pairs"              # Basic n/2 pairing, single leg
+    ROUND_ROBIN_FULL = "round_robin_full"      # N legs - extended, MORE matches
+    ROUND_ROBIN_HALF = "round_robin_half"      # N/2 legs - standard TA format
+    ROUND_ROBIN_CUSTOM = "round_robin_custom"  # User-specified number of legs
+    SIMPLE_PAIRS = "simple_pairs"              # Single leg pairing
 
 
 @dataclass
@@ -217,16 +218,22 @@ class TAPairingService:
         n = len(self.participants)  # Includes ghost if added
         real_n = len(participants)
 
-        # Calculate number of rounds based on algorithm
+        # Calculate number of legs based on algorithm
+        # FULL = N legs (extended, more matches - rotation continues/repeats)
+        # HALF = N/2 legs (standard TA format)
+        # CUSTOM = user-specified (up to N legs)
+
         if algorithm == PairingAlgorithm.ROUND_ROBIN_FULL:
-            num_rounds = n - 1
+            # Extended: N legs (double the standard, rotation continues)
+            num_rounds = n
         elif algorithm == PairingAlgorithm.ROUND_ROBIN_HALF:
+            # Standard TA: N/2 legs
             num_rounds = n // 2
         elif algorithm == PairingAlgorithm.ROUND_ROBIN_CUSTOM:
             if custom_rounds is None:
                 raise ValueError("custom_rounds required for ROUND_ROBIN_CUSTOM")
-            max_rounds = n - 1
-            num_rounds = min(custom_rounds, max_rounds)
+            # Allow up to N legs for custom
+            num_rounds = min(custom_rounds, n)
         elif algorithm == PairingAlgorithm.SIMPLE_PAIRS:
             num_rounds = 1
         else:
@@ -288,37 +295,51 @@ class TAPairingService:
 
     def _generate_round_robin(self, num_rounds: int) -> list[list[Match]]:
         """
-        Generate round-robin pairings using the Circle Method.
+        Generate round-robin pairings using the TA rotation algorithm.
 
-        Circle Method:
-        1. Arrange participants in two rows
-        2. Fix position 0, rotate others clockwise each round
-        3. Pair top row with bottom row
-
-        Example with 6 participants:
-        Round 1: [1,2,3] vs [6,5,4] → (1,6), (2,5), (3,4)
-        Round 2: [1,6,2] vs [3,4,5] → (1,3), (6,4), (2,5) - rotated
-        ...
+        TA Rotation Algorithm (from Django old code):
+        1. Matches are ALWAYS between adjacent seats: (1,2), (3,4), (5,6), etc.
+        2. Each leg, participants rotate seats using: odd seat → -2, even seat → +2
+        3. Special leg at middle (total_legs/2 + 1) where even seats get +4 instead
+        4. This ensures side-by-side matches while rotating opponents
         """
         n = len(self.participants)
         rounds = []
 
-        # Create rotation list (exclude position 0 which stays fixed)
-        rotation = list(range(n))
+        # sector_draw[seat-1] = draw_number at that seat
+        # Initially: seat 1 has draw 1, seat 2 has draw 2, etc.
+        sector_draw = list(range(1, n + 1))
 
-        for round_num in range(1, num_rounds + 1):
+        # Determine special legs for cycle-breaking
+        # For TA rotation with ±2, cycle length = N / gcd(4, N)
+        # To ensure maximum unique pairings, apply +4 break at cycle boundaries
+        total_legs = num_rounds
+        cycle_length = n // math.gcd(4, n)
+
+        # Apply special +4 rotation at the start of each new cycle
+        special_legs = set()
+        for k in range(1, (total_legs // cycle_length) + 2):
+            special_leg = k * cycle_length + 1
+            if special_leg <= total_legs:
+                special_legs.add(special_leg)
+
+        for leg in range(1, num_rounds + 1):
             round_matches = []
             match_num = 1
 
-            # Split into two halves
-            half = n // 2
-            top_row = rotation[:half]
-            bottom_row = rotation[half:][::-1]  # Reverse bottom row
+            # Create matches by pairing adjacent seats: (1,2), (3,4), etc.
+            for seat_a in range(1, n + 1, 2):
+                seat_b = seat_a + 1
+                if seat_b > n:
+                    break
 
-            # Create matches by pairing top with bottom
-            for i in range(half):
-                p_a = self.participants[top_row[i]]
-                p_b = self.participants[bottom_row[i]]
+                # Get draw numbers at these seats
+                draw_a = sector_draw[seat_a - 1]
+                draw_b = sector_draw[seat_b - 1]
+
+                # Get participants by draw number (draw_number = participant id, 1-indexed)
+                p_a = self.participants[draw_a - 1]
+                p_b = self.participants[draw_b - 1]
 
                 # Check for ghost match
                 is_ghost = p_a.is_ghost or p_b.is_ghost
@@ -329,10 +350,10 @@ class TAPairingService:
                     ghost_side = 'B'
 
                 match = Match(
-                    round_number=round_num,
+                    round_number=leg,
                     match_number=match_num,
-                    seat_a=top_row[i] + 1,  # 1-based seats
-                    seat_b=bottom_row[i] + 1,
+                    seat_a=seat_a,
+                    seat_b=seat_b,
                     participant_a=p_a,
                     participant_b=p_b,
                     is_ghost_match=is_ghost,
@@ -343,8 +364,33 @@ class TAPairingService:
 
             rounds.append(round_matches)
 
-            # Rotate for next round (keep position 0 fixed, rotate rest)
-            rotation = [rotation[0]] + [rotation[-1]] + rotation[1:-1]
+            # Rotate seat assignments for next leg (unless last leg)
+            if leg < num_rounds:
+                next_leg = leg + 1
+                new_sector_draw = sector_draw.copy()
+
+                for seat in range(1, n + 1):
+                    old_draw = sector_draw[seat - 1]
+
+                    # Special legs: apply +4 to even seats at cycle boundaries
+                    if (next_leg in special_legs) and (seat % 2 == 0):
+                        new_draw = old_draw + 4
+                        if new_draw > n:
+                            new_draw -= n
+                    else:
+                        # Standard rotation: odd seat → -2, even seat → +2
+                        if seat % 2 == 1:  # odd seat
+                            new_draw = old_draw - 2
+                            if new_draw < 1:
+                                new_draw += n
+                        else:  # even seat
+                            new_draw = old_draw + 2
+                            if new_draw > n:
+                                new_draw -= n
+
+                    new_sector_draw[seat - 1] = new_draw
+
+                sector_draw = new_sector_draw
 
         return rounds
 
@@ -380,32 +426,32 @@ class TAPairingService:
         """Get information about available algorithms."""
         return {
             PairingAlgorithm.ROUND_ROBIN_FULL: {
-                "name": "Full Round Robin",
-                "description": "Everyone plays everyone exactly once",
-                "formula": "N-1 rounds for N participants",
-                "use_case": "Full tournament, fair complete coverage",
-                "duration_example": "20 participants = 19 rounds × 15min = ~5 hours",
+                "name": "Extended TA (Full)",
+                "description": "Extended TA format - N legs for MORE matches (rotation continues)",
+                "formula": "N legs for N participants",
+                "use_case": "Longer events, organizers want more matches per participant",
+                "duration_example": "20 participants = 20 legs × 15min = ~5 hours",
             },
             PairingAlgorithm.ROUND_ROBIN_HALF: {
-                "name": "Half Round Robin",
-                "description": "Everyone plays half the field",
-                "formula": "N/2 rounds for N participants",
-                "use_case": "Shorter events, still fair distribution",
-                "duration_example": "20 participants = 10 rounds × 15min = ~2.5 hours",
+                "name": "Standard TA",
+                "description": "Standard TA format - N/2 legs (normal duration)",
+                "formula": "N/2 legs for N participants",
+                "use_case": "Standard TA tournament format",
+                "duration_example": "20 participants = 10 legs × 15min = ~2.5 hours",
             },
             PairingAlgorithm.ROUND_ROBIN_CUSTOM: {
-                "name": "Custom Round Robin",
-                "description": "Specify exact number of rounds (1 to N-1)",
-                "formula": "User-defined rounds",
-                "use_case": "Time-constrained events, flexible scheduling",
-                "duration_example": "20 participants, 5 rounds = 5 × 15min = ~1.25 hours",
+                "name": "Custom TA",
+                "description": "Specify exact number of legs (1 to N)",
+                "formula": "User-defined legs",
+                "use_case": "Flexible scheduling for any duration",
+                "duration_example": "20 participants, 5 legs = 5 × 15min = ~1.25 hours",
             },
             PairingAlgorithm.SIMPLE_PAIRS: {
                 "name": "Simple Pairs",
-                "description": "Single round, basic n/2 pairing",
-                "formula": "1 round only",
-                "use_case": "Very quick events, single elimination style",
-                "duration_example": "20 participants = 1 round × 15min = 15min",
+                "description": "Single leg, basic pairing",
+                "formula": "1 leg only",
+                "use_case": "Very quick events, single round",
+                "duration_example": "20 participants = 1 leg × 15min = 15min",
             },
         }
 
@@ -418,25 +464,27 @@ class TAPairingService:
         custom_rounds: Optional[int] = None,
     ) -> dict:
         """Calculate estimated event duration."""
-        # Adjust for odd number
+        # Adjust for odd number (add ghost)
         n = num_participants if num_participants % 2 == 0 else num_participants + 1
 
         if algorithm == PairingAlgorithm.ROUND_ROBIN_FULL:
-            num_rounds = n - 1
+            # Extended: N legs (more matches)
+            num_legs = n
         elif algorithm == PairingAlgorithm.ROUND_ROBIN_HALF:
-            num_rounds = n // 2
+            # Standard TA: N/2 legs
+            num_legs = n // 2
         elif algorithm == PairingAlgorithm.ROUND_ROBIN_CUSTOM:
-            num_rounds = min(custom_rounds or 1, n - 1)
+            num_legs = min(custom_rounds or 1, n)
         else:
-            num_rounds = 1
+            num_legs = 1
 
-        matches_per_round = n // 2
-        total_matches = num_rounds * matches_per_round
+        matches_per_leg = n // 2
+        total_matches = num_legs * matches_per_leg
 
-        # Each round runs in parallel, so duration is per-round, not per-match
-        round_duration = match_duration_minutes
-        total_match_time = num_rounds * round_duration
-        total_break_time = (num_rounds - 1) * break_between_rounds_minutes if num_rounds > 1 else 0
+        # Each leg runs in parallel, so duration is per-leg, not per-match
+        leg_duration = match_duration_minutes
+        total_match_time = num_legs * leg_duration
+        total_break_time = (num_legs - 1) * break_between_rounds_minutes if num_legs > 1 else 0
         total_duration = total_match_time + total_break_time
 
         return {
@@ -444,16 +492,16 @@ class TAPairingService:
             "effective_participants": n,
             "has_ghost": num_participants % 2 == 1,
             "algorithm": algorithm.value,
-            "num_rounds": num_rounds,
-            "matches_per_round": matches_per_round,
+            "num_legs": num_legs,
+            "matches_per_leg": matches_per_leg,
             "total_matches": total_matches,
             "match_duration_minutes": match_duration_minutes,
-            "break_between_rounds_minutes": break_between_rounds_minutes,
+            "break_between_legs_minutes": break_between_rounds_minutes,
             "total_match_time_minutes": total_match_time,
             "total_break_time_minutes": total_break_time,
             "total_duration_minutes": total_duration,
             "total_duration_formatted": f"{total_duration // 60}h {total_duration % 60}min",
-            "matches_per_participant": num_rounds,
+            "matches_per_participant": num_legs,
         }
 
 

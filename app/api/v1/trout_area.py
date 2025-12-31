@@ -38,6 +38,7 @@ from app.dependencies import get_current_user
 from app.core.permissions import OrganizerOrAdmin, EventOwnerOrAdmin
 from app.core.i18n import get_error_message
 from app.core.exceptions import NotFoundError, ValidationError, ConflictError
+from app.services.redis_cache import redis_cache
 
 from app.models.user import UserAccount, UserProfile
 from app.models.event import Event, EventStatus
@@ -905,99 +906,132 @@ async def generate_lineups(
         })
 
     # ========================================================================
-    # Use Django-style TA rotation algorithm for lineup generation
+    # Use TAPairingService with Circle Method for proper round-robin pairings
+    # This works correctly for all N values including N=4
     # ========================================================================
     import random
 
-    # 1. Shuffle participants and assign draw numbers
+    # 1. Shuffle participants for random draw order
     random.shuffle(participants)
 
-    # Add ghost if odd number
-    N = len(participants)
-    has_ghost = N % 2 == 1
+    # 2. Use TAPairingService to generate proper round-robin pairings
+    algorithm = map_pairing_algorithm(data.algorithm)
+    pairing_service = TAPairingService()
+    pairing_result = pairing_service.generate_pairing(
+        participants=participants,
+        algorithm=algorithm,
+        custom_rounds=data.custom_legs,
+    )
+
+    # Get values from pairing result
+    N = pairing_result.total_participants
+    has_ghost = pairing_result.has_ghost
+    total_legs = pairing_result.total_rounds
+    matches_per_leg = pairing_result.matches_per_round
+
+    # Build participant lookup by name for later use
+    # The pairing service assigns IDs 1-N to participants
+    participant_lookup = {}
+    for i, p in enumerate(participants):
+        p["draw_number"] = i + 1
+        p["is_ghost"] = False
+        participant_lookup[f"P{i + 1}"] = p
+        # Use the name from pairing service's participant list
+        if i < len(pairing_service.participants):
+            participant_lookup[pairing_service.participants[i].name] = p
+
+    # Add ghost to lookup if present
     if has_ghost:
-        participants.append({
+        ghost_participant = {
             "user_id": None,
             "enrollment_id": None,
             "name": "GHOST",
             "is_ghost": True,
-        })
-        N += 1
-
-    # Mark non-ghost participants
-    for p in participants:
-        if "is_ghost" not in p:
-            p["is_ghost"] = False
-
-    # Assign draw numbers (1 to N)
-    for i, p in enumerate(participants, start=1):
-        p["draw_number"] = i
+            "draw_number": N,
+        }
+        participant_lookup["GHOST"] = ghost_participant
+        participant_lookup[f"GHOST-{N}"] = ghost_participant
+        # Also add by pairing service's ghost name
+        if pairing_service.ghost:
+            participant_lookup[pairing_service.ghost.name] = ghost_participant
 
     # Update enrollments with draw numbers
     for p in participants:
-        if not p["is_ghost"] and p["enrollment_id"]:
+        if p.get("enrollment_id"):
             for enrollment in enrollments:
                 if enrollment.id == p["enrollment_id"]:
                     enrollment.draw_number = p["draw_number"]
                     break
 
-    # 2. Calculate number of legs based on algorithm
-    algorithm = map_pairing_algorithm(data.algorithm)
-    if algorithm == PairingAlgorithm.ROUND_ROBIN_FULL:
-        total_legs = N - 1
-    elif algorithm == PairingAlgorithm.ROUND_ROBIN_HALF:
-        total_legs = N // 2
-    elif algorithm == PairingAlgorithm.ROUND_ROBIN_CUSTOM:
-        total_legs = min(data.custom_legs or 1, N - 1)
-    else:  # SIMPLE_PAIRS
-        total_legs = 1
-
-    matches_per_leg = N // 2
-
-    # 3. Initialize seat rotation: sector_draw[seat-1] = draw_number at that seat
-    sector_draw = list(range(1, N + 1))
-
-    # 4. Determine special leg (one-time +4 for even seats)
-    special_leg = None
-    if total_legs % 2 == 0:
-        special_leg = (total_legs // 2) + 1
-
-    # 5. Create lineups and matches for each leg
+    # 3. Create lineups and matches from pairing result
     created_lineups = []
 
-    for leg in range(1, total_legs + 1):
-        # Create lineup entries for this leg
-        for seat in range(1, N + 1):
-            draw_num = sector_draw[seat - 1]
-            participant = participants[draw_num - 1]
+    for round_idx, round_matches in enumerate(pairing_result.rounds):
+        leg = round_idx + 1
+
+        # Track seat assignments for this leg (for lineup entries)
+        seat_assignments = {}  # draw_number -> seat_number
+
+        # Process each match in this round
+        for match in round_matches:
+            # Get participant info from lookup
+            p_a_name = match.participant_a.name
+            p_b_name = match.participant_b.name
+            p_a = participant_lookup.get(p_a_name) or participant_lookup.get(repr(match.participant_a))
+            p_b = participant_lookup.get(p_b_name) or participant_lookup.get(repr(match.participant_b))
+
+            if p_a:
+                seat_assignments[p_a.get("draw_number", match.seat_a)] = match.seat_a
+            if p_b:
+                seat_assignments[p_b.get("draw_number", match.seat_b)] = match.seat_b
+
+        # Create lineup entries for all participants in this leg
+        for draw_num in range(1, N + 1):
+            seat_num = seat_assignments.get(draw_num, draw_num)
+
+            # Find participant by draw number
+            participant = None
+            for p in participants:
+                if p.get("draw_number") == draw_num:
+                    participant = p
+                    break
+
+            # Check if this is the ghost
+            is_ghost = participant is None or participant.get("is_ghost", False)
+            if participant is None and has_ghost and draw_num == N:
+                is_ghost = True
 
             lineup = TALineup(
                 event_id=event_id,
                 leg_number=leg,
-                user_id=participant["user_id"],
-                enrollment_id=participant["enrollment_id"],
+                user_id=participant["user_id"] if participant and not is_ghost else None,
+                enrollment_id=participant["enrollment_id"] if participant and not is_ghost else None,
                 draw_number=draw_num,
                 sector=1,
-                seat_number=seat,
-                is_ghost=participant["is_ghost"],
+                seat_number=seat_num,
+                is_ghost=is_ghost,
             )
             db.add(lineup)
             created_lineups.append(lineup)
 
-        # Create matches by pairing adjacent seats: (1,2), (3,4), etc.
-        match_num = 1
-        for i in range(0, N, 2):
-            seat_a = i + 1
-            seat_b = i + 2
+        # Create matches from pairing_result (proper circle method pairings)
+        for match_idx, pairing_match in enumerate(round_matches):
+            match_num = match_idx + 1
 
-            draw_a = sector_draw[seat_a - 1]
-            draw_b = sector_draw[seat_b - 1]
+            # Get participant info from pairing result
+            p_a_name = pairing_match.participant_a.name
+            p_b_name = pairing_match.participant_b.name
+            p_a = participant_lookup.get(p_a_name) or participant_lookup.get(repr(pairing_match.participant_a))
+            p_b = participant_lookup.get(p_b_name) or participant_lookup.get(repr(pairing_match.participant_b))
 
-            p_a = participants[draw_a - 1]
-            p_b = participants[draw_b - 1]
+            # Handle case where participant not found (shouldn't happen)
+            if p_a is None:
+                p_a = {"user_id": None, "is_ghost": pairing_match.participant_a.is_ghost}
+            if p_b is None:
+                p_b = {"user_id": None, "is_ghost": pairing_match.participant_b.is_ghost}
 
-            is_ghost_match = p_a["is_ghost"] or p_b["is_ghost"]
-            ghost_side = "A" if p_a["is_ghost"] else ("B" if p_b["is_ghost"] else None)
+            is_ghost_match = pairing_match.is_ghost_match
+            ghost_side = pairing_match.ghost_side
 
             ta_match = TAMatch(
                 event_id=event_id,
@@ -1005,75 +1039,48 @@ async def generate_lineups(
                 leg_number=leg,
                 round_number=leg,
                 match_number=match_num,
-                competitor_a_id=p_a["user_id"],
-                competitor_b_id=p_b["user_id"],
-                seat_a=seat_a,
-                seat_b=seat_b,
+                competitor_a_id=p_a.get("user_id"),
+                competitor_b_id=p_b.get("user_id"),
+                seat_a=pairing_match.seat_a,
+                seat_b=pairing_match.seat_b,
                 is_ghost_match=is_ghost_match,
                 ghost_side=ghost_side,
-                status=TAMatchStatus.IN_PROGRESS.value,  # TA matches are continuous, no manual start needed
+                status=TAMatchStatus.IN_PROGRESS.value,
             )
             db.add(ta_match)
             await db.flush()
 
             # Create game cards
-            if not p_a["is_ghost"]:
+            if not p_a.get("is_ghost", False) and p_a.get("user_id"):
                 card_a = TAGameCard(
                     event_id=event_id,
                     match_id=ta_match.id,
                     leg_number=leg,
                     user_id=p_a["user_id"],
-                    my_seat=seat_a,
-                    opponent_id=p_b["user_id"],
-                    opponent_seat=seat_b if not p_b["is_ghost"] else None,
-                    is_ghost_opponent=p_b["is_ghost"],
+                    my_seat=pairing_match.seat_a,
+                    opponent_id=p_b.get("user_id"),
+                    opponent_seat=pairing_match.seat_b if not p_b.get("is_ghost", False) else None,
+                    is_ghost_opponent=p_b.get("is_ghost", False),
                     status=TAGameCardStatus.DRAFT.value,
                 )
                 db.add(card_a)
 
-            if not p_b["is_ghost"]:
+            if not p_b.get("is_ghost", False) and p_b.get("user_id"):
                 card_b = TAGameCard(
                     event_id=event_id,
                     match_id=ta_match.id,
                     leg_number=leg,
                     user_id=p_b["user_id"],
-                    my_seat=seat_b,
-                    opponent_id=p_a["user_id"],
-                    opponent_seat=seat_a if not p_a["is_ghost"] else None,
-                    is_ghost_opponent=p_a["is_ghost"],
+                    my_seat=pairing_match.seat_b,
+                    opponent_id=p_a.get("user_id"),
+                    opponent_seat=pairing_match.seat_a if not p_a.get("is_ghost", False) else None,
+                    is_ghost_opponent=p_a.get("is_ghost", False),
                     status=TAGameCardStatus.DRAFT.value,
                 )
                 db.add(card_b)
 
-            match_num += 1
-
-        # 6. Rotate seats for next leg (unless last leg)
-        if leg < total_legs:
-            next_leg = leg + 1
-            for seat in range(1, N + 1):
-                old_draw = sector_draw[seat - 1]
-
-                # Special leg: even seats get +4
-                if special_leg and next_leg == special_leg and seat % 2 == 0:
-                    new_draw = old_draw + 4
-                    if new_draw > N:
-                        new_draw -= N
-                    sector_draw[seat - 1] = new_draw
-                else:
-                    # Normal rotation: odd seats -2, even seats +2
-                    if seat % 2 == 1:
-                        new_draw = old_draw - 2
-                        if new_draw < 1:
-                            new_draw += N
-                        sector_draw[seat - 1] = new_draw
-                    else:
-                        new_draw = old_draw + 2
-                        if new_draw > N:
-                            new_draw -= N
-                        sector_draw[seat - 1] = new_draw
-
-    # Build pairing_result-like object for response
-    real_participants = len(enrollments)
+    # Get real participant count for response
+    real_participants = pairing_result.real_participants
     total_matches = total_legs * matches_per_leg
 
     # Update settings with algorithm and draw info
@@ -1537,7 +1544,7 @@ async def submit_game_card(
     """
     await get_ta_event(event_id, db, request)
 
-    # Get game card
+    # Get game card with row-level lock to prevent concurrent updates
     query = (
         select(TAGameCard)
         .options(
@@ -1548,6 +1555,7 @@ async def submit_game_card(
             TAGameCard.id == card_id,
             TAGameCard.event_id == event_id,
         )
+        .with_for_update(nowait=False)  # Row-level pessimistic lock
     )
     result = await db.execute(query)
     card = result.scalar_one_or_none()
@@ -1609,6 +1617,19 @@ async def submit_game_card(
     await db.commit()
     await db.refresh(card)
 
+    # Broadcast SSE event to notify opponent
+    try:
+        await redis_cache.publish_sse_event(event_id, {
+            "type": "game_card_submitted",
+            "match_id": card.match_id,
+            "leg_number": card.leg_number,
+            "user_id": card.user_id,
+            "opponent_id": card.opponent_id,
+        })
+    except Exception:
+        # Don't fail the request if SSE broadcast fails
+        pass
+
     return {
         "id": card.id,
         "event_id": card.event_id,
@@ -1664,7 +1685,7 @@ async def validate_opponent_card(
     """
     event = await get_ta_event(event_id, db, request)
 
-    # Get the opponent's game card (the one we're validating)
+    # Get the opponent's game card with row-level lock to prevent concurrent updates
     query = (
         select(TAGameCard)
         .options(
@@ -1676,6 +1697,7 @@ async def validate_opponent_card(
             TAGameCard.id == card_id,
             TAGameCard.event_id == event_id,
         )
+        .with_for_update(nowait=False)  # Row-level pessimistic lock
     )
     result = await db.execute(query)
     opponent_card = result.scalar_one_or_none()
@@ -1766,6 +1788,21 @@ async def validate_opponent_card(
 
     await db.commit()
     await db.refresh(opponent_card)
+
+    # Broadcast SSE event to notify the card owner (whose card was validated)
+    try:
+        await redis_cache.publish_sse_event(event_id, {
+            "type": "game_card_validated",
+            "match_id": opponent_card.match_id,
+            "leg_number": opponent_card.leg_number,
+            "card_id": opponent_card.id,
+            "user_id": opponent_card.user_id,
+            "validated_by": current_user.id,
+            "is_disputed": opponent_card.is_disputed,
+        })
+    except Exception:
+        # Don't fail the request if SSE broadcast fails
+        pass
 
     return {
         "id": opponent_card.id,
