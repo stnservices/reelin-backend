@@ -334,12 +334,12 @@ class TAMatchResponse(TAMatchBase):
     player_b_id: Optional[int]
     seat_a: int
     seat_b: int
-    player_a_catches: int
-    player_b_catches: int
-    player_a_points: float
-    player_b_points: float
-    player_a_outcome: Optional[TAMatchOutcomeAPI]
-    player_b_outcome: Optional[TAMatchOutcomeAPI]
+    player_a_catches: Optional[int] = None
+    player_b_catches: Optional[int] = None
+    player_a_points: Optional[float] = None
+    player_b_points: Optional[float] = None
+    player_a_outcome: Optional[TAMatchOutcomeAPI] = None
+    player_b_outcome: Optional[TAMatchOutcomeAPI] = None
     status: TAMatchStatusAPI
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
