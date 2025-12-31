@@ -2543,19 +2543,37 @@ async def export_lineups_excel(
     ws_lineup = wb.active
     ws_lineup.title = "Lineup"
 
-    # Header row: "Leg", then seats
+    # Header row: "Leg", then seats, then "Sum"
     ws_lineup.cell(row=1, column=1, value="Leg").font = bold_font
     for col_idx, seat_num in enumerate(distinct_seats, start=2):
         ws_lineup.cell(row=1, column=col_idx, value=f"#S{seat_num:02d}").font = bold_font
+    sum_col = len(distinct_seats) + 2
+    ws_lineup.cell(row=1, column=sum_col, value="Sum").font = bold_font
 
-    # Data rows: one per leg
+    # Data rows: one per leg, with row sum
+    col_sums = {seat: 0 for seat in distinct_seats}
     for row_idx, leg_num in enumerate(distinct_legs, start=2):
         ws_lineup.cell(row=row_idx, column=1, value=leg_num)
+        row_sum = 0
         for col_idx, seat_num in enumerate(distinct_seats, start=2):
             draw_val = seat_draw.get(leg_num, {}).get(seat_num, "")
             cell = ws_lineup.cell(row=row_idx, column=col_idx, value=draw_val)
             if ghost_map.get((leg_num, seat_num), False):
                 cell.fill = ghost_fill
+            # Add to sums (only if numeric)
+            if isinstance(draw_val, (int, float)):
+                row_sum += draw_val
+                col_sums[seat_num] += draw_val
+        # Row sum cell
+        sum_cell = ws_lineup.cell(row=row_idx, column=sum_col, value=row_sum)
+        sum_cell.font = bold_font
+
+    # Column sums row at the bottom
+    sum_row = len(distinct_legs) + 2
+    ws_lineup.cell(row=sum_row, column=1, value="Sum").font = bold_font
+    for col_idx, seat_num in enumerate(distinct_seats, start=2):
+        sum_cell = ws_lineup.cell(row=sum_row, column=col_idx, value=col_sums[seat_num])
+        sum_cell.font = bold_font
 
     # ===================== SHEET #2: User Seat Rotation =====================
     ws_rotation = wb.create_sheet(title="User Seat Rotation")
@@ -2580,19 +2598,37 @@ async def export_lineups_excel(
     # ===================== SHEET #3: Seat-Leg Pivot (Seats x Legs) =====================
     ws_pivot = wb.create_sheet(title="Seat-Leg Pivot")
 
-    # Header: "Seat", then Leg columns
+    # Header: "Seat", then Leg columns, then "Sum"
     ws_pivot.cell(row=1, column=1, value="Seat").font = bold_font
     for col_idx, leg_num in enumerate(distinct_legs, start=2):
         ws_pivot.cell(row=1, column=col_idx, value=f"Leg {leg_num}").font = bold_font
+    pivot_sum_col = len(distinct_legs) + 2
+    ws_pivot.cell(row=1, column=pivot_sum_col, value="Sum").font = bold_font
 
-    # Data rows: one per seat
+    # Data rows: one per seat, with row sum
+    pivot_col_sums = {leg: 0 for leg in distinct_legs}
     for row_idx, seat_num in enumerate(distinct_seats, start=2):
         ws_pivot.cell(row=row_idx, column=1, value=f"Seat {seat_num}")
+        row_sum = 0
         for col_idx, leg_num in enumerate(distinct_legs, start=2):
             draw_val = seat_draw.get(leg_num, {}).get(seat_num, "")
             cell = ws_pivot.cell(row=row_idx, column=col_idx, value=draw_val)
             if ghost_map.get((leg_num, seat_num), False):
                 cell.fill = ghost_fill
+            # Add to sums (only if numeric)
+            if isinstance(draw_val, (int, float)):
+                row_sum += draw_val
+                pivot_col_sums[leg_num] += draw_val
+        # Row sum cell
+        sum_cell = ws_pivot.cell(row=row_idx, column=pivot_sum_col, value=row_sum)
+        sum_cell.font = bold_font
+
+    # Column sums row at the bottom
+    pivot_sum_row = len(distinct_seats) + 2
+    ws_pivot.cell(row=pivot_sum_row, column=1, value="Sum").font = bold_font
+    for col_idx, leg_num in enumerate(distinct_legs, start=2):
+        sum_cell = ws_pivot.cell(row=pivot_sum_row, column=col_idx, value=pivot_col_sums[leg_num])
+        sum_cell.font = bold_font
 
     # Save to BytesIO and return
     output = BytesIO()
