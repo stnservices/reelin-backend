@@ -1276,6 +1276,14 @@ async def get_match(
     # Build game cards response (new per-user, per-leg structure)
     game_cards = []
     for card in match.game_cards:
+        # Get points from match based on which player the card owner is
+        my_points = None
+        if card.is_validated:
+            if card.user_id == match.competitor_a_id:
+                my_points = float(match.competitor_a_points) if match.competitor_a_points else None
+            elif card.user_id == match.competitor_b_id:
+                my_points = float(match.competitor_b_points) if match.competitor_b_points else None
+
         game_cards.append(TAGameCardResponse(
             id=card.id,
             event_id=card.event_id,
@@ -1299,6 +1307,7 @@ async def get_match(
             submitted_at=card.submitted_at,
             created_at=card.created_at,
             updated_at=card.updated_at,
+            my_points=my_points,
             user_name=card.user.profile.full_name if card.user and card.user.profile else None,
             user_avatar=card.user.effective_avatar_url if card.user else None,
             opponent_name=card.opponent.profile.full_name if card.opponent and card.opponent.profile else None,
@@ -1465,6 +1474,7 @@ async def get_my_game_cards(
         .options(
             selectinload(TAGameCard.user).selectinload(UserAccount.profile),
             selectinload(TAGameCard.opponent).selectinload(UserAccount.profile),
+            selectinload(TAGameCard.match),  # Load match to get points
         )
         .where(
             TAGameCard.event_id == event_id,
@@ -1484,6 +1494,14 @@ async def get_my_game_cards(
 
     items = []
     for card in cards:
+        # Get points from match based on which player the card owner is
+        my_points = None
+        if card.match and card.is_validated:
+            if card.user_id == card.match.competitor_a_id:
+                my_points = float(card.match.competitor_a_points) if card.match.competitor_a_points else None
+            elif card.user_id == card.match.competitor_b_id:
+                my_points = float(card.match.competitor_b_points) if card.match.competitor_b_points else None
+
         items.append(TAGameCardResponse(
             id=card.id,
             event_id=card.event_id,
@@ -1507,6 +1525,7 @@ async def get_my_game_cards(
             submitted_at=card.submitted_at,
             created_at=card.created_at,
             updated_at=card.updated_at,
+            my_points=my_points,
             user_name=card.user.profile.full_name if card.user and card.user.profile else None,
             user_avatar=card.user.effective_avatar_url if card.user else None,
             opponent_name=card.opponent.profile.full_name if card.opponent and card.opponent.profile else None,
@@ -1888,6 +1907,7 @@ async def get_user_game_cards(
         .options(
             selectinload(TAGameCard.user).selectinload(UserAccount.profile),
             selectinload(TAGameCard.opponent).selectinload(UserAccount.profile),
+            selectinload(TAGameCard.match),  # Load match to get points
         )
         .where(
             TAGameCard.event_id == event_id,
@@ -1907,6 +1927,14 @@ async def get_user_game_cards(
 
     items = []
     for card in cards:
+        # Get points from match based on which player the card owner is
+        my_points = None
+        if card.match and card.is_validated:
+            if card.user_id == card.match.competitor_a_id:
+                my_points = float(card.match.competitor_a_points) if card.match.competitor_a_points else None
+            elif card.user_id == card.match.competitor_b_id:
+                my_points = float(card.match.competitor_b_points) if card.match.competitor_b_points else None
+
         items.append(TAGameCardResponse(
             id=card.id,
             event_id=card.event_id,
@@ -1930,6 +1958,7 @@ async def get_user_game_cards(
             submitted_at=card.submitted_at,
             created_at=card.created_at,
             updated_at=card.updated_at,
+            my_points=my_points,
             user_name=card.user.profile.full_name if card.user and card.user.profile else None,
             user_avatar=card.user.effective_avatar_url if card.user else None,
             opponent_name=card.opponent.profile.full_name if card.opponent and card.opponent.profile else None,

@@ -423,6 +423,9 @@ class TAGameCardResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    # Points earned (from event point config)
+    my_points: Optional[float] = None
+
     # Nested user info
     user_name: Optional[str] = None
     user_avatar: Optional[str] = None
