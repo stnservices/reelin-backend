@@ -63,6 +63,13 @@ class UserAccount(Base):
         """Check if user has a password set (not social-only account)."""
         return self.password_hash is not None
 
+    @property
+    def effective_avatar_url(self) -> Optional[str]:
+        """Get the user's avatar URL, preferring profile picture over OAuth avatar."""
+        if self.profile and self.profile.profile_picture_url:
+            return self.profile.profile_picture_url
+        return self.avatar_url
+
     def __repr__(self) -> str:
         return f"<UserAccount(id={self.id}, email={self.email})>"
 

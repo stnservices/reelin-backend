@@ -503,8 +503,8 @@ async def get_event_schedule(
             created_at=match.created_at,
             player_a_name=match.competitor_a.profile.full_name if match.competitor_a and match.competitor_a.profile else None,
             player_b_name=match.competitor_b.profile.full_name if match.competitor_b and match.competitor_b.profile else None,
-            player_a_avatar=match.competitor_a.avatar_url if match.competitor_a else None,
-            player_b_avatar=match.competitor_b.avatar_url if match.competitor_b else None,
+            player_a_avatar=match.competitor_a.effective_avatar_url if match.competitor_a else None,
+            player_b_avatar=match.competitor_b.effective_avatar_url if match.competitor_b else None,
         )
         legs_dict[leg_num].append(match_data)
 
@@ -613,8 +613,8 @@ async def get_my_current_match(
         created_at=match.created_at,
         player_a_name=match.competitor_a.profile.full_name if match.competitor_a and match.competitor_a.profile else None,
         player_b_name=match.competitor_b.profile.full_name if match.competitor_b and match.competitor_b.profile else None,
-        player_a_avatar=match.competitor_a.avatar_url if match.competitor_a else None,
-        player_b_avatar=match.competitor_b.avatar_url if match.competitor_b else None,
+        player_a_avatar=match.competitor_a.effective_avatar_url if match.competitor_a else None,
+        player_b_avatar=match.competitor_b.effective_avatar_url if match.competitor_b else None,
     )
 
 
@@ -668,7 +668,7 @@ async def list_lineups(
 
         if lineup.user and lineup.user.profile:
             item["user_name"] = lineup.user.profile.full_name
-            item["user_avatar"] = lineup.user.avatar_url
+            item["user_avatar"] = lineup.user.effective_avatar_url
 
         items.append(item)
 
@@ -1199,13 +1199,13 @@ async def list_matches(
         player_a_avatar = None
         if match.competitor_a and match.competitor_a.profile:
             player_a_name = match.competitor_a.profile.full_name
-            player_a_avatar = match.competitor_a.avatar_url
+            player_a_avatar = match.competitor_a.effective_avatar_url
 
         player_b_name = None
         player_b_avatar = None
         if match.competitor_b and match.competitor_b.profile:
             player_b_name = match.competitor_b.profile.full_name
-            player_b_avatar = match.competitor_b.avatar_url
+            player_b_avatar = match.competitor_b.effective_avatar_url
 
         item = TAMatchResponse(
             id=match.id,
@@ -1300,8 +1300,9 @@ async def get_match(
             created_at=card.created_at,
             updated_at=card.updated_at,
             user_name=card.user.profile.full_name if card.user and card.user.profile else None,
-            user_avatar=card.user.avatar_url if card.user else None,
+            user_avatar=card.user.effective_avatar_url if card.user else None,
             opponent_name=card.opponent.profile.full_name if card.opponent and card.opponent.profile else None,
+            opponent_avatar=card.opponent.effective_avatar_url if card.opponent else None,
         ))
 
     return {
@@ -1507,8 +1508,9 @@ async def get_my_game_cards(
             created_at=card.created_at,
             updated_at=card.updated_at,
             user_name=card.user.profile.full_name if card.user and card.user.profile else None,
-            user_avatar=card.user.avatar_url if card.user else None,
+            user_avatar=card.user.effective_avatar_url if card.user else None,
             opponent_name=card.opponent.profile.full_name if card.opponent and card.opponent.profile else None,
+            opponent_avatar=card.opponent.effective_avatar_url if card.opponent else None,
         ))
 
     return {
@@ -1654,7 +1656,7 @@ async def submit_game_card(
         "created_at": card.created_at,
         "updated_at": card.updated_at,
         "user_name": card.user.profile.full_name if card.user and card.user.profile else None,
-        "user_avatar": card.user.avatar_url if card.user else None,
+        "user_avatar": card.user.effective_avatar_url if card.user else None,
         "opponent_name": card.opponent.profile.full_name if card.opponent and card.opponent.profile else None,
     }
 
@@ -1828,7 +1830,7 @@ async def validate_opponent_card(
         "created_at": opponent_card.created_at,
         "updated_at": opponent_card.updated_at,
         "user_name": opponent_card.user.profile.full_name if opponent_card.user and opponent_card.user.profile else None,
-        "user_avatar": opponent_card.user.avatar_url if opponent_card.user else None,
+        "user_avatar": opponent_card.user.effective_avatar_url if opponent_card.user else None,
         "opponent_name": opponent_card.opponent.profile.full_name if opponent_card.opponent and opponent_card.opponent.profile else None,
     }
 
@@ -1929,8 +1931,9 @@ async def get_user_game_cards(
             created_at=card.created_at,
             updated_at=card.updated_at,
             user_name=card.user.profile.full_name if card.user and card.user.profile else None,
-            user_avatar=card.user.avatar_url if card.user else None,
+            user_avatar=card.user.effective_avatar_url if card.user else None,
             opponent_name=card.opponent.profile.full_name if card.opponent and card.opponent.profile else None,
+            opponent_avatar=card.opponent.effective_avatar_url if card.opponent else None,
         ))
 
     return {
@@ -2091,7 +2094,7 @@ async def admin_update_game_card(
         "created_at": card.created_at,
         "updated_at": card.updated_at,
         "user_name": card.user.profile.full_name if card.user and card.user.profile else None,
-        "user_avatar": card.user.avatar_url if card.user else None,
+        "user_avatar": card.user.effective_avatar_url if card.user else None,
         "opponent_name": card.opponent.profile.full_name if card.opponent and card.opponent.profile else None,
     }
 
@@ -2257,7 +2260,7 @@ async def get_standings(
             losses=standing.total_losses,
             updated_at=standing.updated_at,
             user_name=standing.user.profile.full_name if standing.user and standing.user.profile else None,
-            user_avatar=standing.user.avatar_url if standing.user else None,
+            user_avatar=standing.user.effective_avatar_url if standing.user else None,
         )
         items.append(item)
 

@@ -427,6 +427,7 @@ class TAGameCardResponse(BaseModel):
     user_name: Optional[str] = None
     user_avatar: Optional[str] = None
     opponent_name: Optional[str] = None
+    opponent_avatar: Optional[str] = None
 
 
 class TAGameCardSubmitRequest(BaseModel):
