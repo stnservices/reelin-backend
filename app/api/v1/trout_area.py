@@ -1163,6 +1163,10 @@ async def list_matches(
 
     query = (
         select(TAMatch)
+        .options(
+            selectinload(TAMatch.competitor_a).selectinload(UserAccount.profile),
+            selectinload(TAMatch.competitor_b).selectinload(UserAccount.profile),
+        )
         .where(TAMatch.event_id == event_id)
     )
 
@@ -1183,6 +1187,19 @@ async def list_matches(
     by_leg: dict[int, list] = {}
 
     for match in matches:
+        # Get player names from loaded relationships
+        player_a_name = None
+        player_a_avatar = None
+        if match.competitor_a and match.competitor_a.profile:
+            player_a_name = match.competitor_a.profile.full_name
+            player_a_avatar = match.competitor_a.avatar_url
+
+        player_b_name = None
+        player_b_avatar = None
+        if match.competitor_b and match.competitor_b.profile:
+            player_b_name = match.competitor_b.profile.full_name
+            player_b_avatar = match.competitor_b.avatar_url
+
         item = TAMatchResponse(
             id=match.id,
             event_id=match.event_id,
@@ -1203,6 +1220,10 @@ async def list_matches(
             started_at=match.started_at,
             completed_at=match.completed_at,
             created_at=match.created_at,
+            player_a_name=player_a_name,
+            player_b_name=player_b_name,
+            player_a_avatar=player_a_avatar,
+            player_b_avatar=player_b_avatar,
         )
         items.append(item)
 
