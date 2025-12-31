@@ -233,32 +233,44 @@ class TARankingService:
         previous_rank = standing.rank if standing else None
 
         if standing is None:
+            # Need to get enrollment_id
+            from app.models.event import EventEnrollment
+            enrollment_query = select(EventEnrollment).where(
+                EventEnrollment.event_id == event_id,
+                EventEnrollment.user_id == user_id,
+                EventEnrollment.status == "approved",
+            )
+            enr_result = await self.db.execute(enrollment_query)
+            enrollment = enr_result.scalar_one_or_none()
+            if not enrollment:
+                return None  # No enrollment
+
             # Create new standing
             standing = TAQualifierStanding(
                 event_id=event_id,
                 user_id=user_id,
+                enrollment_id=enrollment.id,
                 rank=0,  # Will be calculated
                 total_points=points,
-                total_catches=catches,
-                total_length=0.0,
-                matches_played=1,
-                victories=1 if outcome == TAMatchOutcome.VICTORY else 0,
-                ties=1 if outcome in [TAMatchOutcome.TIE_WITH_FISH, TAMatchOutcome.TIE_NO_FISH] else 0,
-                losses=1 if outcome in [TAMatchOutcome.LOSS_WITH_FISH, TAMatchOutcome.LOSS_NO_FISH] else 0,
+                total_fish_caught=catches,
+                total_matches=1,
+                total_victories=1 if outcome == TAMatchOutcome.VICTORY else 0,
+                total_ties=1 if outcome in [TAMatchOutcome.TIE_WITH_FISH, TAMatchOutcome.TIE_NO_FISH] else 0,
+                total_losses=1 if outcome in [TAMatchOutcome.LOSS_WITH_FISH, TAMatchOutcome.LOSS_NO_FISH] else 0,
             )
             self.db.add(standing)
         else:
             # Update existing
             standing.total_points += points
-            standing.total_catches += catches
-            standing.matches_played += 1
+            standing.total_fish_caught += catches
+            standing.total_matches += 1
 
             if outcome == TAMatchOutcome.VICTORY:
-                standing.victories += 1
+                standing.total_victories += 1
             elif outcome in [TAMatchOutcome.TIE_WITH_FISH, TAMatchOutcome.TIE_NO_FISH]:
-                standing.ties += 1
+                standing.total_ties += 1
             else:
-                standing.losses += 1
+                standing.total_losses += 1
 
             standing.updated_at = datetime.now(timezone.utc)
 
@@ -300,8 +312,8 @@ class TARankingService:
             .where(TAQualifierStanding.event_id == event_id)
             .order_by(
                 TAQualifierStanding.total_points.desc(),
-                TAQualifierStanding.victories.desc(),
-                TAQualifierStanding.total_catches.desc(),
+                TAQualifierStanding.total_victories.desc(),
+                TAQualifierStanding.total_fish_caught.desc(),
             )
         )
         result = await self.db.execute(query)

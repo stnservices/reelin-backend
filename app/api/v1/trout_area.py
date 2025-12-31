@@ -2113,6 +2113,16 @@ async def recalculate_standings(
     result = await db.execute(matches_query)
     matches = result.scalars().all()
 
+    # Get user->enrollment mapping
+    from app.models.event import EventEnrollment
+    enrollments_query = select(EventEnrollment).where(
+        EventEnrollment.event_id == event_id,
+        EventEnrollment.status == "approved",
+    )
+    result = await db.execute(enrollments_query)
+    enrollments = result.scalars().all()
+    user_enrollment_map = {e.user_id: e.id for e in enrollments}
+
     # Clear existing standings
     await db.execute(
         TAQualifierStanding.__table__.delete().where(TAQualifierStanding.event_id == event_id)
@@ -2129,57 +2139,61 @@ async def recalculate_standings(
             if match.competitor_a_id not in user_stats:
                 user_stats[match.competitor_a_id] = {
                     "total_points": Decimal("0"),
-                    "total_catches": 0,
-                    "matches_played": 0,
-                    "victories": 0,
-                    "ties": 0,
-                    "losses": 0,
+                    "total_fish_caught": 0,
+                    "total_matches": 0,
+                    "total_victories": 0,
+                    "total_ties": 0,
+                    "total_losses": 0,
                 }
             stats = user_stats[match.competitor_a_id]
             stats["total_points"] += match.competitor_a_points or Decimal("0")
-            stats["total_catches"] += match.competitor_a_catches or 0
-            stats["matches_played"] += 1
+            stats["total_fish_caught"] += match.competitor_a_catches or 0
+            stats["total_matches"] += 1
             if match.competitor_a_outcome_code == "V":
-                stats["victories"] += 1
+                stats["total_victories"] += 1
             elif match.competitor_a_outcome_code in ["T", "T0"]:
-                stats["ties"] += 1
+                stats["total_ties"] += 1
             else:
-                stats["losses"] += 1
+                stats["total_losses"] += 1
 
         if match.competitor_b_id:
             if match.competitor_b_id not in user_stats:
                 user_stats[match.competitor_b_id] = {
                     "total_points": Decimal("0"),
-                    "total_catches": 0,
-                    "matches_played": 0,
-                    "victories": 0,
-                    "ties": 0,
-                    "losses": 0,
+                    "total_fish_caught": 0,
+                    "total_matches": 0,
+                    "total_victories": 0,
+                    "total_ties": 0,
+                    "total_losses": 0,
                 }
             stats = user_stats[match.competitor_b_id]
             stats["total_points"] += match.competitor_b_points or Decimal("0")
-            stats["total_catches"] += match.competitor_b_catches or 0
-            stats["matches_played"] += 1
+            stats["total_fish_caught"] += match.competitor_b_catches or 0
+            stats["total_matches"] += 1
             if match.competitor_b_outcome_code == "V":
-                stats["victories"] += 1
+                stats["total_victories"] += 1
             elif match.competitor_b_outcome_code in ["T", "T0"]:
-                stats["ties"] += 1
+                stats["total_ties"] += 1
             else:
-                stats["losses"] += 1
+                stats["total_losses"] += 1
 
     # Create standing records
     for user_id, stats in user_stats.items():
+        enrollment_id = user_enrollment_map.get(user_id)
+        if not enrollment_id:
+            continue  # Skip users without enrollment
+
         standing = TAQualifierStanding(
             event_id=event_id,
             user_id=user_id,
+            enrollment_id=enrollment_id,
             rank=0,  # Will be calculated
             total_points=stats["total_points"],
-            total_catches=stats["total_catches"],
-            total_length=0.0,
-            matches_played=stats["matches_played"],
-            victories=stats["victories"],
-            ties=stats["ties"],
-            losses=stats["losses"],
+            total_fish_caught=stats["total_fish_caught"],
+            total_matches=stats["total_matches"],
+            total_victories=stats["total_victories"],
+            total_ties=stats["total_ties"],
+            total_losses=stats["total_losses"],
         )
         db.add(standing)
 
@@ -2223,12 +2237,12 @@ async def get_standings(
             user_id=standing.user_id,
             rank=standing.rank,
             total_points=standing.total_points,
-            total_catches=standing.total_catches,
-            total_length=standing.total_length,
-            matches_played=standing.matches_played,
-            victories=standing.victories,
-            ties=standing.ties,
-            losses=standing.losses,
+            total_catches=standing.total_fish_caught,
+            total_length=0.0,  # Not used
+            matches_played=standing.total_matches,
+            victories=standing.total_victories,
+            ties=standing.total_ties,
+            losses=standing.total_losses,
             updated_at=standing.updated_at,
             user_name=standing.user.profile.full_name if standing.user and standing.user.profile else None,
             user_avatar=standing.user.avatar_url if standing.user else None,
