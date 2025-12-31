@@ -1863,7 +1863,19 @@ async def get_user_game_cards(
         is_organizer = "organizer" in user_roles
         is_event_owner = event.created_by_id == current_user.id
 
+        # Also allow if current user is enrolled in the same event (public competition data)
+        is_participant = False
         if not (is_admin or is_organizer or is_event_owner):
+            enrollment_check = await db.execute(
+                select(EventEnrollment.id).where(
+                    EventEnrollment.event_id == event_id,
+                    EventEnrollment.user_id == current_user.id,
+                    EventEnrollment.status == "approved",
+                )
+            )
+            is_participant = enrollment_check.scalar() is not None
+
+        if not (is_admin or is_organizer or is_event_owner or is_participant):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to view other users' game cards",
