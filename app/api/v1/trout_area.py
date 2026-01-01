@@ -2762,6 +2762,257 @@ async def export_lineups_excel(
     )
 
 
+@router.get("/events/{event_id}/matches/export")
+async def export_matches_csv(
+    event_id: int,
+    request: Request,
+    current_user: UserAccount = Depends(EventOwnerOrAdmin()),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Export TA match results to CSV.
+
+    Includes all matches with competitor details, catches, points, and outcomes.
+    Organized by leg and match number.
+    """
+    from fastapi.responses import StreamingResponse
+    from io import StringIO
+    import csv
+
+    event = await get_ta_event(event_id, db, request, require_settings=False)
+    event_name_safe = sanitize_filename(event.name) if event.name else f"Event_{event_id}"
+    start_date_str = event.start_date.strftime("%d%m%Y") if event.start_date else "nodate"
+
+    # Get all matches with competitor details
+    matches_query = (
+        select(TAMatch)
+        .options(
+            selectinload(TAMatch.competitor_a).selectinload(UserAccount.profile),
+            selectinload(TAMatch.competitor_b).selectinload(UserAccount.profile),
+        )
+        .where(TAMatch.event_id == event_id)
+        .order_by(TAMatch.leg_number, TAMatch.match_number)
+    )
+    result = await db.execute(matches_query)
+    matches = result.scalars().all()
+
+    # Create CSV content
+    output = StringIO()
+    writer = csv.writer(output)
+
+    # === SECTION: Event Info ===
+    writer.writerow(["TA Match Results Export"])
+    writer.writerow(["Event:", event.name or f"Event {event_id}"])
+    writer.writerow(["Export Date:", datetime.now().strftime("%Y-%m-%d %H:%M")])
+    writer.writerow([])
+
+    # === SECTION: Match Results ===
+    writer.writerow(["=== MATCH RESULTS ==="])
+    writer.writerow([])
+
+    # Header
+    writer.writerow([
+        "Leg", "Match #", "Phase",
+        "Player A Name", "Player A Draw #", "Player A Catches", "Player A Points", "Player A Outcome",
+        "Player B Name", "Player B Draw #", "Player B Catches", "Player B Points", "Player B Outcome",
+        "Status", "Is Ghost Match", "Completed At"
+    ])
+
+    # Data rows
+    for match in matches:
+        # Get player names
+        player_a_name = ""
+        if match.competitor_a and match.competitor_a.profile:
+            player_a_name = f"{match.competitor_a.profile.last_name} {match.competitor_a.profile.first_name}".strip()
+        elif match.competitor_a:
+            player_a_name = f"User {match.competitor_a_id}"
+
+        player_b_name = ""
+        if match.competitor_b and match.competitor_b.profile:
+            player_b_name = f"{match.competitor_b.profile.last_name} {match.competitor_b.profile.first_name}".strip()
+        elif match.competitor_b:
+            player_b_name = f"User {match.competitor_b_id}"
+
+        # Handle ghost opponents
+        if match.is_ghost_match:
+            if match.ghost_side == "A":
+                player_a_name = "[GHOST]"
+            elif match.ghost_side == "B":
+                player_b_name = "[GHOST]"
+
+        writer.writerow([
+            match.leg_number,
+            match.match_number,
+            match.phase or "qualifier",
+            player_a_name,
+            match.competitor_a_draw_number or "",
+            match.competitor_a_catches if match.competitor_a_catches is not None else "",
+            float(match.competitor_a_points) if match.competitor_a_points is not None else "",
+            match.competitor_a_outcome_code or "",
+            player_b_name,
+            match.competitor_b_draw_number or "",
+            match.competitor_b_catches if match.competitor_b_catches is not None else "",
+            float(match.competitor_b_points) if match.competitor_b_points is not None else "",
+            match.competitor_b_outcome_code or "",
+            match.status or "",
+            "Yes" if match.is_ghost_match else "No",
+            match.completed_at.strftime("%Y-%m-%d %H:%M") if match.completed_at else "",
+        ])
+
+    writer.writerow([])
+
+    # === SECTION: Summary Statistics ===
+    writer.writerow(["=== SUMMARY ==="])
+    writer.writerow([])
+
+    total_matches = len(matches)
+    completed_matches = sum(1 for m in matches if m.status == "completed")
+    ghost_matches = sum(1 for m in matches if m.is_ghost_match)
+
+    writer.writerow(["Total Matches:", total_matches])
+    writer.writerow(["Completed Matches:", completed_matches])
+    writer.writerow(["Ghost Matches:", ghost_matches])
+
+    # Return CSV file
+    output.seek(0)
+    filename = f"{event_name_safe}_{start_date_str}_TA_Matches.csv"
+
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@router.get("/events/{event_id}/game-cards/export")
+async def export_game_cards_csv(
+    event_id: int,
+    request: Request,
+    current_user: UserAccount = Depends(EventOwnerOrAdmin()),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Export TA game cards to CSV.
+
+    Includes all game cards with owner details, catches, validation status,
+    and dispute information.
+    """
+    from fastapi.responses import StreamingResponse
+    from io import StringIO
+    import csv
+
+    event = await get_ta_event(event_id, db, request, require_settings=False)
+    event_name_safe = sanitize_filename(event.name) if event.name else f"Event_{event_id}"
+    start_date_str = event.start_date.strftime("%d%m%Y") if event.start_date else "nodate"
+
+    # Get all game cards with user details
+    cards_query = (
+        select(TAGameCard)
+        .options(
+            selectinload(TAGameCard.user).selectinload(UserAccount.profile),
+            selectinload(TAGameCard.opponent).selectinload(UserAccount.profile),
+        )
+        .where(TAGameCard.event_id == event_id)
+        .order_by(TAGameCard.leg_number, TAGameCard.my_seat)
+    )
+    result = await db.execute(cards_query)
+    cards = result.scalars().all()
+
+    # Create CSV content
+    output = StringIO()
+    writer = csv.writer(output)
+
+    # === SECTION: Event Info ===
+    writer.writerow(["TA Game Cards Export"])
+    writer.writerow(["Event:", event.name or f"Event {event_id}"])
+    writer.writerow(["Export Date:", datetime.now().strftime("%Y-%m-%d %H:%M")])
+    writer.writerow([])
+
+    # === SECTION: Game Cards ===
+    writer.writerow(["=== GAME CARDS ==="])
+    writer.writerow([])
+
+    # Header
+    writer.writerow([
+        "Leg", "Match ID",
+        "Owner Name", "Owner Seat",
+        "My Catches", "Opponent Catches",
+        "Opponent Name", "Opponent Seat",
+        "Is Submitted", "Submitted At",
+        "Is Validated", "Validated At",
+        "I Validated Opponent", "I Validated At",
+        "Status", "Is Disputed", "Dispute Reason",
+        "Is Ghost Opponent"
+    ])
+
+    # Data rows
+    for card in cards:
+        # Get owner name
+        owner_name = ""
+        if card.user and card.user.profile:
+            owner_name = f"{card.user.profile.last_name} {card.user.profile.first_name}".strip()
+        elif card.user:
+            owner_name = f"User {card.user_id}"
+
+        # Get opponent name
+        opponent_name = ""
+        if card.is_ghost_opponent:
+            opponent_name = "[GHOST]"
+        elif card.opponent and card.opponent.profile:
+            opponent_name = f"{card.opponent.profile.last_name} {card.opponent.profile.first_name}".strip()
+        elif card.opponent:
+            opponent_name = f"User {card.opponent_id}"
+
+        writer.writerow([
+            card.leg_number,
+            card.match_id,
+            owner_name,
+            card.my_seat,
+            card.my_catches if card.my_catches is not None else "",
+            card.opponent_catches if card.opponent_catches is not None else "",
+            opponent_name,
+            card.opponent_seat or "",
+            "Yes" if card.is_submitted else "No",
+            card.submitted_at.strftime("%Y-%m-%d %H:%M") if card.submitted_at else "",
+            "Yes" if card.is_validated else "No",
+            card.validated_at.strftime("%Y-%m-%d %H:%M") if card.validated_at else "",
+            "Yes" if card.i_validated_opponent else "No",
+            card.i_validated_at.strftime("%Y-%m-%d %H:%M") if card.i_validated_at else "",
+            card.status or "",
+            "Yes" if card.is_disputed else "No",
+            card.dispute_reason or "",
+            "Yes" if card.is_ghost_opponent else "No",
+        ])
+
+    writer.writerow([])
+
+    # === SECTION: Summary Statistics ===
+    writer.writerow(["=== SUMMARY ==="])
+    writer.writerow([])
+
+    total_cards = len(cards)
+    submitted_cards = sum(1 for c in cards if c.is_submitted)
+    validated_cards = sum(1 for c in cards if c.is_validated)
+    disputed_cards = sum(1 for c in cards if c.is_disputed)
+    ghost_cards = sum(1 for c in cards if c.is_ghost_opponent)
+
+    writer.writerow(["Total Game Cards:", total_cards])
+    writer.writerow(["Submitted Cards:", submitted_cards])
+    writer.writerow(["Validated Cards:", validated_cards])
+    writer.writerow(["Disputed Cards:", disputed_cards])
+    writer.writerow(["Ghost Opponent Cards:", ghost_cards])
+
+    # Return CSV file
+    output.seek(0)
+    filename = f"{event_name_safe}_{start_date_str}_TA_GameCards.csv"
+
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
 @router.post("/duration-estimate", response_model=TADurationEstimateResponse)
 async def estimate_duration(
     data: TADurationEstimateRequest,
