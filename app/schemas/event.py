@@ -254,8 +254,14 @@ class EventCreate(BaseModel):
     @field_validator("end_date")
     @classmethod
     def end_after_start(cls, v: datetime, info) -> datetime:
-        if "start_date" in info.data and v <= info.data["start_date"]:
-            raise ValueError("end_date must be after start_date")
+        if "start_date" in info.data:
+            start = info.data["start_date"]
+            # Normalize timezone awareness for comparison
+            # Strip tzinfo from both to compare naive datetimes
+            v_naive = v.replace(tzinfo=None) if v.tzinfo else v
+            start_naive = start.replace(tzinfo=None) if start.tzinfo else start
+            if v_naive <= start_naive:
+                raise ValueError("end_date must be after start_date")
         return v
 
 
@@ -462,3 +468,26 @@ class EventListResponse(BaseModel):
     is_tournament_event: bool = False
     enrolled_count: Optional[int] = None
     max_participants: Optional[int] = None
+
+
+class PublishReadinessResponse(BaseModel):
+    """Response schema for event publish readiness validation.
+
+    Returns whether an event is ready to be published along with
+    details about what validations passed or failed.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    is_ready: bool = Field(
+        ...,
+        description="True if all validations pass and event can be published"
+    )
+    missing_items: List[str] = Field(
+        default_factory=list,
+        description="List of i18n message keys for failed validations"
+    )
+    checks: Dict[str, bool] = Field(
+        default_factory=dict,
+        description="Individual check results (check_name -> pass/fail)"
+    )
