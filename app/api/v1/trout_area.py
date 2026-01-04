@@ -2916,7 +2916,7 @@ async def recalculate_standings(
     await ranking_service._recalculate_ranks(event_id)
     await db.commit()
 
-    return {"message": f"Standings recalculated for {len(user_stats)} participants"}
+    return {"message": f"Standings recalculated for {len(user_stats)} participants", "details": {"participants_ranked": len(user_stats)}}
 
 
 @router.post(
