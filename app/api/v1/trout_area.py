@@ -868,15 +868,19 @@ async def get_event_schedule(
             "total_rounds": 0,
         }
 
-    # Group matches by leg (round_number in DB = leg)
-    legs_dict: dict[int, list] = {}
+    # Group matches by (leg_number, phase) - different phases can have same leg numbers
+    # Key: (leg_num, phase) -> list of matches
+    legs_dict: dict[tuple[int, str], list] = {}
     total_completed = 0
-    current_leg_num = None
+    current_leg_key: tuple[int, str] | None = None
 
     for match in matches:
         leg_num = match.round_number  # round_number in model = leg
-        if leg_num not in legs_dict:
-            legs_dict[leg_num] = []
+        match_phase = match.phase or TATournamentPhase.QUALIFIER.value
+        leg_key = (leg_num, match_phase)
+
+        if leg_key not in legs_dict:
+            legs_dict[leg_key] = []
 
         # Build match response with player names
         match_data = TAMatchResponse(
@@ -904,36 +908,52 @@ async def get_event_schedule(
             player_a_avatar=match.competitor_a.effective_avatar_url if match.competitor_a else None,
             player_b_avatar=match.competitor_b.effective_avatar_url if match.competitor_b else None,
         )
-        legs_dict[leg_num].append(match_data)
+        legs_dict[leg_key].append(match_data)
 
         if match.status == TAMatchStatus.COMPLETED:
             total_completed += 1
         elif match.status == TAMatchStatus.IN_PROGRESS:
-            current_leg_num = leg_num
+            current_leg_key = leg_key
+
+    # Define phase order for sorting
+    phase_order = {
+        TATournamentPhase.QUALIFIER.value: 0,
+        TATournamentPhase.REQUALIFICATION.value: 1,
+        TATournamentPhase.SEMIFINAL.value: 2,
+        TATournamentPhase.FINAL_GRAND.value: 3,
+        TATournamentPhase.FINAL_SMALL.value: 4,
+    }
+
+    # Sort legs by phase first, then by leg number
+    sorted_keys = sorted(legs_dict.keys(), key=lambda k: (phase_order.get(k[1], 99), k[0]))
 
     # If no in-progress match, find the first incomplete leg
-    if current_leg_num is None:
-        for leg_num in sorted(legs_dict.keys()):
-            leg_matches = legs_dict[leg_num]
+    if current_leg_key is None:
+        for leg_key in sorted_keys:
+            leg_matches = legs_dict[leg_key]
             if any(m.status != TAMatchStatusAPI.COMPLETED for m in leg_matches):
-                current_leg_num = leg_num
+                current_leg_key = leg_key
                 break
 
-    # Build legs response
+    # Build legs response - each entry is unique by (leg_number, phase)
     legs_list = []
-    for leg_num in sorted(legs_dict.keys()):
-        leg_matches = legs_dict[leg_num]
+    for leg_key in sorted_keys:
+        leg_num, leg_phase = leg_key
+        leg_matches = legs_dict[leg_key]
         completed_in_leg = sum(1 for m in leg_matches if m.status == TAMatchStatusAPI.COMPLETED)
         is_completed = completed_in_leg == len(leg_matches)
         legs_list.append(TARoundResponse(
             leg_number=leg_num,
-            phase=leg_matches[0].phase if leg_matches else TATournamentPhaseAPI.QUALIFIER,
+            phase=TATournamentPhaseAPI(leg_phase) if leg_phase else TATournamentPhaseAPI.QUALIFIER,
             matches=leg_matches,
             matches_completed=completed_in_leg,
             total_matches=len(leg_matches),
-            is_current=(leg_num == current_leg_num),
+            is_current=(leg_key == current_leg_key),
             is_completed=is_completed,
         ))
+
+    # Extract leg number from key for backwards compatibility (just the number)
+    current_leg_num = current_leg_key[0] if current_leg_key else None
 
     return {
         "legs": legs_list,
