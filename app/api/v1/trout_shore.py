@@ -24,10 +24,12 @@ from app.database import get_db
 from app.dependencies import get_current_user
 from app.core.permissions import OrganizerOrAdmin, EventOwnerOrAdmin
 from app.core.i18n import get_error_message
+from app.utils.lifecycle_guards import require_modifiable_status
 
 from app.models.user import UserAccount, UserProfile
 from app.models.event import Event, EventStatus
 from app.models.enrollment import EventEnrollment
+from app.models.club import ClubMembership, MembershipStatus
 from decimal import Decimal
 
 from app.models.trout_shore import (
@@ -814,7 +816,10 @@ async def list_lineups(
 
     query = (
         select(TSFLineup)
-        .options(selectinload(TSFLineup.user).selectinload(UserAccount.profile))
+        .options(
+            selectinload(TSFLineup.user).selectinload(UserAccount.profile),
+            selectinload(TSFLineup.club),
+        )
         .where(TSFLineup.event_id == event_id)
         .order_by(TSFLineup.group_number, TSFLineup.seat_index)
     )
@@ -835,6 +840,8 @@ async def list_lineups(
             event_id=lineup.event_id,
             user_id=lineup.user_id,
             enrollment_id=lineup.enrollment_id,
+            club_id=lineup.club_id,
+            club_name=lineup.club.name if lineup.club else None,
             draw_number=lineup.draw_number,
             group_number=lineup.group_number,
             seat_index=lineup.seat_index,
@@ -856,6 +863,48 @@ async def list_lineups(
     }
 
 
+# =============================================================================
+# Club Helpers for Lineup Generation
+# =============================================================================
+
+
+async def get_user_active_club_id(db: AsyncSession, user_id: int) -> int | None:
+    """Get user's active club_id (first active membership)."""
+    query = (
+        select(ClubMembership.club_id)
+        .where(
+            ClubMembership.user_id == user_id,
+            ClubMembership.status == MembershipStatus.ACTIVE.value,
+        )
+        .order_by(ClubMembership.joined_at.desc())
+        .limit(1)
+    )
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
+
+
+async def get_club_ids_for_users(db: AsyncSession, user_ids: list[int]) -> dict[int, int | None]:
+    """Get club_ids for multiple users in a single query."""
+    if not user_ids:
+        return {}
+
+    query = (
+        select(ClubMembership.user_id, ClubMembership.club_id)
+        .where(
+            ClubMembership.user_id.in_(user_ids),
+            ClubMembership.status == MembershipStatus.ACTIVE.value,
+        )
+        .order_by(ClubMembership.user_id, ClubMembership.joined_at.desc())
+        .distinct(ClubMembership.user_id)
+    )
+    result = await db.execute(query)
+    rows = result.all()
+    club_lookup = {row.user_id: row.club_id for row in rows}
+
+    # Return dict with all user_ids, None for those without clubs
+    return {user_id: club_lookup.get(user_id) for user_id in user_ids}
+
+
 @router.post("/events/{event_id}/lineups/generate", response_model=TSFLineupListResponse)
 async def generate_lineups(
     event_id: int,
@@ -870,6 +919,10 @@ async def generate_lineups(
     Adds ghost participants if needed for even distribution.
     """
     event = await get_tsf_event(event_id, db, request)
+
+    # Guard: Block lineup generation for ongoing/completed events
+    require_modifiable_status(event, action="generate lineups")
+
     settings = event.tsf_settings
 
     # Check if lineups already exist
@@ -895,6 +948,10 @@ async def generate_lineups(
     )
     enrollments_result = await db.execute(enrollments_query)
     enrollments = list(enrollments_result.scalars().all())
+
+    # Get club_ids for all enrolled users (for club-based reporting)
+    user_ids = [e.user_id for e in enrollments if e.user_id]
+    club_lookup = await get_club_ids_for_users(db, user_ids)
 
     if len(enrollments) < settings.number_of_sectors:
         raise HTTPException(
@@ -930,6 +987,7 @@ async def generate_lineups(
                     event_id=event_id,
                     user_id=enrollment.user_id,
                     enrollment_id=enrollment.id,
+                    club_id=club_lookup.get(enrollment.user_id) if enrollment.user_id else None,
                     draw_number=draw_number,
                     group_number=sector,
                     seat_index=seat_index,
@@ -946,6 +1004,7 @@ async def generate_lineups(
                 event_id=event_id,
                 user_id=None,
                 enrollment_id=None,
+                club_id=None,  # Ghost participants have no club
                 draw_number=draw_number,
                 group_number=sector,
                 seat_index=seat_index,
@@ -971,6 +1030,8 @@ async def generate_lineups(
             event_id=lineup.event_id,
             user_id=lineup.user_id,
             enrollment_id=lineup.enrollment_id,
+            club_id=lineup.club_id,
+            club_name=lineup.club.name if lineup.club else None,
             draw_number=lineup.draw_number,
             group_number=lineup.group_number,
             seat_index=lineup.seat_index,

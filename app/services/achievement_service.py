@@ -70,6 +70,20 @@ class AchievementService:
             AchievementTier.GOLD.value: 150,
             AchievementTier.PLATINUM.value: 300,
         },
+        # TA-specific tiered achievements
+        AchievementType.TA_MATCH_WINS.value: {
+            AchievementTier.BRONZE.value: 10,
+            AchievementTier.SILVER.value: 25,
+            AchievementTier.GOLD.value: 50,
+            AchievementTier.PLATINUM.value: 100,
+        },
+        # TSF-specific tiered achievements
+        AchievementType.TSF_SECTOR_WINS.value: {
+            AchievementTier.BRONZE.value: 5,
+            AchievementTier.SILVER.value: 15,
+            AchievementTier.GOLD.value: 30,
+            AchievementTier.PLATINUM.value: 50,
+        },
     }
 
     # All predator fish slugs (matches migration seed data)
@@ -186,9 +200,20 @@ class AchievementService:
         event_id: Optional[int] = None,
         catch_id: Optional[int] = None,
         context: Optional[dict] = None,
+        format_code: Optional[str] = None,
     ) -> List[AchievementDefinition]:
         """
         Check and award any achievements based on trigger.
+
+        Args:
+            db: Database session
+            user_id: User to check achievements for
+            trigger: Trigger event (e.g., "catch_approved", "event_completed")
+            event_id: Optional event context
+            catch_id: Optional catch context
+            context: Optional additional context data
+            format_code: If provided, only check achievements applicable to this format.
+                        Valid values: "sf", "ta", "tsf", or None (check all).
 
         Returns list of newly awarded achievements.
         """
@@ -196,21 +221,30 @@ class AchievementService:
 
         # Check tiered achievements
         tiered_awards = await AchievementService._check_tiered_achievements(
-            db, user_id, trigger, event_id, catch_id, context
+            db, user_id, trigger, event_id, catch_id, context, format_code
         )
         newly_awarded.extend(tiered_awards)
 
         # Check fish-specific achievements (species and predator)
-        fish_awards = await AchievementService._check_fish_achievements(
-            db, user_id, trigger, event_id, catch_id, context
-        )
-        newly_awarded.extend(fish_awards)
+        # Note: Fish achievements are SF-only, so filter if format specified
+        if format_code is None or format_code == "sf":
+            fish_awards = await AchievementService._check_fish_achievements(
+                db, user_id, trigger, event_id, catch_id, context
+            )
+            newly_awarded.extend(fish_awards)
 
         # Check special achievements
         special_awards = await AchievementService._check_special_achievements(
-            db, user_id, trigger, event_id, catch_id, context
+            db, user_id, trigger, event_id, catch_id, context, format_code
         )
         newly_awarded.extend(special_awards)
+
+        # Check cross-format achievements (triggered by any format)
+        # These have applicable_formats = NULL and are checked regardless of format_code
+        cross_format_awards = await AchievementService._check_cross_format_achievements(
+            db, user_id, trigger, event_id, context
+        )
+        newly_awarded.extend(cross_format_awards)
 
         return newly_awarded
 
@@ -222,8 +256,13 @@ class AchievementService:
         event_id: Optional[int],
         catch_id: Optional[int],
         context: Optional[dict],
+        format_code: Optional[str] = None,
     ) -> List[AchievementDefinition]:
-        """Check and award tiered achievements."""
+        """Check and award tiered achievements.
+
+        Args:
+            format_code: If provided, only check achievements applicable to this format.
+        """
         newly_awarded = []
 
         # Get user's overall stats
@@ -260,10 +299,10 @@ class AchievementService:
             thresholds = AchievementService.TIER_THRESHOLDS.get(achievement_type, {})
             for tier, threshold in thresholds.items():
                 if current_value >= threshold:
-                    # Try to award this tier
+                    # Try to award this tier (with format filtering)
                     code = f"{achievement_type}_{tier}"
-                    awarded = await AchievementService._award_achievement(
-                        db, user_id, code, event_id, catch_id
+                    awarded = await AchievementService._award_achievement_with_format(
+                        db, user_id, code, event_id, catch_id, format_code
                     )
                     if awarded:
                         newly_awarded.append(awarded)
@@ -359,47 +398,52 @@ class AchievementService:
         event_id: Optional[int],
         catch_id: Optional[int],
         context: Optional[dict],
+        format_code: Optional[str] = None,
     ) -> List[AchievementDefinition]:
-        """Check and award special achievements based on trigger."""
+        """Check and award special achievements based on trigger.
+
+        Args:
+            format_code: If provided, only check achievements applicable to this format.
+        """
         newly_awarded = []
         context = context or {}
 
         # First Blood - first ever validated catch
         if trigger == "catch_approved":
             awarded = await AchievementService._check_first_blood(
-                db, user_id, event_id, catch_id
+                db, user_id, event_id, catch_id, format_code
             )
             if awarded:
                 newly_awarded.append(awarded)
 
             # Trophy Hunter - catch >= 50cm
             if context.get("catch_length", 0) >= 50:
-                awarded = await AchievementService._award_achievement(
-                    db, user_id, "trophy_hunter", event_id, catch_id
+                awarded = await AchievementService._award_achievement_with_format(
+                    db, user_id, "trophy_hunter", event_id, catch_id, format_code
                 )
                 if awarded:
                     newly_awarded.append(awarded)
 
             # Monster Catch - new personal best
             if context.get("is_personal_best"):
-                awarded = await AchievementService._award_achievement(
-                    db, user_id, "monster_catch", event_id, catch_id
+                awarded = await AchievementService._award_achievement_with_format(
+                    db, user_id, "monster_catch", event_id, catch_id, format_code
                 )
                 if awarded:
                     newly_awarded.append(awarded)
 
             # Early Bird - first catch within 30 min of event start
             if context.get("is_early_bird"):
-                awarded = await AchievementService._award_achievement(
-                    db, user_id, "early_bird", event_id, catch_id
+                awarded = await AchievementService._award_achievement_with_format(
+                    db, user_id, "early_bird", event_id, catch_id, format_code
                 )
                 if awarded:
                     newly_awarded.append(awarded)
 
             # Last Minute Hero - catch in final 30 minutes
             if context.get("is_last_minute"):
-                awarded = await AchievementService._award_achievement(
-                    db, user_id, "last_minute", event_id, catch_id
+                awarded = await AchievementService._award_achievement_with_format(
+                    db, user_id, "last_minute", event_id, catch_id, format_code
                 )
                 if awarded:
                     newly_awarded.append(awarded)
@@ -407,7 +451,7 @@ class AchievementService:
             # Speed Demon - 5 catches in first hour
             if event_id:
                 speed_awarded = await AchievementService._check_speed_demon(
-                    db, user_id, event_id
+                    db, user_id, event_id, format_code
                 )
                 if speed_awarded:
                     newly_awarded.append(speed_awarded)
@@ -416,36 +460,36 @@ class AchievementService:
         if trigger == "event_completed":
             # Clean Sheet - no rejected catches
             clean_awarded = await AchievementService._check_clean_sheet(
-                db, user_id, event_id
+                db, user_id, event_id, format_code
             )
             if clean_awarded:
                 newly_awarded.append(clean_awarded)
 
             # Precision Angler - 90%+ above min length
             precision_awarded = await AchievementService._check_precision_angler(
-                db, user_id, event_id
+                db, user_id, event_id, format_code
             )
             if precision_awarded:
                 newly_awarded.append(precision_awarded)
 
             # Diversity Master - all species caught
             diversity_awarded = await AchievementService._check_diversity_master(
-                db, user_id, event_id
+                db, user_id, event_id, format_code
             )
             if diversity_awarded:
                 newly_awarded.append(diversity_awarded)
 
             # Comeback King - improved 5+ ranks
             if context.get("rank_improvement", 0) >= 5:
-                awarded = await AchievementService._award_achievement(
-                    db, user_id, "comeback_king", event_id, None
+                awarded = await AchievementService._award_achievement_with_format(
+                    db, user_id, "comeback_king", event_id, None, format_code
                 )
                 if awarded:
                     newly_awarded.append(awarded)
 
             # Update streaks and check streak achievements
             streak_awards = await AchievementService._update_streaks(
-                db, user_id, event_id, context
+                db, user_id, event_id, context, format_code
             )
             newly_awarded.extend(streak_awards)
 
@@ -458,6 +502,7 @@ class AchievementService:
         user_id: int,
         event_id: Optional[int],
         catch_id: Optional[int],
+        format_code: Optional[str] = None,
     ) -> Optional[AchievementDefinition]:
         """Check and award First Blood (first ever catch)."""
         # Count total approved catches
@@ -471,8 +516,8 @@ class AchievementService:
 
         # Award if this is their first approved catch
         if total_catches == 1:
-            return await AchievementService._award_achievement(
-                db, user_id, "first_blood", event_id, catch_id
+            return await AchievementService._award_achievement_with_format(
+                db, user_id, "first_blood", event_id, catch_id, format_code
             )
         return None
 
@@ -481,6 +526,7 @@ class AchievementService:
         db: AsyncSession,
         user_id: int,
         event_id: int,
+        format_code: Optional[str] = None,
     ) -> Optional[AchievementDefinition]:
         """Check and award Speed Demon (5 catches in first hour)."""
         event = await db.get(Event, event_id)
@@ -501,8 +547,8 @@ class AchievementService:
         first_hour_catches = result.scalar() or 0
 
         if first_hour_catches >= 5:
-            return await AchievementService._award_achievement(
-                db, user_id, "speed_demon", event_id, None
+            return await AchievementService._award_achievement_with_format(
+                db, user_id, "speed_demon", event_id, None, format_code
             )
         return None
 
@@ -511,6 +557,7 @@ class AchievementService:
         db: AsyncSession,
         user_id: int,
         event_id: int,
+        format_code: Optional[str] = None,
     ) -> Optional[AchievementDefinition]:
         """Check and award Clean Sheet (no rejected catches, min 3 catches)."""
         # Get catch counts
@@ -533,8 +580,8 @@ class AchievementService:
         rejected_count = result.scalar() or 0
 
         if approved_count >= 3 and rejected_count == 0:
-            return await AchievementService._award_achievement(
-                db, user_id, "clean_sheet", event_id, None
+            return await AchievementService._award_achievement_with_format(
+                db, user_id, "clean_sheet", event_id, None, format_code
             )
         return None
 
@@ -543,6 +590,7 @@ class AchievementService:
         db: AsyncSession,
         user_id: int,
         event_id: int,
+        format_code: Optional[str] = None,
     ) -> Optional[AchievementDefinition]:
         """Check and award Precision Angler (90%+ above min length)."""
         # This would need to check against EventFishScoring min lengths
@@ -565,8 +613,8 @@ class AchievementService:
         total_count = result.scalar() or 0
 
         if total_count >= 5 and approved_count / total_count >= 0.9:
-            return await AchievementService._award_achievement(
-                db, user_id, "precision_angler", event_id, None
+            return await AchievementService._award_achievement_with_format(
+                db, user_id, "precision_angler", event_id, None, format_code
             )
         return None
 
@@ -575,6 +623,7 @@ class AchievementService:
         db: AsyncSession,
         user_id: int,
         event_id: int,
+        format_code: Optional[str] = None,
     ) -> Optional[AchievementDefinition]:
         """Check and award Diversity Master (caught all species in event)."""
         # Get available species for event
@@ -601,8 +650,8 @@ class AchievementService:
         caught_species = result.scalar() or 0
 
         if caught_species >= available_species:
-            return await AchievementService._award_achievement(
-                db, user_id, "diversity_master", event_id, None
+            return await AchievementService._award_achievement_with_format(
+                db, user_id, "diversity_master", event_id, None, format_code
             )
         return None
 
@@ -612,6 +661,7 @@ class AchievementService:
         user_id: int,
         event_id: int,
         context: Optional[dict],
+        format_code: Optional[str] = None,
     ) -> List[AchievementDefinition]:
         """Update streaks and check for streak achievements."""
         newly_awarded = []
@@ -630,8 +680,8 @@ class AchievementService:
             db, user_id, "podium", event_id, is_podium
         )
         if podium_tracker and podium_tracker.current_streak >= 3:
-            awarded = await AchievementService._award_achievement(
-                db, user_id, "hot_streak", event_id, None
+            awarded = await AchievementService._award_achievement_with_format(
+                db, user_id, "hot_streak", event_id, None, format_code
             )
             if awarded:
                 newly_awarded.append(awarded)
@@ -642,8 +692,8 @@ class AchievementService:
             db, user_id, "win", event_id, is_win
         )
         if win_tracker and win_tracker.current_streak >= 2:
-            awarded = await AchievementService._award_achievement(
-                db, user_id, "dominator", event_id, None
+            awarded = await AchievementService._award_achievement_with_format(
+                db, user_id, "dominator", event_id, None, format_code
             )
             if awarded:
                 newly_awarded.append(awarded)
@@ -653,8 +703,8 @@ class AchievementService:
             db, user_id, "participation"
         )
         if participation_tracker and participation_tracker.current_streak >= 5:
-            awarded = await AchievementService._award_achievement(
-                db, user_id, "iron_man", event_id, None
+            awarded = await AchievementService._award_achievement_with_format(
+                db, user_id, "iron_man", event_id, None, format_code
             )
             if awarded:
                 newly_awarded.append(awarded)
@@ -791,6 +841,146 @@ class AchievementService:
         await db.flush()
 
         return achievement
+
+    @staticmethod
+    async def _award_achievement_with_format(
+        db: AsyncSession,
+        user_id: int,
+        achievement_code: str,
+        event_id: Optional[int],
+        catch_id: Optional[int],
+        format_code: Optional[str] = None,
+    ) -> Optional[AchievementDefinition]:
+        """
+        Award an achievement if not already earned and format matches.
+
+        This method adds format filtering to the standard _award_achievement.
+        If format_code is provided, the achievement's applicable_formats will
+        be checked before awarding.
+
+        Args:
+            db: Database session
+            user_id: User to award achievement to
+            achievement_code: Code of the achievement to award
+            event_id: Optional event context
+            catch_id: Optional catch context
+            format_code: If provided, only award if achievement applies to this format
+
+        Returns:
+            The awarded AchievementDefinition if newly awarded, None otherwise
+        """
+        # Get achievement definition
+        achievement_stmt = select(AchievementDefinition).where(
+            AchievementDefinition.code == achievement_code
+        )
+        result = await db.execute(achievement_stmt)
+        achievement = result.scalar_one_or_none()
+
+        if not achievement or not achievement.is_active:
+            return None
+
+        # Check format filtering
+        if format_code is not None:
+            if not achievement.applies_to_format(format_code):
+                return None  # Achievement doesn't apply to this format
+
+        # Check if already earned
+        existing_stmt = select(UserAchievement).where(
+            and_(
+                UserAchievement.user_id == user_id,
+                UserAchievement.achievement_id == achievement.id,
+            )
+        )
+        result = await db.execute(existing_stmt)
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            return None  # Already earned
+
+        # Award achievement
+        user_achievement = UserAchievement(
+            user_id=user_id,
+            achievement_id=achievement.id,
+            event_id=event_id,
+            catch_id=catch_id,
+        )
+        db.add(user_achievement)
+        await db.flush()
+
+        return achievement
+
+    @staticmethod
+    async def _check_cross_format_achievements(
+        db: AsyncSession,
+        user_id: int,
+        trigger: str,
+        event_id: Optional[int],
+        context: Optional[dict],
+    ) -> List[AchievementDefinition]:
+        """Check and award cross-format achievements.
+
+        These achievements require participation/wins/podiums across all 3 formats
+        (SF, TA, TSF). They have applicable_formats = NULL and are checked
+        regardless of the format_code.
+        """
+        newly_awarded = []
+
+        # Only check on event completion
+        if trigger != "event_completed":
+            return newly_awarded
+
+        # Get user's overall stats
+        stats_stmt = (
+            select(UserEventTypeStats)
+            .where(UserEventTypeStats.user_id == user_id)
+            .where(UserEventTypeStats.event_type_id.is_(None))
+        )
+        result = await db.execute(stats_stmt)
+        stats = result.scalar_one_or_none()
+
+        if not stats:
+            return newly_awarded
+
+        # Check format participation
+        has_sf = stats.total_events > 0
+        has_ta = stats.ta_total_matches is not None and stats.ta_total_matches > 0
+        has_tsf = stats.tsf_total_days is not None and stats.tsf_total_days > 0
+
+        # Format Explorer: Participated in all 3 formats
+        if has_sf and has_ta and has_tsf:
+            awarded = await AchievementService._award_achievement(
+                db, user_id, "format_explorer", event_id, None
+            )
+            if awarded:
+                newly_awarded.append(awarded)
+
+        # Check wins in each format
+        has_sf_win = stats.total_wins > 0
+        has_ta_win = stats.ta_tournament_wins is not None and stats.ta_tournament_wins > 0
+        has_tsf_win = stats.tsf_tournament_wins is not None and stats.tsf_tournament_wins > 0
+
+        # Triple Threat: Won in all 3 formats
+        if has_sf_win and has_ta_win and has_tsf_win:
+            awarded = await AchievementService._award_achievement(
+                db, user_id, "triple_threat", event_id, None
+            )
+            if awarded:
+                newly_awarded.append(awarded)
+
+        # Check podiums in each format
+        has_sf_podium = stats.podium_finishes > 0
+        has_ta_podium = stats.ta_tournament_podiums is not None and stats.ta_tournament_podiums > 0
+        has_tsf_podium = stats.tsf_tournament_podiums is not None and stats.tsf_tournament_podiums > 0
+
+        # Versatile Angler: Podium in all 3 formats
+        if has_sf_podium and has_ta_podium and has_tsf_podium:
+            awarded = await AchievementService._award_achievement(
+                db, user_id, "versatile_angler", event_id, None
+            )
+            if awarded:
+                newly_awarded.append(awarded)
+
+        return newly_awarded
 
 
 # Singleton instance

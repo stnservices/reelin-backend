@@ -51,6 +51,15 @@ from app.schemas.trout_shore import (
     TSFFinalStandingResponse,
 )
 
+# Minigame schemas
+from app.schemas.minigame import (
+    MinigameScoreCreate,
+    MinigameScoreResponse,
+    MinigameScoreWithUserResponse,
+    MinigameScoreListResponse,
+    MinigameLeaderboardResponse,
+)
+
 __all__ = [
     # User
     "UserCreate",
@@ -95,4 +104,10 @@ __all__ = [
     "TSFLegPositionResponse",
     "TSFDayStandingResponse",
     "TSFFinalStandingResponse",
+    # Minigame
+    "MinigameScoreCreate",
+    "MinigameScoreResponse",
+    "MinigameScoreWithUserResponse",
+    "MinigameScoreListResponse",
+    "MinigameLeaderboardResponse",
 ]

@@ -159,12 +159,12 @@ class TAEventSettings(Base):
 
     # Knockout Stage Settings
     has_knockout_stage: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    knockout_qualifiers: Mapped[int] = mapped_column(Integer, default=6, nullable=False)  # Top N go to knockout
+    knockout_qualifiers: Mapped[int] = mapped_column(Integer, default=4, nullable=False)  # Top N go directly to semifinals
     has_requalification: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     requalification_slots: Mapped[int] = mapped_column(Integer, default=4, nullable=False)  # How many compete in requalification
 
-    # Direct placement for lower ranked (LOCUL 7, 8, 9, 10...)
-    direct_placement_from: Mapped[int] = mapped_column(Integer, default=7, nullable=False)
+    # Direct placement for lower ranked (positions after requalification: 9, 10, 11...)
+    direct_placement_from: Mapped[int] = mapped_column(Integer, default=9, nullable=False)
 
     # Team Settings (optional team TA)
     is_team_event: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -232,6 +232,9 @@ class TALineup(Base):
     team_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    club_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("clubs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     # Position assignments
     draw_number: Mapped[int] = mapped_column(Integer, nullable=False)  # Original draw (1, 2, 3...)
@@ -262,6 +265,7 @@ class TALineup(Base):
     enrollment: Mapped[Optional["EventEnrollment"]] = relationship(
         "EventEnrollment", lazy="joined"
     )
+    club: Mapped[Optional["Club"]] = relationship("Club", lazy="joined")
     created_by: Mapped[Optional["UserAccount"]] = relationship(
         "UserAccount", foreign_keys=[created_by_id]
     )
@@ -741,6 +745,12 @@ class TAQualifierStanding(Base):
     total_losses: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     total_fish_caught: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
+    # Detailed breakdown for tiebreakers
+    ties_with_fish: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    ties_without_fish: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    losses_with_fish: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    losses_without_fish: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
     # Ranking
     rank: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     qualifies_for_knockout: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -773,3 +783,4 @@ class TAQualifierStanding(Base):
 from app.models.event import Event
 from app.models.user import UserAccount
 from app.models.enrollment import EventEnrollment
+from app.models.club import Club

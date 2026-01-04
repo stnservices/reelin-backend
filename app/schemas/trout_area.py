@@ -78,6 +78,49 @@ class TAPointsRuleCreate(BaseModel):
     description: Optional[str] = None
 
 
+class TAPointsRuleUpdate(BaseModel):
+    """Update schema for TA points rule."""
+    points: Decimal = Field(..., ge=Decimal("0"), le=Decimal("99.99"))
+    label: Optional[str] = Field(default=None, min_length=1, max_length=50)
+    description: Optional[str] = None
+
+
+class TAGlobalPointDefaultsResponse(BaseModel):
+    """Response schema for global point defaults (structured like event config)."""
+    victory_points: Decimal
+    tie_points: Decimal
+    tie_zero_points: Decimal
+    loss_points: Decimal
+    loss_zero_points: Decimal
+
+
+class TAGlobalPointDefaultsUpdate(BaseModel):
+    """Update schema for global point defaults."""
+    victory_points: Optional[Decimal] = Field(default=None, ge=Decimal("0"), le=Decimal("99.99"))
+    tie_points: Optional[Decimal] = Field(default=None, ge=Decimal("0"), le=Decimal("99.99"))
+    tie_zero_points: Optional[Decimal] = Field(default=None, ge=Decimal("0"), le=Decimal("99.99"))
+    loss_points: Optional[Decimal] = Field(default=None, ge=Decimal("0"), le=Decimal("99.99"))
+    loss_zero_points: Optional[Decimal] = Field(default=None, ge=Decimal("0"), le=Decimal("99.99"))
+
+    @model_validator(mode='after')
+    def validate_point_order(self) -> 'TAGlobalPointDefaultsUpdate':
+        """Ensure points are in logical order when all values provided."""
+        # Only validate if all values are provided
+        if all(v is not None for v in [
+            self.victory_points, self.tie_points, self.tie_zero_points,
+            self.loss_points, self.loss_zero_points
+        ]):
+            if self.victory_points < self.tie_points:
+                raise ValueError("Victory points must be >= tie points")
+            if self.tie_points < self.tie_zero_points:
+                raise ValueError("Tie points must be >= tie_zero points")
+            if self.tie_zero_points < self.loss_points:
+                raise ValueError("Tie_zero points must be >= loss points")
+            if self.loss_points < self.loss_zero_points:
+                raise ValueError("Loss points must be >= loss_zero points")
+        return self
+
+
 # =============================================================================
 # Event Point Config Schemas (Per-event customizable point values)
 # =============================================================================
@@ -149,8 +192,9 @@ class TAEventSettingsBase(BaseModel):
     matches_per_leg: Optional[int] = None
     total_legs: Optional[int] = None
     pairing_algorithm: PairingAlgorithmAPI = PairingAlgorithmAPI.ROUND_ROBIN_FULL
-    qualification_top_n: int = Field(default=16, ge=2)
-    requalification_spots: int = Field(default=8, ge=0)
+    has_knockout_bracket: bool = Field(default=True, description="Whether event includes knockout bracket phase")
+    qualification_top_n: int = Field(default=4, ge=2, description="Top N go directly to semifinals")
+    requalification_spots: int = Field(default=4, ge=0, description="Positions N+1 to N+requalification_spots compete")
     enable_requalification: bool = Field(default=True)
     enable_team_scoring: bool = Field(default=False)
     team_size: Optional[int] = Field(default=None, ge=2, le=10)
@@ -170,6 +214,7 @@ class TAEventSettingsUpdate(BaseModel):
     matches_per_leg: Optional[int] = None
     total_legs: Optional[int] = None
     pairing_algorithm: Optional[PairingAlgorithmAPI] = None
+    has_knockout_bracket: Optional[bool] = Field(default=None, description="Whether event includes knockout bracket phase")
     qualification_top_n: Optional[int] = Field(default=None, ge=2)
     requalification_spots: Optional[int] = Field(default=None, ge=0)
     enable_requalification: Optional[bool] = None
@@ -190,8 +235,9 @@ class TAEventSettingsResponse(BaseModel):
     matches_per_leg: Optional[int] = None
     total_legs: Optional[int] = None
     pairing_algorithm: PairingAlgorithmAPI = PairingAlgorithmAPI.ROUND_ROBIN_FULL
-    qualification_top_n: int = 16  # Maps to knockout_qualifiers
-    requalification_spots: int = 8  # Maps to requalification_slots
+    has_knockout_bracket: bool = True  # Maps to has_knockout_stage
+    qualification_top_n: int = 4  # Maps to knockout_qualifiers (top 4 go to semifinals)
+    requalification_spots: int = 4  # Maps to requalification_slots (positions 5-8 compete)
     enable_requalification: bool = True  # Maps to has_requalification
     enable_team_scoring: bool = False  # Maps to is_team_event
     team_size: Optional[int] = None
@@ -214,8 +260,9 @@ class TAEventSettingsResponse(BaseModel):
                         "created_at", "updated_at", "additional_rules"]:
                 data[key] = getattr(values, key, None)
             data["legs_per_match"] = getattr(values, "number_of_legs", 5)
-            data["qualification_top_n"] = getattr(values, "knockout_qualifiers", 16)
-            data["requalification_spots"] = getattr(values, "requalification_slots", 8)
+            data["has_knockout_bracket"] = getattr(values, "has_knockout_stage", True)
+            data["qualification_top_n"] = getattr(values, "knockout_qualifiers", 4)
+            data["requalification_spots"] = getattr(values, "requalification_slots", 4)
             data["enable_requalification"] = getattr(values, "has_requalification", True)
             data["enable_team_scoring"] = getattr(values, "is_team_event", False)
             # Get from additional_rules
@@ -258,11 +305,13 @@ class TALineupResponse(TALineupBase):
     user_id: Optional[int]
     enrollment_id: Optional[int]
     team_id: Optional[int]
+    club_id: Optional[int] = None
     created_at: datetime
 
     # Nested user info
     user_name: Optional[str] = None
     user_avatar: Optional[str] = None
+    club_name: Optional[str] = None
 
 
 class TALineupListResponse(BaseModel):
@@ -304,6 +353,13 @@ class TAGenerateLineupResponse(BaseModel):
     estimated_duration: str
     lineups: list[TALineupResponse]
     schedule_preview: Optional[dict[str, Any]] = None
+
+
+class TAGenerateBracketResponse(BaseModel):
+    """Response schema for generated knockout bracket."""
+    message: str
+    matches_created: int
+    has_requalification: bool
 
 
 # =============================================================================
@@ -398,6 +454,7 @@ class TAGameCardResponse(BaseModel):
     event_id: int
     match_id: int
     leg_number: int
+    phase: Optional[TATournamentPhaseAPI] = None  # Phase from match (qualifier, requalification, semifinal, etc.)
     user_id: int
     my_catches: Optional[int] = None
     my_seat: int
@@ -442,6 +499,14 @@ class TAGameCardValidateRequest(BaseModel):
     """Request schema for opponent validation (self-validation)."""
     is_valid: bool = True
     dispute_reason: Optional[str] = None
+
+
+class TAGameCardAdminUpdateRequest(BaseModel):
+    """Request schema for admin/validator to update game card."""
+    my_catches: Optional[int] = Field(default=None, ge=0)
+    is_submitted: Optional[bool] = None
+    is_validated: Optional[bool] = None
+    i_validated_opponent: Optional[bool] = None
 
 
 class TAMyGameCardsResponse(BaseModel):
@@ -534,6 +599,8 @@ class TAQualifierStandingListResponse(BaseModel):
     phase: TATournamentPhaseAPI
     qualified_count: int
     requalification_count: int
+    has_knockout_bracket: bool = True
+    available_phases: list[str] = ["qualifier"]
 
 
 # =============================================================================

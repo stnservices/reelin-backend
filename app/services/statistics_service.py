@@ -11,6 +11,8 @@ from app.models.statistics import UserEventTypeStats
 from app.models.event import Event, EventType, EventStatus
 from app.models.catch import Catch, CatchStatus, EventScoreboard
 from app.models.enrollment import EventEnrollment
+from app.models.trout_area import TAMatch, TAMatchStatus, TAGameCard, TAQualifierStanding
+from app.models.trout_shore import TSFDayStanding, TSFLegPosition, TSFFinalStanding
 
 
 class StatisticsService:
@@ -331,10 +333,297 @@ class StatisticsService:
             stats.last_event_id = last_event[0]
             stats.last_event_date = last_event[1]
 
+        # === TA Statistics ===
+        # Only calculate for overall stats (event_type_id is None)
+        # TA stats are global across all events, not per event type
+        if event_type_id is None:
+            ta_stats = await StatisticsService._calc_ta_stats(db, user_id)
+            # Only update if user has any TA participation
+            if any(v is not None for v in ta_stats.values()):
+                stats.ta_total_matches = ta_stats.get('ta_total_matches')
+                stats.ta_match_wins = ta_stats.get('ta_match_wins')
+                stats.ta_match_losses = ta_stats.get('ta_match_losses')
+                stats.ta_match_ties = ta_stats.get('ta_match_ties')
+                stats.ta_total_catches = ta_stats.get('ta_total_catches')
+                stats.ta_tournament_wins = ta_stats.get('ta_tournament_wins')
+                stats.ta_tournament_podiums = ta_stats.get('ta_tournament_podiums')
+
+        # === TSF Statistics ===
+        # Only calculate for overall stats (event_type_id is None)
+        # TSF stats are global across all events, not per event type
+        if event_type_id is None:
+            tsf_stats = await StatisticsService._calc_tsf_stats(db, user_id)
+            # Only update if user has any TSF participation
+            if any(v is not None for v in tsf_stats.values()):
+                stats.tsf_total_days = tsf_stats.get('tsf_total_days')
+                stats.tsf_sector_wins = tsf_stats.get('tsf_sector_wins')
+                stats.tsf_total_catches = tsf_stats.get('tsf_total_catches')
+                stats.tsf_tournament_wins = tsf_stats.get('tsf_tournament_wins')
+                stats.tsf_tournament_podiums = tsf_stats.get('tsf_tournament_podiums')
+                stats.tsf_best_position_points = tsf_stats.get('tsf_best_position_points')
+
         stats.last_updated = datetime.utcnow()
         await db.flush()
 
         return stats
+
+    @staticmethod
+    async def _calc_ta_stats(
+        db: AsyncSession,
+        user_id: int,
+    ) -> dict:
+        """
+        Calculate TA-specific statistics for a user.
+
+        Queries TAMatch, TAGameCard, and TAQualifierStanding to aggregate
+        head-to-head match performance metrics.
+
+        Returns dict with keys:
+        - ta_total_matches: int or None (total completed matches)
+        - ta_match_wins: int or None (outcome starts with 'V')
+        - ta_match_losses: int or None (outcome starts with 'L')
+        - ta_match_ties: int or None (outcome starts with 'T')
+        - ta_total_catches: int or None (sum of my_catches from game cards)
+        - ta_tournament_wins: int or None (rank=1 in completed events)
+        - ta_tournament_podiums: int or None (rank<=3 in completed events)
+
+        Returns all None values if user has no TA participation.
+        """
+        # Check if user has any TA participation
+        participation_check = await db.execute(
+            select(func.count(TAMatch.id))
+            .where(
+                or_(
+                    TAMatch.competitor_a_id == user_id,
+                    TAMatch.competitor_b_id == user_id,
+                )
+            )
+            .where(TAMatch.status == TAMatchStatus.COMPLETED.value)
+        )
+        total_matches = participation_check.scalar() or 0
+
+        if total_matches == 0:
+            # No TA participation - return all nulls
+            return {
+                "ta_total_matches": None,
+                "ta_match_wins": None,
+                "ta_match_losses": None,
+                "ta_match_ties": None,
+                "ta_total_catches": None,
+                "ta_tournament_wins": None,
+                "ta_tournament_podiums": None,
+            }
+
+        # === Match Statistics ===
+        # Count wins where user is competitor_a and outcome starts with V
+        wins_a = await db.execute(
+            select(func.count(TAMatch.id))
+            .where(TAMatch.competitor_a_id == user_id)
+            .where(TAMatch.status == TAMatchStatus.COMPLETED.value)
+            .where(TAMatch.competitor_a_outcome_code.like("V%"))
+        )
+        wins_a_count = wins_a.scalar() or 0
+
+        # Count wins where user is competitor_b and outcome starts with V
+        wins_b = await db.execute(
+            select(func.count(TAMatch.id))
+            .where(TAMatch.competitor_b_id == user_id)
+            .where(TAMatch.status == TAMatchStatus.COMPLETED.value)
+            .where(TAMatch.competitor_b_outcome_code.like("V%"))
+        )
+        wins_b_count = wins_b.scalar() or 0
+        total_wins = wins_a_count + wins_b_count
+
+        # Count losses where user is competitor_a
+        losses_a = await db.execute(
+            select(func.count(TAMatch.id))
+            .where(TAMatch.competitor_a_id == user_id)
+            .where(TAMatch.status == TAMatchStatus.COMPLETED.value)
+            .where(TAMatch.competitor_a_outcome_code.like("L%"))
+        )
+        losses_a_count = losses_a.scalar() or 0
+
+        # Count losses where user is competitor_b
+        losses_b = await db.execute(
+            select(func.count(TAMatch.id))
+            .where(TAMatch.competitor_b_id == user_id)
+            .where(TAMatch.status == TAMatchStatus.COMPLETED.value)
+            .where(TAMatch.competitor_b_outcome_code.like("L%"))
+        )
+        losses_b_count = losses_b.scalar() or 0
+        total_losses = losses_a_count + losses_b_count
+
+        # Count ties where user is competitor_a
+        ties_a = await db.execute(
+            select(func.count(TAMatch.id))
+            .where(TAMatch.competitor_a_id == user_id)
+            .where(TAMatch.status == TAMatchStatus.COMPLETED.value)
+            .where(TAMatch.competitor_a_outcome_code.like("T%"))
+        )
+        ties_a_count = ties_a.scalar() or 0
+
+        # Count ties where user is competitor_b
+        ties_b = await db.execute(
+            select(func.count(TAMatch.id))
+            .where(TAMatch.competitor_b_id == user_id)
+            .where(TAMatch.status == TAMatchStatus.COMPLETED.value)
+            .where(TAMatch.competitor_b_outcome_code.like("T%"))
+        )
+        ties_b_count = ties_b.scalar() or 0
+        total_ties = ties_a_count + ties_b_count
+
+        # === Catches from Game Cards ===
+        catches_result = await db.execute(
+            select(func.coalesce(func.sum(TAGameCard.my_catches), 0))
+            .where(TAGameCard.user_id == user_id)
+            .where(TAGameCard.my_catches.isnot(None))
+        )
+        total_catches = catches_result.scalar() or 0
+
+        # === Tournament Wins/Podiums from Standings ===
+        # Only count from completed events
+        tournament_wins_result = await db.execute(
+            select(func.count(TAQualifierStanding.id))
+            .join(Event, TAQualifierStanding.event_id == Event.id)
+            .where(TAQualifierStanding.user_id == user_id)
+            .where(TAQualifierStanding.rank == 1)
+            .where(Event.status == EventStatus.COMPLETED.value)
+        )
+        tournament_wins = tournament_wins_result.scalar() or 0
+
+        tournament_podiums_result = await db.execute(
+            select(func.count(TAQualifierStanding.id))
+            .join(Event, TAQualifierStanding.event_id == Event.id)
+            .where(TAQualifierStanding.user_id == user_id)
+            .where(TAQualifierStanding.rank <= 3)
+            .where(Event.status == EventStatus.COMPLETED.value)
+        )
+        tournament_podiums = tournament_podiums_result.scalar() or 0
+
+        return {
+            "ta_total_matches": total_matches,
+            "ta_match_wins": total_wins,
+            "ta_match_losses": total_losses,
+            "ta_match_ties": total_ties,
+            "ta_total_catches": total_catches,
+            "ta_tournament_wins": tournament_wins,
+            "ta_tournament_podiums": tournament_podiums,
+        }
+
+    @staticmethod
+    async def _calc_tsf_stats(
+        db: AsyncSession,
+        user_id: int,
+    ) -> dict:
+        """
+        Calculate TSF-specific statistics for a user.
+
+        Queries TSFDayStanding, TSFLegPosition, and TSFFinalStanding to aggregate
+        multi-day positional scoring performance metrics.
+
+        TSF uses position-based scoring (golf-style):
+        - 1st place = 1 point, 2nd = 2 points, etc.
+        - Lower total is better
+
+        Returns dict with keys:
+        - tsf_total_days: int or None (distinct competition days participated)
+        - tsf_sector_wins: int or None (sum of first_places across all days)
+        - tsf_total_catches: int or None (total fish caught in TSF events)
+        - tsf_tournament_wins: int or None (final_rank=1 in completed events)
+        - tsf_tournament_podiums: int or None (final_rank<=3 in completed events)
+        - tsf_best_position_points: int or None (lowest total_position_points)
+
+        Returns all None values if user has no TSF participation.
+        """
+        # Check if user has any TSF participation via day standings
+        participation_check = await db.execute(
+            select(func.count(TSFDayStanding.id))
+            .join(Event, TSFDayStanding.event_id == Event.id)
+            .where(TSFDayStanding.user_id == user_id)
+            .where(Event.status == EventStatus.COMPLETED.value)
+        )
+        day_standing_count = participation_check.scalar() or 0
+
+        if day_standing_count == 0:
+            # No TSF participation - return all nulls
+            return {
+                "tsf_total_days": None,
+                "tsf_sector_wins": None,
+                "tsf_total_catches": None,
+                "tsf_tournament_wins": None,
+                "tsf_tournament_podiums": None,
+                "tsf_best_position_points": None,
+            }
+
+        # === Total Days ===
+        # Count distinct day_id values from completed events
+        days_result = await db.execute(
+            select(func.count(distinct(TSFDayStanding.day_id)))
+            .join(Event, TSFDayStanding.event_id == Event.id)
+            .where(TSFDayStanding.user_id == user_id)
+            .where(Event.status == EventStatus.COMPLETED.value)
+        )
+        total_days = days_result.scalar() or 0
+
+        # === Sector Wins ===
+        # Sum first_places from day standings
+        sector_wins_result = await db.execute(
+            select(func.coalesce(func.sum(TSFDayStanding.first_places), 0))
+            .join(Event, TSFDayStanding.event_id == Event.id)
+            .where(TSFDayStanding.user_id == user_id)
+            .where(Event.status == EventStatus.COMPLETED.value)
+        )
+        sector_wins = sector_wins_result.scalar() or 0
+
+        # === Total Catches ===
+        # Sum fish_count from leg positions (more granular than day standings)
+        catches_result = await db.execute(
+            select(func.coalesce(func.sum(TSFLegPosition.fish_count), 0))
+            .join(Event, TSFLegPosition.event_id == Event.id)
+            .where(TSFLegPosition.user_id == user_id)
+            .where(TSFLegPosition.is_ghost == False)
+            .where(Event.status == EventStatus.COMPLETED.value)
+        )
+        total_catches = catches_result.scalar() or 0
+
+        # === Tournament Wins/Podiums/Best Points from Final Standings ===
+        # Count wins (rank=1) and podiums (rank<=3), find best (lowest) position points
+        tournament_wins_result = await db.execute(
+            select(func.count(TSFFinalStanding.id))
+            .join(Event, TSFFinalStanding.event_id == Event.id)
+            .where(TSFFinalStanding.user_id == user_id)
+            .where(TSFFinalStanding.final_rank == 1)
+            .where(Event.status == EventStatus.COMPLETED.value)
+        )
+        tournament_wins = tournament_wins_result.scalar() or 0
+
+        tournament_podiums_result = await db.execute(
+            select(func.count(TSFFinalStanding.id))
+            .join(Event, TSFFinalStanding.event_id == Event.id)
+            .where(TSFFinalStanding.user_id == user_id)
+            .where(TSFFinalStanding.final_rank <= 3)
+            .where(TSFFinalStanding.final_rank.isnot(None))
+            .where(Event.status == EventStatus.COMPLETED.value)
+        )
+        tournament_podiums = tournament_podiums_result.scalar() or 0
+
+        # Best position points (lowest total - golf-style scoring)
+        best_points_result = await db.execute(
+            select(func.min(TSFFinalStanding.total_position_points))
+            .join(Event, TSFFinalStanding.event_id == Event.id)
+            .where(TSFFinalStanding.user_id == user_id)
+            .where(Event.status == EventStatus.COMPLETED.value)
+        )
+        best_position_points = best_points_result.scalar()
+
+        return {
+            "tsf_total_days": total_days,
+            "tsf_sector_wins": sector_wins,
+            "tsf_total_catches": total_catches,
+            "tsf_tournament_wins": tournament_wins,
+            "tsf_tournament_podiums": tournament_podiums,
+            "tsf_best_position_points": best_position_points,
+        }
 
 
 # Singleton instance

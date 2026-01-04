@@ -50,6 +50,9 @@ from app.models.ai_analysis import CatchAiAnalysis, AiAnalysisStatus
 from app.models.ml_model import MLModel, MLPredictionLog
 from app.models.organizer_permissions import OrganizerEventTypeAccess, NationalEventOrganizer
 
+# Minigame
+from app.models.minigame import MinigameScore
+
 # Trout Area (TA) models
 from app.models.trout_area import (
     TAPointsRule,
@@ -190,6 +193,8 @@ __all__ = [
     # Organizer Permissions
     "OrganizerEventTypeAccess",
     "NationalEventOrganizer",
+    # Minigame
+    "MinigameScore",
     # Trout Area (TA)
     "TAPointsRule",
     "TAEventSettings",

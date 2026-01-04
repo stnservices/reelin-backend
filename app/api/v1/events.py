@@ -37,6 +37,7 @@ from app.schemas.event import (
     ForceStatusChangeRequest,
     EventStatusUpdateRequest,
     EventStatusUpdateResponse,
+    PublishReadinessResponse,
 )
 from app.services.event_status import EventStatusService
 from app.schemas.prize import (
@@ -1278,6 +1279,51 @@ async def recall_event(
     return event
 
 
+@router.get("/{event_id}/publish-readiness", response_model=PublishReadinessResponse)
+async def get_publish_readiness(
+    event_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(EventOwnerOrAdmin),
+) -> dict:
+    """
+    Check if an event is ready to be published.
+
+    Returns validation results including:
+    - is_ready: True if all validations pass
+    - missing_items: List of i18n message keys for failed validations
+    - checks: Individual check results (check_name -> pass/fail)
+
+    Common checks (all event types):
+    - name: Event has a name
+    - location: Event has a location
+    - start_date: Event has a start date in the future
+    - end_date: Event has an end date after start date
+
+    SF-specific checks:
+    - sf_has_species: At least one allowed species configured
+    - sf_has_scoring_config: Scoring configuration selected
+
+    TA-specific checks:
+    - ta_has_settings: TA settings exist
+    - ta_has_legs: Number of legs configured
+
+    TSF-specific checks:
+    - tsf_has_settings: TSF settings exist
+    - tsf_has_days: Number of days configured
+    - tsf_has_sectors: Number of sectors configured
+    """
+    from app.services.publish_validation import PublishValidationService
+
+    service = PublishValidationService(db)
+    is_ready, missing_items, checks = await service.validate_publish_readiness(event_id)
+
+    return {
+        "is_ready": is_ready,
+        "missing_items": missing_items,
+        "checks": checks,
+    }
+
+
 @router.patch("/{event_id}/status", response_model=EventStatusUpdateResponse)
 async def update_event_status(
     event_id: int,
@@ -1301,7 +1347,7 @@ async def update_event_status(
     Set `force=true` with a `reason` to bypass transition rules (owner/admin only).
     """
     service = EventStatusService(db)
-    event, previous_status = await service.update_status(
+    event, previous_status, warnings = await service.update_status(
         event_id=event_id,
         action=request.action,
         user=current_user,
@@ -1339,8 +1385,18 @@ async def update_event_status(
         send_event_stopped_notifications.delay(event.id, event.name)
         from app.tasks.billing import generate_event_invoice
         generate_event_invoice.delay(event_id)
+        # Trigger stats recalculation for all event participants
+        from app.tasks.statistics import recalculate_event_stats
+        recalculate_event_stats.delay(event_id)
 
-    return {
+        # Trigger achievement processing for TA/TSF events (SF handled separately)
+        from app.utils.event_formats import get_format_code
+        format_code = get_format_code(event.event_type)
+        if format_code in ("ta", "tsf"):
+            from app.tasks.achievement_processing import process_format_event_achievements
+            process_format_event_achievements.delay(event_id, format_code)
+
+    response = {
         "id": event.id,
         "status": event.status,
         "is_deleted": event.is_deleted,
@@ -1350,6 +1406,12 @@ async def update_event_status(
         "completed_at": event.completed_at,
         "deleted_at": event.deleted_at,
     }
+
+    # Include warnings if any (non-blocking issues)
+    if warnings:
+        response["warnings"] = warnings
+
+    return response
 
 
 @router.delete("/{event_id}", status_code=http_status.HTTP_204_NO_CONTENT, deprecated=True)
@@ -1947,6 +2009,10 @@ async def stop_event(
     # Trigger billing invoice generation
     from app.tasks.billing import generate_event_invoice
     generate_event_invoice.delay(event_id)
+
+    # Trigger stats recalculation for all event participants
+    from app.tasks.statistics import recalculate_event_stats
+    recalculate_event_stats.delay(event_id)
 
     return event
 

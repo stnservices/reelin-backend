@@ -4,7 +4,8 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +22,11 @@ from app.config import get_settings
 from app.core.rate_limit import limiter
 from app.core.exceptions import ReelInException
 from app.database import init_db
+from app.utils.errors import (
+    ErrorCode,
+    format_error_response,
+    get_error_code_for_exception,
+)
 
 logger = logging.getLogger(__name__)
 from app.api.v1 import router as api_v1_router
@@ -77,22 +83,80 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
+# CORS headers for error responses
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type",
+}
+
+
 # Custom exception handlers with CORS headers
 @app.exception_handler(ReelInException)
 async def reelin_exception_handler(request: Request, exc: ReelInException) -> JSONResponse:
-    """Handle all ReelIn custom exceptions with proper CORS headers."""
+    """Handle all ReelIn custom exceptions with standardized format and CORS headers."""
+    # Get error code based on exception type
+    error_code = get_error_code_for_exception(exc.__class__.__name__)
+
     return JSONResponse(
         status_code=exc.status_code,
-        content={
-            "error": exc.message,
-            "details": exc.details,
-            "status_code": exc.status_code,
-        },
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-            "Access-Control-Allow-Headers": "Authorization, Content-Type",
-        },
+        content=format_error_response(
+            code=error_code,
+            message=exc.message,
+            details=exc.details if exc.details else None,
+        ),
+        headers=CORS_HEADERS,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Handle Pydantic validation errors with standardized format."""
+    # Transform Pydantic errors into field-level errors
+    field_errors: dict[str, str] = {}
+    for error in exc.errors():
+        # Build field path from location (skip 'body' prefix)
+        loc = error.get("loc", ())
+        field_parts = [str(part) for part in loc if part != "body"]
+        field = ".".join(field_parts) if field_parts else "request"
+        field_errors[field] = error.get("msg", "Invalid value")
+
+    return JSONResponse(
+        status_code=422,
+        content=format_error_response(
+            code=ErrorCode.VALIDATION_ERROR,
+            message="error.validation.request_invalid",
+            details={"fields": field_errors},
+        ),
+        headers=CORS_HEADERS,
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Handle FastAPI HTTPException with standardized format."""
+    # Map HTTP status codes to error codes
+    status_to_code = {
+        400: ErrorCode.VALIDATION_ERROR,
+        401: ErrorCode.AUTHENTICATION_ERROR,
+        403: ErrorCode.AUTHORIZATION_ERROR,
+        404: ErrorCode.NOT_FOUND,
+        409: ErrorCode.CONFLICT,
+        422: ErrorCode.VALIDATION_ERROR,
+        429: ErrorCode.RATE_LIMIT_ERROR,
+    }
+    error_code = status_to_code.get(exc.status_code, ErrorCode.INTERNAL_ERROR)
+
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=format_error_response(
+            code=error_code,
+            message=str(exc.detail) if exc.detail else "error.unknown",
+            details=None,
+        ),
+        headers=CORS_HEADERS,
     )
 
 
@@ -106,16 +170,12 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 
     return JSONResponse(
         status_code=500,
-        content={
-            "error": "Internal server error",
-            "details": {"message": str(exc) if settings.debug else "An unexpected error occurred"},
-            "status_code": 500,
-        },
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-            "Access-Control-Allow-Headers": "Authorization, Content-Type",
-        },
+        content=format_error_response(
+            code=ErrorCode.INTERNAL_ERROR,
+            message="error.internal.unexpected",
+            details={"message": str(exc)} if settings.debug else None,
+        ),
+        headers=CORS_HEADERS,
     )
 
 

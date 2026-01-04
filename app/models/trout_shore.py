@@ -297,6 +297,11 @@ class TSFLineup(Base):
         ForeignKey("event_enrollments.id", ondelete="CASCADE"), nullable=True, index=True
     )
 
+    # Club membership at enrollment time (for club-based reporting)
+    club_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("clubs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
     # Assignments
     draw_number: Mapped[int] = mapped_column(Integer, nullable=False)
     group_number: Mapped[int] = mapped_column(Integer, nullable=False)   # Sector/group (1, 2, 3, 4...)
@@ -320,6 +325,7 @@ class TSFLineup(Base):
     enrollment: Mapped[Optional["EventEnrollment"]] = relationship(
         "EventEnrollment", lazy="joined"
     )
+    club: Mapped[Optional["Club"]] = relationship("Club", lazy="joined")
     created_by: Mapped[Optional["UserAccount"]] = relationship(
         "UserAccount", foreign_keys=[created_by_id]
     )
@@ -623,3 +629,4 @@ class TSFFinalStanding(Base):
 from app.models.event import Event
 from app.models.user import UserAccount
 from app.models.enrollment import EventEnrollment
+from app.models.club import Club

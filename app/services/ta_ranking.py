@@ -257,6 +257,11 @@ class TARankingService:
                 total_victories=1 if outcome == TAMatchOutcome.VICTORY else 0,
                 total_ties=1 if outcome in [TAMatchOutcome.TIE_WITH_FISH, TAMatchOutcome.TIE_NO_FISH] else 0,
                 total_losses=1 if outcome in [TAMatchOutcome.LOSS_WITH_FISH, TAMatchOutcome.LOSS_NO_FISH] else 0,
+                # Detailed breakdown for tiebreakers
+                ties_with_fish=1 if outcome == TAMatchOutcome.TIE_WITH_FISH else 0,
+                ties_without_fish=1 if outcome == TAMatchOutcome.TIE_NO_FISH else 0,
+                losses_with_fish=1 if outcome == TAMatchOutcome.LOSS_WITH_FISH else 0,
+                losses_without_fish=1 if outcome == TAMatchOutcome.LOSS_NO_FISH else 0,
             )
             self.db.add(standing)
         else:
@@ -267,10 +272,18 @@ class TARankingService:
 
             if outcome == TAMatchOutcome.VICTORY:
                 standing.total_victories += 1
-            elif outcome in [TAMatchOutcome.TIE_WITH_FISH, TAMatchOutcome.TIE_NO_FISH]:
+            elif outcome == TAMatchOutcome.TIE_WITH_FISH:
                 standing.total_ties += 1
-            else:
+                standing.ties_with_fish += 1
+            elif outcome == TAMatchOutcome.TIE_NO_FISH:
+                standing.total_ties += 1
+                standing.ties_without_fish += 1
+            elif outcome == TAMatchOutcome.LOSS_WITH_FISH:
                 standing.total_losses += 1
+                standing.losses_with_fish += 1
+            elif outcome == TAMatchOutcome.LOSS_NO_FISH:
+                standing.total_losses += 1
+                standing.losses_without_fish += 1
 
             standing.updated_at = datetime.now(timezone.utc)
 
@@ -301,10 +314,14 @@ class TARankingService:
         """
         Recalculate all ranks for an event.
 
-        Ranking is based on:
-        1. Total points (primary)
-        2. Number of victories (tiebreaker 1)
-        3. Total catches (tiebreaker 2)
+        Ranking is based on (7 tiebreakers):
+        1. Total points (desc) - primary
+        2. Total fish caught (desc)
+        3. Number of victories (desc)
+        4. Ties with fish (desc)
+        5. Ties without fish (desc)
+        6. Losses with fish (asc - fewer is better)
+        7. Losses without fish (asc - fewer is better)
         """
         query = (
             select(TAQualifierStanding)
@@ -312,8 +329,12 @@ class TARankingService:
             .where(TAQualifierStanding.event_id == event_id)
             .order_by(
                 TAQualifierStanding.total_points.desc(),
-                TAQualifierStanding.total_victories.desc(),
                 TAQualifierStanding.total_fish_caught.desc(),
+                TAQualifierStanding.total_victories.desc(),
+                TAQualifierStanding.ties_with_fish.desc(),
+                TAQualifierStanding.ties_without_fish.desc(),
+                TAQualifierStanding.losses_with_fish.asc(),
+                TAQualifierStanding.losses_without_fish.asc(),
             )
         )
         result = await self.db.execute(query)
@@ -693,18 +714,37 @@ class TARankingService:
 
         # Get top scorer (by points)
         rankings = await self.compute_leg_ranking(event_id)
-        top_scorer = rankings[0] if rankings else None
+        top_scorer = None
         most_catches = None
         most_victories = None
 
+        def _transform_ranking(r: dict) -> dict:
+            """Transform ranking dict to match frontend expected field names."""
+            return {
+                "user_id": r["user_id"],
+                "user_name": r.get("user_name"),
+                "user_avatar": r.get("user_avatar"),
+                "total_points": float(r["points"]),  # Frontend expects total_points
+                "total_catches": r["captures"],  # Frontend expects total_catches
+                "victories": r.get("victories", 0),
+            }
+
         if rankings:
+            # Top scorer (by points)
+            top_scorer = _transform_ranking(rankings[0])
+
             # Most catches
             catches_sorted = sorted(rankings, key=lambda x: -x["captures"])
-            most_catches = catches_sorted[0] if catches_sorted else None
+            if catches_sorted:
+                most_catches = _transform_ranking(catches_sorted[0])
 
             # Most victories
             victories_sorted = sorted(rankings, key=lambda x: -x["victories"])
-            most_victories = victories_sorted[0] if victories_sorted else None
+            if victories_sorted:
+                most_victories = _transform_ranking(victories_sorted[0])
+
+        # Calculate average catches per match (total for both players)
+        average_catches_per_match = total_catches / completed_matches if completed_matches > 0 else 0.0
 
         return {
             "event_id": event_id,
@@ -712,6 +752,7 @@ class TARankingService:
             "total_matches": total_matches,
             "completed_matches": completed_matches,
             "total_catches": total_catches,
+            "average_catches_per_match": round(average_catches_per_match, 1),
             "top_scorer": top_scorer,
             "most_catches": most_catches,
             "most_victories": most_victories,

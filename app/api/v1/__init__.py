@@ -39,6 +39,7 @@ from app.api.v1.admin_settings import router as admin_settings_router
 from app.api.v1.admin_organizer_permissions import router as admin_organizer_permissions_router
 from app.api.v1.trout_area import router as trout_area_router
 from app.api.v1.trout_shore import router as trout_shore_router
+from app.api.v1.minigame import router as minigame_router
 
 router = APIRouter()
 
@@ -79,3 +80,4 @@ router.include_router(admin_settings_router, prefix="/admin/settings", tags=["Ad
 router.include_router(admin_organizer_permissions_router, prefix="/admin/organizer-permissions", tags=["Admin Organizer Permissions"])
 router.include_router(trout_area_router, prefix="/ta", tags=["Trout Area (TA)"])
 router.include_router(trout_shore_router, prefix="/tsf", tags=["Trout Shore Fishing (TSF)"])
+router.include_router(minigame_router, prefix="/minigame", tags=["Minigame"])

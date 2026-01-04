@@ -39,6 +39,7 @@ from app.core.permissions import OrganizerOrAdmin, EventOwnerOrAdmin
 from app.core.i18n import get_error_message
 from app.core.exceptions import NotFoundError, ValidationError, ConflictError
 from app.services.redis_cache import redis_cache
+from app.utils.lifecycle_guards import require_modifiable_status, require_draft_status
 
 from app.models.user import UserAccount, UserProfile
 from app.models.event import Event, EventStatus
@@ -62,6 +63,9 @@ from app.models.trout_area import (
 from app.schemas.trout_area import (
     # Points Rules
     TAPointsRuleResponse,
+    TAPointsRuleUpdate,
+    TAGlobalPointDefaultsResponse,
+    TAGlobalPointDefaultsUpdate,
     # Event Point Config
     TAEventPointConfigResponse,
     TAEventPointConfigUpdate,
@@ -74,6 +78,7 @@ from app.schemas.trout_area import (
     TALineupListResponse,
     TAGenerateLineupRequest,
     TAGenerateLineupResponse,
+    TAGenerateBracketResponse,
     # Match
     TAMatchResponse,
     TAMatchDetailResponse,
@@ -83,6 +88,7 @@ from app.schemas.trout_area import (
     TAGameCardResponse,
     TAGameCardSubmitRequest,
     TAGameCardValidateRequest,
+    TAGameCardAdminUpdateRequest,
     TAMyGameCardsResponse,
     # Bracket
     TAKnockoutBracketResponse,
@@ -112,6 +118,7 @@ from app.schemas.trout_area import (
 
 from app.schemas.common import MessageResponse
 from app.services.ta_pairing import TAPairingService, PairingAlgorithm
+from app.models.club import ClubMembership, MembershipStatus
 
 router = APIRouter()
 
@@ -158,6 +165,62 @@ async def get_ta_event(
     return event
 
 
+async def get_user_active_club_id(db: AsyncSession, user_id: int) -> int | None:
+    """Get user's active club_id (first active membership).
+
+    Args:
+        db: Database session
+        user_id: User ID to get club for
+
+    Returns:
+        Club ID if user has active membership, None otherwise
+    """
+    query = (
+        select(ClubMembership.club_id)
+        .where(
+            ClubMembership.user_id == user_id,
+            ClubMembership.status == MembershipStatus.ACTIVE.value,
+        )
+        .order_by(ClubMembership.joined_at.desc())
+        .limit(1)
+    )
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
+
+
+async def get_club_ids_for_users(db: AsyncSession, user_ids: list[int]) -> dict[int, int | None]:
+    """Get active club_ids for multiple users efficiently.
+
+    Args:
+        db: Database session
+        user_ids: List of user IDs
+
+    Returns:
+        Dict mapping user_id -> club_id (or None if no active membership)
+    """
+    if not user_ids:
+        return {}
+
+    # Get all active memberships for these users
+    query = (
+        select(ClubMembership.user_id, ClubMembership.club_id)
+        .where(
+            ClubMembership.user_id.in_(user_ids),
+            ClubMembership.status == MembershipStatus.ACTIVE.value,
+        )
+        .order_by(ClubMembership.user_id, ClubMembership.joined_at.desc())
+        .distinct(ClubMembership.user_id)
+    )
+    result = await db.execute(query)
+    rows = result.all()
+
+    # Build lookup dict
+    club_lookup = {row.user_id: row.club_id for row in rows}
+
+    # Fill in None for users without active membership
+    return {user_id: club_lookup.get(user_id) for user_id in user_ids}
+
+
 def map_pairing_algorithm(api_algo: PairingAlgorithmAPI) -> PairingAlgorithm:
     """Map API enum to service enum."""
     mapping = {
@@ -167,6 +230,205 @@ def map_pairing_algorithm(api_algo: PairingAlgorithmAPI) -> PairingAlgorithm:
         PairingAlgorithmAPI.SIMPLE_PAIRS: PairingAlgorithm.SIMPLE_PAIRS,
     }
     return mapping[api_algo]
+
+
+async def update_standings_for_match(
+    db: AsyncSession,
+    match: TAMatch,
+    point_config: Optional[TAEventPointConfig] = None,
+) -> None:
+    """
+    Update standings for both competitors after a match completes.
+
+    This function:
+    1. Gets or creates standings for both players
+    2. Updates totals (points, catches, W/T/L breakdown)
+    3. Updates leg_results JSONB
+    4. Recalculates ranks for all participants in the event
+    5. Updates knockout qualification based on settings
+    """
+    if match.status != TAMatchStatus.COMPLETED.value:
+        return
+
+    # Get point values (default if no config)
+    point_values = {
+        "V": Decimal("3.0"),
+        "T": Decimal("1.5"),
+        "T0": Decimal("1.0"),
+        "L": Decimal("0.5"),
+        "L0": Decimal("0.0"),
+    }
+
+    if point_config:
+        point_values = {
+            "V": point_config.victory_points,
+            "T": point_config.tie_points,
+            "T0": point_config.tie_zero_points,
+            "L": point_config.loss_points,
+            "L0": point_config.loss_zero_points,
+        }
+
+    # Get enrollments for both users
+    enrollment_query = select(EventEnrollment).where(
+        EventEnrollment.event_id == match.event_id,
+        EventEnrollment.user_id.in_([match.competitor_a_id, match.competitor_b_id]),
+        EventEnrollment.status == "approved",
+    )
+    enrollment_result = await db.execute(enrollment_query)
+    enrollments = {e.user_id: e for e in enrollment_result.scalars().all()}
+
+    # Process each competitor
+    for competitor_id, catches, outcome_code in [
+        (match.competitor_a_id, match.competitor_a_catches or 0, match.competitor_a_outcome_code),
+        (match.competitor_b_id, match.competitor_b_catches or 0, match.competitor_b_outcome_code),
+    ]:
+        if not competitor_id or competitor_id not in enrollments:
+            continue
+
+        enrollment = enrollments[competitor_id]
+        points = point_values.get(outcome_code, Decimal("0"))
+
+        # Get or create standing
+        standing_query = select(TAQualifierStanding).where(
+            TAQualifierStanding.event_id == match.event_id,
+            TAQualifierStanding.user_id == competitor_id,
+        )
+        standing_result = await db.execute(standing_query)
+        standing = standing_result.scalar_one_or_none()
+
+        if not standing:
+            standing = TAQualifierStanding(
+                event_id=match.event_id,
+                user_id=competitor_id,
+                enrollment_id=enrollment.id,
+                total_points=Decimal("0"),
+                total_matches=0,
+                total_victories=0,
+                total_ties=0,
+                total_losses=0,
+                total_fish_caught=0,
+                ties_with_fish=0,
+                ties_without_fish=0,
+                losses_with_fish=0,
+                losses_without_fish=0,
+                leg_results={},
+            )
+            db.add(standing)
+
+        # Update totals
+        standing.total_points += points
+        standing.total_matches += 1
+        standing.total_fish_caught += catches
+
+        # Update W/T/L counts
+        if outcome_code == "V":
+            standing.total_victories += 1
+        elif outcome_code == "T":
+            standing.total_ties += 1
+            standing.ties_with_fish += 1
+        elif outcome_code == "T0":
+            standing.total_ties += 1
+            standing.ties_without_fish += 1
+        elif outcome_code == "L":
+            standing.total_losses += 1
+            standing.losses_with_fish += 1
+        elif outcome_code == "L0":
+            standing.total_losses += 1
+            standing.losses_without_fish += 1
+
+        # Update leg_results JSONB
+        leg_key = str(match.leg_number)
+        leg_results = standing.leg_results or {}
+
+        if leg_key not in leg_results:
+            leg_results[leg_key] = {
+                "points": 0,
+                "victories": 0,
+                "ties": 0,
+                "losses": 0,
+                "fish": 0,
+            }
+
+        leg_results[leg_key]["points"] = float(leg_results[leg_key].get("points", 0)) + float(points)
+        leg_results[leg_key]["fish"] = leg_results[leg_key].get("fish", 0) + catches
+
+        if outcome_code == "V":
+            leg_results[leg_key]["victories"] = leg_results[leg_key].get("victories", 0) + 1
+        elif outcome_code in ["T", "T0"]:
+            leg_results[leg_key]["ties"] = leg_results[leg_key].get("ties", 0) + 1
+        elif outcome_code in ["L", "L0"]:
+            leg_results[leg_key]["losses"] = leg_results[leg_key].get("losses", 0) + 1
+
+        standing.leg_results = leg_results
+        standing.updated_at = datetime.now(timezone.utc)
+
+    await db.flush()
+
+    # Recalculate ranks for all participants
+    await recalculate_event_ranks(db, match.event_id)
+
+
+async def recalculate_event_ranks(db: AsyncSession, event_id: int) -> None:
+    """
+    Recalculate ranks for all participants in an event.
+
+    Tie-break order:
+    1) points desc
+    2) catches desc
+    3) victories desc
+    4) ties_with_fish desc
+    5) ties_without_fish desc
+    6) losses_with_fish asc
+    7) losses_without_fish asc
+    """
+    # Get all standings for the event
+    standings_query = select(TAQualifierStanding).where(
+        TAQualifierStanding.event_id == event_id
+    )
+    result = await db.execute(standings_query)
+    standings = list(result.scalars().all())
+
+    if not standings:
+        return
+
+    # Sort by tie-break rules
+    standings.sort(key=lambda s: (
+        -float(s.total_points),  # Higher points first
+        -s.total_fish_caught,    # Higher catches first
+        -s.total_victories,      # Higher victories first
+        -s.ties_with_fish,       # Higher ties with fish first
+        -s.ties_without_fish,    # Higher ties without fish first
+        s.losses_with_fish,      # Lower losses with fish first
+        s.losses_without_fish,   # Lower losses without fish first
+    ))
+
+    # Assign ranks (handle ties)
+    current_rank = 1
+    for i, standing in enumerate(standings):
+        if i > 0:
+            prev = standings[i - 1]
+            # Check if tied with previous (same points and catches at minimum)
+            if (standing.total_points == prev.total_points and
+                standing.total_fish_caught == prev.total_fish_caught and
+                standing.total_victories == prev.total_victories):
+                # Same rank as previous
+                pass
+            else:
+                current_rank = i + 1
+
+        standing.rank = current_rank
+
+    # Update knockout qualification based on settings
+    settings_query = select(TAEventSettings).where(TAEventSettings.event_id == event_id)
+    settings_result = await db.execute(settings_query)
+    settings = settings_result.scalar_one_or_none()
+
+    knockout_qualifiers = settings.knockout_qualifiers if settings else 4
+
+    for standing in standings:
+        standing.qualifies_for_knockout = standing.rank <= knockout_qualifiers
+
+    await db.flush()
 
 
 # =============================================================================
@@ -196,6 +458,113 @@ async def list_points_rules(
     return result.scalars().all()
 
 
+async def get_global_point_defaults(db: AsyncSession) -> dict:
+    """
+    Helper function to get global point defaults from TAPointsRule table.
+    Returns a dict with victory_points, tie_points, etc.
+    Falls back to hardcoded defaults if rules don't exist.
+    """
+    # Map of rule codes to field names
+    code_to_field = {
+        "V": "victory_points",
+        "T": "tie_points",
+        "T0": "tie_zero_points",
+        "L": "loss_points",
+        "L0": "loss_zero_points",
+    }
+
+    # Default values as fallback
+    defaults = {
+        "victory_points": Decimal("3.0"),
+        "tie_points": Decimal("1.5"),
+        "tie_zero_points": Decimal("1.0"),
+        "loss_points": Decimal("0.5"),
+        "loss_zero_points": Decimal("0.0"),
+    }
+
+    # Fetch all active rules
+    query = select(TAPointsRule).where(TAPointsRule.is_active == True)
+    result = await db.execute(query)
+    rules = result.scalars().all()
+
+    # Build result from rules
+    result_dict = dict(defaults)  # Start with defaults
+    for rule in rules:
+        if rule.code in code_to_field:
+            result_dict[code_to_field[rule.code]] = rule.points
+
+    return result_dict
+
+
+@router.get("/point-defaults", response_model=TAGlobalPointDefaultsResponse)
+async def get_point_defaults(
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Get global point defaults for TA competitions.
+
+    These are the default point values used when an event doesn't have
+    custom point configuration. Returns values from TAPointsRule table.
+
+    - V (Victory): default 3.0 points
+    - T (Tie with fish): default 1.5 points
+    - T0 (Tie no fish): default 1.0 points
+    - L (Loss with fish): default 0.5 points
+    - L0 (Loss no fish): default 0.0 points
+    """
+    return await get_global_point_defaults(db)
+
+
+@router.put("/point-defaults", response_model=TAGlobalPointDefaultsResponse)
+async def update_point_defaults(
+    data: TAGlobalPointDefaultsUpdate,
+    request: Request,
+    current_user: UserAccount = Depends(OrganizerOrAdmin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Update global point defaults for TA competitions.
+
+    Only administrators can modify global point defaults.
+    These defaults are used for new events when no custom config is set.
+
+    Point values must follow logical ordering:
+    victory >= tie >= tie_zero >= loss >= loss_zero
+    """
+    # Map of field names to rule codes
+    field_to_code = {
+        "victory_points": "V",
+        "tie_points": "T",
+        "tie_zero_points": "T0",
+        "loss_points": "L",
+        "loss_zero_points": "L0",
+    }
+
+    # Get update data (only non-None values)
+    update_data = data.model_dump(exclude_unset=True)
+
+    for field, value in update_data.items():
+        if value is None:
+            continue
+        code = field_to_code.get(field)
+        if not code:
+            continue
+
+        # Find and update the rule
+        query = select(TAPointsRule).where(TAPointsRule.code == code)
+        result = await db.execute(query)
+        rule = result.scalar_one_or_none()
+
+        if rule:
+            rule.points = value
+        # If rule doesn't exist, we could create it, but for now just skip
+
+    await db.commit()
+
+    # Return updated defaults
+    return await get_global_point_defaults(db)
+
+
 # =============================================================================
 # Event Point Config Endpoints (Per-event customizable point values)
 # =============================================================================
@@ -210,7 +579,7 @@ async def get_ta_point_config(
     Get point configuration for a TA event.
 
     Returns the event's custom point values if configured,
-    or the default values (V=3.0, T=1.5, T0=1.0, L=0.5, L0=0.0).
+    or the global default values from TAPointsRule table.
     """
     # Verify event exists and is TA
     await get_ta_event(event_id, db, request, require_settings=False)
@@ -221,15 +590,10 @@ async def get_ta_point_config(
     config = result.scalar_one_or_none()
 
     if not config:
-        # Return defaults
-        return {
-            "victory_points": Decimal("3.0"),
-            "tie_points": Decimal("1.5"),
-            "tie_zero_points": Decimal("1.0"),
-            "loss_points": Decimal("0.5"),
-            "loss_zero_points": Decimal("0.0"),
-            "is_default": True,
-        }
+        # Return global defaults from TAPointsRule table
+        defaults = await get_global_point_defaults(db)
+        defaults["is_default"] = True
+        return defaults
 
     return {
         "victory_points": config.victory_points,
@@ -259,7 +623,10 @@ async def update_ta_point_config(
     victory >= tie >= tie_zero >= loss >= loss_zero
     """
     # Verify event exists and is TA
-    await get_ta_event(event_id, db, request, require_settings=False)
+    event = await get_ta_event(event_id, db, request, require_settings=False)
+
+    # Guard: Point config can only be modified in Draft status
+    require_draft_status(event, action="modify point configuration")
 
     # Get or create config
     query = select(TAEventPointConfig).where(TAEventPointConfig.event_id == event_id)
@@ -310,7 +677,10 @@ async def reset_ta_point_config(
     After reset, the event will use the global default point values.
     """
     # Verify event exists and is TA
-    await get_ta_event(event_id, db, request, require_settings=False)
+    event = await get_ta_event(event_id, db, request, require_settings=False)
+
+    # Guard: Point config can only be modified in Draft status
+    require_draft_status(event, action="reset point configuration")
 
     # Delete custom config if exists
     query = select(TAEventPointConfig).where(TAEventPointConfig.event_id == event_id)
@@ -362,6 +732,7 @@ async def create_event_settings(
         match_duration_minutes=data.match_duration_minutes,
         number_of_legs=data.legs_per_match,
         max_rounds_per_leg=data.matches_per_leg or 1,
+        has_knockout_stage=data.has_knockout_bracket,
         knockout_qualifiers=data.qualification_top_n,
         requalification_slots=data.requalification_spots,
         has_requalification=data.enable_requalification,
@@ -371,6 +742,20 @@ async def create_event_settings(
     )
 
     db.add(settings)
+
+    # Also create default point config for this event
+    # This ensures every TA event has its own point configuration from the start
+    point_defaults = await get_global_point_defaults(db)
+    point_config = TAEventPointConfig(
+        event_id=event_id,
+        victory_points=point_defaults["victory_points"],
+        tie_points=point_defaults["tie_points"],
+        tie_zero_points=point_defaults["tie_zero_points"],
+        loss_points=point_defaults["loss_points"],
+        loss_zero_points=point_defaults["loss_zero_points"],
+    )
+    db.add(point_config)
+
     await db.commit()
     await db.refresh(settings)
 
@@ -400,18 +785,31 @@ async def update_event_settings(
     Update TA settings for an event.
 
     Note: Some settings cannot be changed after lineups are generated.
+    - has_knockout_bracket can only be changed in DRAFT status
     """
     event = await get_ta_event(event_id, db, request)
     settings = event.ta_settings
 
     update_data = data.model_dump(exclude_unset=True)
 
+    # Guard: has_knockout_bracket can only be modified in DRAFT status
+    if "has_knockout_bracket" in update_data:
+        require_draft_status(event, action="modify knockout bracket setting")
+
+    # Field mappings: API field name -> model field name
+    field_mappings = {
+        "has_knockout_bracket": "has_knockout_stage",
+    }
+
     for field, value in update_data.items():
-        if hasattr(settings, field):
+        # Map API field names to model field names
+        model_field = field_mappings.get(field, field)
+
+        if hasattr(settings, model_field):
             if field == "pairing_algorithm" and value:
-                setattr(settings, field, value.value if hasattr(value, "value") else value)
+                setattr(settings, model_field, value.value if hasattr(value, "value") else value)
             else:
-                setattr(settings, field, value)
+                setattr(settings, model_field, value)
 
     settings.updated_at = datetime.now(timezone.utc)
     await db.commit()
@@ -633,7 +1031,10 @@ async def list_lineups(
 
     query = (
         select(TALineup)
-        .options(selectinload(TALineup.user).selectinload(UserAccount.profile))
+        .options(
+            selectinload(TALineup.user).selectinload(UserAccount.profile),
+            selectinload(TALineup.club),
+        )
         .where(TALineup.event_id == event_id)
         .order_by(TALineup.draw_number)
     )
@@ -657,6 +1058,8 @@ async def list_lineups(
             "user_id": lineup.user_id,
             "enrollment_id": lineup.enrollment_id,
             "team_id": lineup.team_id,
+            "club_id": lineup.club_id,
+            "club_name": lineup.club.name if lineup.club else None,
             "draw_number": lineup.draw_number,
             "sector": lineup.sector,
             "initial_seat": lineup.initial_seat,
@@ -852,6 +1255,10 @@ async def generate_lineups(
     If participant count is odd, a ghost participant is added automatically.
     """
     event = await get_ta_event(event_id, db, request)
+
+    # Guard: Block lineup generation for ongoing/completed events
+    require_modifiable_status(event, action="generate lineups")
+
     settings = event.ta_settings
 
     # Delete existing lineups, matches, and game cards if regenerating
@@ -904,6 +1311,14 @@ async def generate_lineups(
             "enrollment_id": enrollment.id,
             "name": name,
         })
+
+    # Get club_ids for all participants (for club-based reporting)
+    user_ids = [p["user_id"] for p in participants if p["user_id"]]
+    club_lookup = await get_club_ids_for_users(db, user_ids)
+
+    # Add club_id to each participant
+    for p in participants:
+        p["club_id"] = club_lookup.get(p["user_id"]) if p["user_id"] else None
 
     # ========================================================================
     # Use TAPairingService with Circle Method for proper round-robin pairings
@@ -1006,6 +1421,7 @@ async def generate_lineups(
                 leg_number=leg,
                 user_id=participant["user_id"] if participant and not is_ghost else None,
                 enrollment_id=participant["enrollment_id"] if participant and not is_ghost else None,
+                club_id=participant.get("club_id") if participant and not is_ghost else None,
                 draw_number=draw_num,
                 sector=1,
                 seat_number=seat_num,
@@ -1123,6 +1539,8 @@ async def generate_lineups(
             user_id=lineup.user_id,
             enrollment_id=lineup.enrollment_id,
             team_id=lineup.team_id,
+            club_id=lineup.club_id,
+            club_name=lineup.club.name if lineup.club else None,
             draw_number=lineup.draw_number,
             sector=lineup.sector,
             initial_seat=lineup.initial_seat,
@@ -1244,6 +1662,130 @@ async def list_matches(
         "total": len(items),
         "by_leg": by_leg,
     }
+
+
+# NOTE: This export route MUST be defined before /matches/{match_id} to avoid
+# "export" being matched as a match_id by FastAPI's path parameter routing
+@router.get("/events/{event_id}/matches/export")
+async def export_matches_csv(
+    event_id: int,
+    request: Request,
+    current_user: UserAccount = Depends(EventOwnerOrAdmin()),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Export TA match results to CSV.
+
+    Includes all matches with competitor details, catches, points, and outcomes.
+    Organized by leg and match number.
+    """
+    from fastapi.responses import StreamingResponse
+    from io import StringIO
+    import csv
+
+    event = await get_ta_event(event_id, db, request, require_settings=False)
+    event_name_safe = sanitize_filename(event.name) if event.name else f"Event_{event_id}"
+    start_date_str = event.start_date.strftime("%d%m%Y") if event.start_date else "nodate"
+
+    # Get all matches with competitor details
+    matches_query = (
+        select(TAMatch)
+        .options(
+            selectinload(TAMatch.competitor_a).selectinload(UserAccount.profile),
+            selectinload(TAMatch.competitor_b).selectinload(UserAccount.profile),
+        )
+        .where(TAMatch.event_id == event_id)
+        .order_by(TAMatch.leg_number, TAMatch.match_number)
+    )
+    result = await db.execute(matches_query)
+    matches = result.scalars().all()
+
+    # Create CSV content
+    output = StringIO()
+    writer = csv.writer(output)
+
+    # === SECTION: Event Info ===
+    writer.writerow(["TA Match Results Export"])
+    writer.writerow(["Event:", event.name or f"Event {event_id}"])
+    writer.writerow(["Export Date:", datetime.now().strftime("%Y-%m-%d %H:%M")])
+    writer.writerow([])
+
+    # === SECTION: Match Results ===
+    writer.writerow(["=== MATCH RESULTS ==="])
+    writer.writerow([])
+
+    # Header
+    writer.writerow([
+        "Leg", "Match #", "Phase",
+        "Player A Name", "Player A Draw #", "Player A Catches", "Player A Points", "Player A Outcome",
+        "Player B Name", "Player B Draw #", "Player B Catches", "Player B Points", "Player B Outcome",
+        "Status", "Is Ghost Match", "Completed At"
+    ])
+
+    # Data rows
+    for match in matches:
+        # Get player names
+        player_a_name = ""
+        if match.competitor_a and match.competitor_a.profile:
+            player_a_name = f"{match.competitor_a.profile.last_name} {match.competitor_a.profile.first_name}".strip()
+        elif match.competitor_a:
+            player_a_name = f"User {match.competitor_a_id}"
+
+        player_b_name = ""
+        if match.competitor_b and match.competitor_b.profile:
+            player_b_name = f"{match.competitor_b.profile.last_name} {match.competitor_b.profile.first_name}".strip()
+        elif match.competitor_b:
+            player_b_name = f"User {match.competitor_b_id}"
+
+        # Handle ghost opponents
+        if match.is_ghost_match:
+            if match.ghost_side == "A":
+                player_a_name = "[GHOST]"
+            elif match.ghost_side == "B":
+                player_b_name = "[GHOST]"
+
+        writer.writerow([
+            match.leg_number,
+            match.match_number,
+            match.phase or "qualifier",
+            player_a_name,
+            match.competitor_a_draw_number or "",
+            match.competitor_a_catches if match.competitor_a_catches is not None else "",
+            float(match.competitor_a_points) if match.competitor_a_points is not None else "",
+            match.competitor_a_outcome_code or "",
+            player_b_name,
+            match.competitor_b_draw_number or "",
+            match.competitor_b_catches if match.competitor_b_catches is not None else "",
+            float(match.competitor_b_points) if match.competitor_b_points is not None else "",
+            match.competitor_b_outcome_code or "",
+            match.status or "",
+            "Yes" if match.is_ghost_match else "No",
+            match.completed_at.strftime("%Y-%m-%d %H:%M") if match.completed_at else "",
+        ])
+
+    writer.writerow([])
+
+    # === SECTION: Summary Statistics ===
+    writer.writerow(["=== SUMMARY ==="])
+    writer.writerow([])
+
+    total_matches = len(matches)
+    completed_matches = sum(1 for m in matches if m.status == "completed")
+    ghost_matches = sum(1 for m in matches if m.is_ghost_match)
+
+    writer.writerow(["Total Matches:", total_matches])
+    writer.writerow(["Completed Matches:", completed_matches])
+    writer.writerow(["Ghost Matches:", ghost_matches])
+
+    # Return CSV file
+    output.seek(0)
+    filename = f"{event_name_safe}_{start_date_str}_TA_Matches.csv"
+
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 
 @router.get("/events/{event_id}/matches/{match_id}", response_model=TAMatchDetailResponse)
@@ -1426,6 +1968,41 @@ async def edit_match_results(
     # Recalculate outcomes and points if both catches are set
     if match.competitor_a_catches is not None and match.competitor_b_catches is not None:
         match.calculate_outcome(point_config)  # This modifies the match object in place
+        match.status = TAMatchStatus.COMPLETED.value
+        if not match.completed_at:
+            match.completed_at = datetime.now(timezone.utc)
+
+        # Update both game cards to reflect admin entry
+        # Get both cards for this match
+        cards_query = select(TAGameCard).where(TAGameCard.match_id == match_id)
+        cards_result = await db.execute(cards_query)
+        cards = cards_result.scalars().all()
+
+        now = datetime.now(timezone.utc)
+        for card in cards:
+            # Set catches based on which player this card belongs to
+            if card.user_id == match.competitor_a_id:
+                card.my_catches = match.competitor_a_catches
+                card.opponent_catches = match.competitor_b_catches
+            elif card.user_id == match.competitor_b_id:
+                card.my_catches = match.competitor_b_catches
+                card.opponent_catches = match.competitor_a_catches
+
+            # Mark as submitted and fully validated by admin
+            card.is_submitted = True
+            if not card.submitted_at:
+                card.submitted_at = now
+            card.is_validated = True
+            if not card.validated_at:
+                card.validated_at = now
+                card.validated_by_id = current_user.id
+            card.i_validated_opponent = True
+            if not card.i_validated_at:
+                card.i_validated_at = now
+
+            # Update status to validated (fully completed)
+            card.status = TAGameCardStatus.VALIDATED.value
+            card.updated_at = now
 
     await db.commit()
     await db.refresh(match)
@@ -1507,6 +2084,7 @@ async def get_my_game_cards(
             event_id=card.event_id,
             match_id=card.match_id,
             leg_number=card.leg_number,
+            phase=TATournamentPhaseAPI(card.match.phase) if card.match and card.match.phase else TATournamentPhaseAPI.QUALIFIER,
             user_id=card.user_id,
             my_catches=card.my_catches,
             my_seat=card.my_seat,
@@ -1608,7 +2186,7 @@ async def submit_game_card(
     card.submitted_at = datetime.now(timezone.utc)
     card.updated_at = datetime.now(timezone.utc)
 
-    # If ghost opponent, auto-validate (both directions)
+    # If ghost opponent, auto-validate (both directions) and complete match
     if card.is_ghost_opponent:
         card.opponent_catches = 0
         # Ghost validates my catches (auto)
@@ -1618,6 +2196,35 @@ async def submit_game_card(
         card.i_validated_opponent = True
         card.i_validated_at = datetime.now(timezone.utc)
         card.status = TAGameCardStatus.VALIDATED.value
+
+        # Sync catches to TAMatch and complete it (BYE match auto-completion)
+        if card.match_id:
+            match_query = select(TAMatch).where(TAMatch.id == card.match_id)
+            match_result = await db.execute(match_query)
+            match = match_result.scalar_one_or_none()
+            if match:
+                # Set catches on match - user is competitor_a or competitor_b
+                if match.competitor_a_id == card.user_id:
+                    match.competitor_a_catches = card.my_catches
+                    match.competitor_b_catches = 0  # Ghost always 0
+                else:
+                    match.competitor_b_catches = card.my_catches
+                    match.competitor_a_catches = 0  # Ghost always 0
+
+                # Calculate outcome using point config
+                point_config_query = select(TAEventPointConfig).where(
+                    TAEventPointConfig.event_id == event_id
+                )
+                point_result = await db.execute(point_config_query)
+                point_config = point_result.scalar_one_or_none()
+                match.calculate_outcome(point_config)
+
+                # Mark match as completed
+                match.status = TAMatchStatus.COMPLETED.value
+                match.completed_at = datetime.now(timezone.utc)
+
+                # Auto-update standings for ghost match
+                await update_standings_for_match(db, match, point_config)
 
     # Check if opponent has already submitted - if so, update opponent_catches
     if card.opponent_id:
@@ -1792,6 +2399,11 @@ async def validate_opponent_card(
                     match.competitor_b_catches = opponent_card.my_catches
                     match.competitor_a_catches = my_card.my_catches
 
+                # Sync opponent_catches on both game cards to match final values
+                opponent_card.opponent_catches = my_card.my_catches
+                my_card.opponent_catches = opponent_card.my_catches
+                my_card.updated_at = datetime.now(timezone.utc)
+
                 # Calculate outcome
                 point_config_query = select(TAEventPointConfig).where(TAEventPointConfig.event_id == event_id)
                 point_result = await db.execute(point_config_query)
@@ -1800,6 +2412,9 @@ async def validate_opponent_card(
 
                 match.status = TAMatchStatus.COMPLETED.value
                 match.completed_at = datetime.now(timezone.utc)
+
+                # Auto-update standings when match completes
+                await update_standings_for_match(db, match, point_config)
     else:
         opponent_card.is_disputed = True
         opponent_card.dispute_reason = data.dispute_reason
@@ -1940,6 +2555,7 @@ async def get_user_game_cards(
             event_id=card.event_id,
             match_id=card.match_id,
             leg_number=card.leg_number,
+            phase=TATournamentPhaseAPI(card.match.phase) if card.match and card.match.phase else TATournamentPhaseAPI.QUALIFIER,
             user_id=card.user_id,
             my_catches=card.my_catches,
             my_seat=card.my_seat,
@@ -1980,11 +2596,8 @@ async def get_user_game_cards(
 async def admin_update_game_card(
     event_id: int,
     card_id: int,
+    data: TAGameCardAdminUpdateRequest,
     request: Request,
-    my_catches: Optional[int] = None,
-    is_submitted: Optional[bool] = None,
-    is_validated: Optional[bool] = None,
-    i_validated_opponent: Optional[bool] = None,
     current_user: UserAccount = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -2032,21 +2645,40 @@ async def admin_update_game_card(
         )
 
     # Update fields
-    if my_catches is not None:
-        card.my_catches = my_catches
-    if is_submitted is not None:
-        card.is_submitted = is_submitted
-        if is_submitted and not card.submitted_at:
+    if data.my_catches is not None:
+        card.my_catches = data.my_catches
+        # Sync opponent's card's opponent_catches to keep data consistent
+        if card.opponent_id:
+            opp_card_sync_query = select(TAGameCard).where(
+                TAGameCard.match_id == card.match_id,
+                TAGameCard.user_id == card.opponent_id,
+            )
+            opp_result_sync = await db.execute(opp_card_sync_query)
+            opp_card_sync = opp_result_sync.scalar_one_or_none()
+            if opp_card_sync:
+                opp_card_sync.opponent_catches = data.my_catches
+                opp_card_sync.updated_at = datetime.now(timezone.utc)
+    if data.is_submitted is not None:
+        card.is_submitted = data.is_submitted
+        if data.is_submitted and not card.submitted_at:
             card.submitted_at = datetime.now(timezone.utc)
-    if is_validated is not None:
-        card.is_validated = is_validated
-        if is_validated and not card.validated_at:
+    if data.is_validated is not None:
+        card.is_validated = data.is_validated
+        if data.is_validated and not card.validated_at:
             card.validated_at = datetime.now(timezone.utc)
             card.validated_by_id = current_user.id
-    if i_validated_opponent is not None:
-        card.i_validated_opponent = i_validated_opponent
-        if i_validated_opponent and not card.i_validated_at:
+    if data.i_validated_opponent is not None:
+        card.i_validated_opponent = data.i_validated_opponent
+        if data.i_validated_opponent and not card.i_validated_at:
             card.i_validated_at = datetime.now(timezone.utc)
+
+    # For BYE matches (ghost opponent), auto-validate opponent since there is none
+    if card.is_ghost_opponent and card.is_submitted:
+        card.i_validated_opponent = True
+        if not card.i_validated_at:
+            card.i_validated_at = datetime.now(timezone.utc)
+        # Also set opponent catches to 0 for BYE
+        card.opponent_catches = 0
 
     card.updated_at = datetime.now(timezone.utc)
 
@@ -2054,7 +2686,7 @@ async def admin_update_game_card(
     if card.is_disputed:
         card.status = TAGameCardStatus.DISPUTED.value
     elif card.is_validated and card.i_validated_opponent:
-        card.status = TAGameCardStatus.COMPLETED.value
+        card.status = TAGameCardStatus.VALIDATED.value
     elif card.is_validated:
         card.status = TAGameCardStatus.VALIDATED.value
     elif card.is_submitted:
@@ -2062,39 +2694,56 @@ async def admin_update_game_card(
 
     # Check if match should be completed
     if card.match and card.is_validated and card.i_validated_opponent:
-        # Get opponent's card
-        opp_card_query = select(TAGameCard).where(
-            TAGameCard.match_id == card.match_id,
-            TAGameCard.user_id == card.opponent_id,
-        )
-        opp_result = await db.execute(opp_card_query)
-        opp_card = opp_result.scalar_one_or_none()
+        match = card.match
 
-        if opp_card and opp_card.is_validated and opp_card.i_validated_opponent:
-            # Both cards validated, update match
-            match = card.match
-            match.player_a_catches = card.my_catches if match.player_a_id == card.user_id else opp_card.my_catches
-            match.player_b_catches = opp_card.my_catches if match.player_a_id == card.user_id else card.my_catches
+        # Handle BYE matches (ghost opponent) - complete immediately
+        if card.is_ghost_opponent:
+            # For BYE: user wins by default with their catches vs 0
+            if match.player_a_id == card.user_id:
+                match.player_a_catches = card.my_catches
+                match.player_b_catches = 0
+            else:
+                match.player_b_catches = card.my_catches
+                match.player_a_catches = 0
             match.status = TAMatchStatus.COMPLETED.value
             match.completed_at = datetime.now(timezone.utc)
 
-            # Calculate outcomes
-            a_catches = match.player_a_catches or 0
-            b_catches = match.player_b_catches or 0
+            # Get point config and calculate outcomes
+            point_config_query = select(TAEventPointConfig).where(
+                TAEventPointConfig.event_id == card.event_id
+            )
+            point_result = await db.execute(point_config_query)
+            point_config = point_result.scalar_one_or_none()
+            match.calculate_outcome(point_config)
 
-            if a_catches > b_catches:
-                match.player_a_outcome = TAMatchOutcome.VICTORY.value
-                match.player_b_outcome = TAMatchOutcome.LOSS.value
-            elif b_catches > a_catches:
-                match.player_a_outcome = TAMatchOutcome.LOSS.value
-                match.player_b_outcome = TAMatchOutcome.VICTORY.value
-            else:
-                if a_catches == 0:
-                    match.player_a_outcome = TAMatchOutcome.TIE_ZERO.value
-                    match.player_b_outcome = TAMatchOutcome.TIE_ZERO.value
-                else:
-                    match.player_a_outcome = TAMatchOutcome.TIE.value
-                    match.player_b_outcome = TAMatchOutcome.TIE.value
+            # Auto-update standings when match completes
+            await update_standings_for_match(db, match, point_config)
+        else:
+            # Regular match - check opponent's card
+            opp_card_query = select(TAGameCard).where(
+                TAGameCard.match_id == card.match_id,
+                TAGameCard.user_id == card.opponent_id,
+            )
+            opp_result = await db.execute(opp_card_query)
+            opp_card = opp_result.scalar_one_or_none()
+
+            if opp_card and opp_card.is_validated and opp_card.i_validated_opponent:
+                # Both cards validated, update match
+                match.player_a_catches = card.my_catches if match.player_a_id == card.user_id else opp_card.my_catches
+                match.player_b_catches = opp_card.my_catches if match.player_a_id == card.user_id else card.my_catches
+                match.status = TAMatchStatus.COMPLETED.value
+                match.completed_at = datetime.now(timezone.utc)
+
+                # Get point config and calculate outcomes
+                point_config_query = select(TAEventPointConfig).where(
+                    TAEventPointConfig.event_id == card.event_id
+                )
+                point_result = await db.execute(point_config_query)
+                point_config = point_result.scalar_one_or_none()
+                match.calculate_outcome(point_config)
+
+                # Auto-update standings when match completes
+                await update_standings_for_match(db, match, point_config)
 
     await db.commit()
     await db.refresh(card)
@@ -2250,6 +2899,497 @@ async def recalculate_standings(
     return {"message": f"Standings recalculated for {len(user_stats)} participants"}
 
 
+@router.post(
+    "/events/{event_id}/generate-bracket",
+    response_model=TAGenerateBracketResponse,
+)
+async def generate_knockout_bracket(
+    event_id: int,
+    request: Request,
+    current_user: UserAccount = Depends(EventOwnerOrAdmin()),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Generate knockout bracket after qualifier phase is complete.
+
+    This creates matches for requalification (if enabled), semifinals, and finals.
+    Game cards are created for each match.
+
+    Requirements:
+    - All qualifier matches must be completed
+    - Event must have knockout stage enabled
+
+    Process:
+    1. Verify all qualifier matches are completed
+    2. Get final standings from qualifier
+    3. Create bracket based on settings:
+       - If requalification: positions N+1 to N+M compete for extra spots
+       - Semifinals: Top 4 (or top 2 + requalification winners)
+       - Finals: Grand final (1st/2nd) and Small final (3rd/4th)
+    4. Create game cards for each bracket match
+    """
+    event = await get_ta_event(event_id, db, request)
+    settings = event.ta_settings
+
+    if not settings:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Event has no TA settings configured",
+        )
+
+    if not settings.has_knockout_stage:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Event does not have knockout stage enabled",
+        )
+
+    # Check if all qualifier matches are completed
+    qualifier_matches_query = select(TAMatch).where(
+        TAMatch.event_id == event_id,
+        TAMatch.phase == TATournamentPhase.QUALIFIER.value,
+    )
+    result = await db.execute(qualifier_matches_query)
+    qualifier_matches = result.scalars().all()
+
+    if not qualifier_matches:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No qualifier matches found. Generate lineups first.",
+        )
+
+    incomplete_matches = [m for m in qualifier_matches if m.status != TAMatchStatus.COMPLETED.value]
+    if incomplete_matches:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot generate bracket: {len(incomplete_matches)} qualifier matches not completed",
+        )
+
+    # Check if bracket already exists
+    existing_bracket_query = select(TAKnockoutBracket).where(
+        TAKnockoutBracket.event_id == event_id
+    )
+    existing_result = await db.execute(existing_bracket_query)
+    existing_bracket = existing_result.scalar_one_or_none()
+
+    if existing_bracket:
+        # Delete existing bracket and its matches/cards
+        await db.execute(
+            TAGameCard.__table__.delete().where(
+                TAGameCard.event_id == event_id,
+                TAGameCard.match_id.in_(
+                    select(TAMatch.id).where(
+                        TAMatch.event_id == event_id,
+                        TAMatch.phase != TATournamentPhase.QUALIFIER.value,
+                    )
+                )
+            )
+        )
+        await db.execute(
+            TAMatch.__table__.delete().where(
+                TAMatch.event_id == event_id,
+                TAMatch.phase != TATournamentPhase.QUALIFIER.value,
+            )
+        )
+        await db.delete(existing_bracket)
+        await db.flush()
+
+    # Get standings sorted by rank
+    standings_query = (
+        select(TAQualifierStanding)
+        .options(selectinload(TAQualifierStanding.user).selectinload(UserAccount.profile))
+        .where(TAQualifierStanding.event_id == event_id)
+        .order_by(TAQualifierStanding.rank)
+    )
+    standings_result = await db.execute(standings_query)
+    standings = standings_result.scalars().all()
+
+    if len(standings) < 4:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Need at least 4 participants for knockout bracket",
+        )
+
+    # Build seeds map
+    seeds = {}
+    for standing in standings:
+        seeds[str(standing.rank)] = standing.user_id
+
+    # Create bracket record
+    bracket = TAKnockoutBracket(
+        event_id=event_id,
+        total_qualifiers=settings.knockout_qualifiers,
+        seeds=seeds,
+        is_generated=True,
+    )
+    db.add(bracket)
+    await db.flush()
+
+    # Determine next leg number (after qualifier legs)
+    max_leg_query = select(func.max(TAMatch.leg_number)).where(
+        TAMatch.event_id == event_id,
+        TAMatch.phase == TATournamentPhase.QUALIFIER.value,
+    )
+    max_leg_result = await db.execute(max_leg_query)
+    max_qualifier_leg = max_leg_result.scalar() or 0
+    next_leg = max_qualifier_leg + 1
+
+    matches_created = []
+    now = datetime.now(timezone.utc)
+
+    # Helper to create match and game cards
+    async def create_bracket_match(
+        phase: str,
+        match_number: int,
+        leg_number: int,
+        competitor_a_id: Optional[int],
+        competitor_b_id: Optional[int],
+        winner_placement: Optional[int] = None,
+        loser_placement: Optional[int] = None,
+    ) -> TAMatch:
+        match = TAMatch(
+            event_id=event_id,
+            phase=phase,
+            leg_number=leg_number,
+            round_number=1,
+            match_number=match_number,
+            seat_a=1,  # Knockout matches use seat 1 (no seat rotation)
+            seat_b=1,
+            competitor_a_id=competitor_a_id,
+            competitor_b_id=competitor_b_id,
+            status=TAMatchStatus.SCHEDULED.value,
+            is_ghost_match=False,
+        )
+        db.add(match)
+        await db.flush()
+
+        # Create game cards for both competitors
+        if competitor_a_id:
+            card_a = TAGameCard(
+                event_id=event_id,
+                match_id=match.id,
+                leg_number=leg_number,
+                user_id=competitor_a_id,
+                opponent_id=competitor_b_id,
+                my_seat=1,  # Knockout matches use seat 1
+                opponent_seat=1,
+                is_ghost_opponent=competitor_b_id is None,
+                status=TAGameCardStatus.DRAFT.value,
+            )
+            db.add(card_a)
+
+        if competitor_b_id:
+            card_b = TAGameCard(
+                event_id=event_id,
+                match_id=match.id,
+                leg_number=leg_number,
+                user_id=competitor_b_id,
+                opponent_id=competitor_a_id,
+                my_seat=1,  # Knockout matches use seat 1
+                opponent_seat=1,
+                is_ghost_opponent=competitor_a_id is None,
+                status=TAGameCardStatus.DRAFT.value,
+            )
+            db.add(card_b)
+
+        return match
+
+    # ========================================================================
+    # REQUALIFICATION PHASE (if enabled)
+    # ========================================================================
+    requalification_winners = []
+    if settings.has_requalification and settings.requalification_slots > 0:
+        # Positions knockout_qualifiers+1 to knockout_qualifiers+requalification_slots compete
+        # E.g., if knockout_qualifiers=4 and requalification_slots=4:
+        # Positions 5,6,7,8 compete: Match1: 5 vs 8, Match2: 6 vs 7
+        start_pos = settings.knockout_qualifiers + 1
+        end_pos = settings.knockout_qualifiers + settings.requalification_slots
+
+        requalification_positions = []
+        for standing in standings:
+            if start_pos <= standing.rank <= end_pos:
+                requalification_positions.append(standing)
+
+        # Create requalification matches (top vs bottom seeding)
+        num_requalification = len(requalification_positions) // 2
+        for i in range(num_requalification):
+            top_seed = requalification_positions[i] if i < len(requalification_positions) else None
+            bottom_seed = requalification_positions[-(i+1)] if len(requalification_positions) > i else None
+
+            if top_seed and bottom_seed:
+                match = await create_bracket_match(
+                    phase=TATournamentPhase.REQUALIFICATION.value,
+                    match_number=i + 1,
+                    leg_number=next_leg,
+                    competitor_a_id=top_seed.user_id,
+                    competitor_b_id=bottom_seed.user_id,
+                )
+                matches_created.append(match)
+
+        next_leg += 1
+
+    # ========================================================================
+    # SEMIFINALS
+    # ========================================================================
+    # Top 4 from qualifier (or top 2 + 2 requalification winners)
+    semifinal_competitors = []
+
+    if settings.has_requalification and settings.requalification_slots > 0:
+        # Top 2 from qualifier + placeholder for requalification winners
+        for standing in standings[:2]:
+            semifinal_competitors.append(standing.user_id)
+        # Requalification winners will be determined later
+        # For now, create semifinals with top 4 from qualifier
+        # (requalification winners will replace positions 3,4 when they complete)
+        for standing in standings[2:4]:
+            semifinal_competitors.append(standing.user_id)
+    else:
+        # Top 4 go directly to semifinals
+        for standing in standings[:4]:
+            semifinal_competitors.append(standing.user_id)
+
+    # Semifinal 1: Seed 1 vs Seed 4
+    if len(semifinal_competitors) >= 4:
+        sf1 = await create_bracket_match(
+            phase=TATournamentPhase.SEMIFINAL.value,
+            match_number=1,
+            leg_number=next_leg,
+            competitor_a_id=semifinal_competitors[0],
+            competitor_b_id=semifinal_competitors[3],
+        )
+        matches_created.append(sf1)
+
+        # Semifinal 2: Seed 2 vs Seed 3
+        sf2 = await create_bracket_match(
+            phase=TATournamentPhase.SEMIFINAL.value,
+            match_number=2,
+            leg_number=next_leg,
+            competitor_a_id=semifinal_competitors[1],
+            competitor_b_id=semifinal_competitors[2],
+        )
+        matches_created.append(sf2)
+
+    next_leg += 1
+
+    # ========================================================================
+    # FINALS (Grand Final + Small Final)
+    # ========================================================================
+    # Finals competitors will be determined from semifinal results
+    # For now, create empty placeholder matches
+
+    # Small Final (3rd/4th place) - losers of semifinals
+    small_final = await create_bracket_match(
+        phase=TATournamentPhase.FINAL_SMALL.value,
+        match_number=1,
+        leg_number=next_leg,
+        competitor_a_id=None,  # Will be set when SF1 completes
+        competitor_b_id=None,  # Will be set when SF2 completes
+        winner_placement=3,
+        loser_placement=4,
+    )
+    matches_created.append(small_final)
+
+    # Grand Final (1st/2nd place) - winners of semifinals
+    grand_final = await create_bracket_match(
+        phase=TATournamentPhase.FINAL_GRAND.value,
+        match_number=1,
+        leg_number=next_leg,
+        competitor_a_id=None,  # Will be set when SF1 completes
+        competitor_b_id=None,  # Will be set when SF2 completes
+        winner_placement=1,
+        loser_placement=2,
+    )
+    matches_created.append(grand_final)
+
+    # Set direct placements for those who didn't make knockout
+    direct_placements = {}
+    placement_start = settings.knockout_qualifiers + 1
+    if settings.has_requalification:
+        placement_start = settings.knockout_qualifiers + settings.requalification_slots + 1
+
+    for standing in standings:
+        if standing.rank >= placement_start:
+            direct_placements[str(standing.rank)] = standing.user_id
+
+    bracket.direct_placements = direct_placements
+
+    await db.commit()
+
+    return {
+        "message": f"Knockout bracket generated: {len(matches_created)} matches created",
+        "matches_created": len(matches_created),
+        "has_requalification": settings.has_requalification,
+    }
+
+
+@router.post(
+    "/events/{event_id}/advance-to-finals",
+)
+async def advance_to_finals(
+    event_id: int,
+    request: Request,
+    current_user: UserAccount = Depends(EventOwnerOrAdmin()),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Advance semifinals winners/losers to finals.
+
+    This endpoint:
+    1. Checks that all semifinals are completed
+    2. Determines winners and losers from each semifinal
+    3. Populates Grand Final with semifinal winners
+    4. Populates Small Final (3rd/4th) with semifinal losers
+    5. Creates game cards for finals matches
+
+    Requirements:
+    - Both semifinal matches must be completed
+    - Finals matches must exist (bracket already generated)
+    """
+    event = await get_ta_event(event_id, db, request)
+    settings = event.ta_settings
+
+    if not settings or not settings.has_knockout_stage:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Event does not have knockout stage enabled",
+        )
+
+    # Get semifinal matches
+    semifinal_query = select(TAMatch).where(
+        TAMatch.event_id == event_id,
+        TAMatch.phase == TATournamentPhase.SEMIFINAL.value,
+    ).order_by(TAMatch.match_number)
+    result = await db.execute(semifinal_query)
+    semifinals = result.scalars().all()
+
+    if len(semifinals) < 2:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Semifinals not found. Generate bracket first.",
+        )
+
+    # Check all semifinals are completed
+    incomplete = [m for m in semifinals if m.status != TAMatchStatus.COMPLETED.value]
+    if incomplete:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot advance: {len(incomplete)} semifinal(s) not completed",
+        )
+
+    # Get finals matches
+    finals_query = select(TAMatch).where(
+        TAMatch.event_id == event_id,
+        TAMatch.phase.in_([
+            TATournamentPhase.FINAL_GRAND.value,
+            TATournamentPhase.FINAL_SMALL.value,
+        ]),
+    )
+    finals_result = await db.execute(finals_query)
+    finals = {m.phase: m for m in finals_result.scalars().all()}
+
+    if not finals:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Finals matches not found. Generate bracket first.",
+        )
+
+    # Determine winners and losers from semifinals
+    sf_results = []
+    for sf in semifinals:
+        a_catches = sf.competitor_a_catches or 0
+        b_catches = sf.competitor_b_catches or 0
+        if a_catches > b_catches:
+            winner_id = sf.competitor_a_id
+            loser_id = sf.competitor_b_id
+        elif b_catches > a_catches:
+            winner_id = sf.competitor_b_id
+            loser_id = sf.competitor_a_id
+        else:
+            # Tie - use tiebreaker (outcome codes)
+            a_outcome = sf.competitor_a_outcome_code or ""
+            b_outcome = sf.competitor_b_outcome_code or ""
+            # V > T > T0 > L > L0 - but in a tie, use original seeding
+            # For now, use competitor_a as winner on tie (higher seed)
+            winner_id = sf.competitor_a_id
+            loser_id = sf.competitor_b_id
+        sf_results.append({"winner": winner_id, "loser": loser_id})
+
+    # Update Grand Final with winners
+    grand_final = finals.get(TATournamentPhase.FINAL_GRAND.value)
+    if grand_final:
+        grand_final.competitor_a_id = sf_results[0]["winner"]
+        grand_final.competitor_b_id = sf_results[1]["winner"]
+
+        # Create game cards for grand final competitors
+        for user_id, opponent_id in [
+            (sf_results[0]["winner"], sf_results[1]["winner"]),
+            (sf_results[1]["winner"], sf_results[0]["winner"]),
+        ]:
+            existing_card = await db.execute(
+                select(TAGameCard).where(
+                    TAGameCard.match_id == grand_final.id,
+                    TAGameCard.user_id == user_id,
+                )
+            )
+            if not existing_card.scalar_one_or_none():
+                card = TAGameCard(
+                    event_id=event_id,
+                    match_id=grand_final.id,
+                    leg_number=grand_final.leg_number,
+                    user_id=user_id,
+                    opponent_id=opponent_id,
+                    my_seat=1,
+                    opponent_seat=1,
+                    is_ghost_opponent=False,
+                    status=TAGameCardStatus.DRAFT.value,
+                )
+                db.add(card)
+
+    # Update Small Final with losers
+    small_final = finals.get(TATournamentPhase.FINAL_SMALL.value)
+    if small_final:
+        small_final.competitor_a_id = sf_results[0]["loser"]
+        small_final.competitor_b_id = sf_results[1]["loser"]
+
+        # Create game cards for small final competitors
+        for user_id, opponent_id in [
+            (sf_results[0]["loser"], sf_results[1]["loser"]),
+            (sf_results[1]["loser"], sf_results[0]["loser"]),
+        ]:
+            existing_card = await db.execute(
+                select(TAGameCard).where(
+                    TAGameCard.match_id == small_final.id,
+                    TAGameCard.user_id == user_id,
+                )
+            )
+            if not existing_card.scalar_one_or_none():
+                card = TAGameCard(
+                    event_id=event_id,
+                    match_id=small_final.id,
+                    leg_number=small_final.leg_number,
+                    user_id=user_id,
+                    opponent_id=opponent_id,
+                    my_seat=1,
+                    opponent_seat=1,
+                    is_ghost_opponent=False,
+                    status=TAGameCardStatus.DRAFT.value,
+                )
+                db.add(card)
+
+    await db.commit()
+
+    return {
+        "message": "Advanced to finals successfully",
+        "grand_final": {
+            "competitor_a_id": sf_results[0]["winner"],
+            "competitor_b_id": sf_results[1]["winner"],
+        },
+        "small_final": {
+            "competitor_a_id": sf_results[0]["loser"],
+            "competitor_b_id": sf_results[1]["loser"],
+        },
+    }
+
+
 @router.get(
     "/events/{event_id}/standings",
     response_model=TAQualifierStandingListResponse,
@@ -2297,12 +3437,22 @@ async def get_standings(
         settings.additional_rules.get("current_phase", "qualifier")
     )
 
+    # Determine available phases based on bracket setting
+    if settings.has_knockout_stage:
+        available_phases = ["qualifier", "semifinal", "final"]
+        if settings.has_requalification:
+            available_phases.insert(1, "requalification")
+    else:
+        available_phases = ["qualifier"]
+
     return {
         "items": items,
         "total": len(items),
         "phase": current_phase,
         "qualified_count": min(len(items), settings.knockout_qualifiers),
         "requalification_count": settings.requalification_slots if settings.has_requalification else 0,
+        "has_knockout_bracket": settings.has_knockout_stage,
+        "available_phases": available_phases,
     }
 
 
@@ -2758,128 +3908,6 @@ async def export_lineups_excel(
     return StreamingResponse(
         output,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
-
-
-@router.get("/events/{event_id}/matches/export")
-async def export_matches_csv(
-    event_id: int,
-    request: Request,
-    current_user: UserAccount = Depends(EventOwnerOrAdmin()),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Export TA match results to CSV.
-
-    Includes all matches with competitor details, catches, points, and outcomes.
-    Organized by leg and match number.
-    """
-    from fastapi.responses import StreamingResponse
-    from io import StringIO
-    import csv
-
-    event = await get_ta_event(event_id, db, request, require_settings=False)
-    event_name_safe = sanitize_filename(event.name) if event.name else f"Event_{event_id}"
-    start_date_str = event.start_date.strftime("%d%m%Y") if event.start_date else "nodate"
-
-    # Get all matches with competitor details
-    matches_query = (
-        select(TAMatch)
-        .options(
-            selectinload(TAMatch.competitor_a).selectinload(UserAccount.profile),
-            selectinload(TAMatch.competitor_b).selectinload(UserAccount.profile),
-        )
-        .where(TAMatch.event_id == event_id)
-        .order_by(TAMatch.leg_number, TAMatch.match_number)
-    )
-    result = await db.execute(matches_query)
-    matches = result.scalars().all()
-
-    # Create CSV content
-    output = StringIO()
-    writer = csv.writer(output)
-
-    # === SECTION: Event Info ===
-    writer.writerow(["TA Match Results Export"])
-    writer.writerow(["Event:", event.name or f"Event {event_id}"])
-    writer.writerow(["Export Date:", datetime.now().strftime("%Y-%m-%d %H:%M")])
-    writer.writerow([])
-
-    # === SECTION: Match Results ===
-    writer.writerow(["=== MATCH RESULTS ==="])
-    writer.writerow([])
-
-    # Header
-    writer.writerow([
-        "Leg", "Match #", "Phase",
-        "Player A Name", "Player A Draw #", "Player A Catches", "Player A Points", "Player A Outcome",
-        "Player B Name", "Player B Draw #", "Player B Catches", "Player B Points", "Player B Outcome",
-        "Status", "Is Ghost Match", "Completed At"
-    ])
-
-    # Data rows
-    for match in matches:
-        # Get player names
-        player_a_name = ""
-        if match.competitor_a and match.competitor_a.profile:
-            player_a_name = f"{match.competitor_a.profile.last_name} {match.competitor_a.profile.first_name}".strip()
-        elif match.competitor_a:
-            player_a_name = f"User {match.competitor_a_id}"
-
-        player_b_name = ""
-        if match.competitor_b and match.competitor_b.profile:
-            player_b_name = f"{match.competitor_b.profile.last_name} {match.competitor_b.profile.first_name}".strip()
-        elif match.competitor_b:
-            player_b_name = f"User {match.competitor_b_id}"
-
-        # Handle ghost opponents
-        if match.is_ghost_match:
-            if match.ghost_side == "A":
-                player_a_name = "[GHOST]"
-            elif match.ghost_side == "B":
-                player_b_name = "[GHOST]"
-
-        writer.writerow([
-            match.leg_number,
-            match.match_number,
-            match.phase or "qualifier",
-            player_a_name,
-            match.competitor_a_draw_number or "",
-            match.competitor_a_catches if match.competitor_a_catches is not None else "",
-            float(match.competitor_a_points) if match.competitor_a_points is not None else "",
-            match.competitor_a_outcome_code or "",
-            player_b_name,
-            match.competitor_b_draw_number or "",
-            match.competitor_b_catches if match.competitor_b_catches is not None else "",
-            float(match.competitor_b_points) if match.competitor_b_points is not None else "",
-            match.competitor_b_outcome_code or "",
-            match.status or "",
-            "Yes" if match.is_ghost_match else "No",
-            match.completed_at.strftime("%Y-%m-%d %H:%M") if match.completed_at else "",
-        ])
-
-    writer.writerow([])
-
-    # === SECTION: Summary Statistics ===
-    writer.writerow(["=== SUMMARY ==="])
-    writer.writerow([])
-
-    total_matches = len(matches)
-    completed_matches = sum(1 for m in matches if m.status == "completed")
-    ghost_matches = sum(1 for m in matches if m.is_ghost_match)
-
-    writer.writerow(["Total Matches:", total_matches])
-    writer.writerow(["Completed Matches:", completed_matches])
-    writer.writerow(["Ghost Matches:", ghost_matches])
-
-    # Return CSV file
-    output.seek(0)
-    filename = f"{event_name_safe}_{start_date_str}_TA_Matches.csv"
-
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 

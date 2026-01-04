@@ -57,6 +57,9 @@ class UserAccount(Base):
     device_tokens: Mapped[List["UserDeviceToken"]] = relationship(
         "UserDeviceToken", back_populates="user", lazy="noload"
     )
+    minigame_scores: Mapped[List["MinigameScore"]] = relationship(
+        "MinigameScore", back_populates="user", lazy="noload"
+    )
 
     @property
     def has_password(self) -> bool:
@@ -194,3 +197,4 @@ class TokenBlacklist(Base):
 from app.models.location import Country, City
 from app.models.social_account import SocialAccount
 from app.models.notification import UserNotificationPreferences, UserDeviceToken
+from app.models.minigame import MinigameScore

@@ -265,6 +265,8 @@ class TSFLineupResponse(TSFLineupBase):
     event_id: int
     user_id: Optional[int]
     enrollment_id: Optional[int]
+    club_id: Optional[int] = None
+    club_name: Optional[str] = None
     created_at: datetime
 
     # Nested user info

@@ -19,6 +19,7 @@ class AchievementDefinitionResponse(BaseModel):
     threshold: Optional[int] = None
     event_type_id: Optional[int] = None
     event_type_name: Optional[str] = None
+    applicable_formats: Optional[list[str]] = None
     fish_id: Optional[int] = None
     fish_name: Optional[str] = None
     icon_url: Optional[str] = None
@@ -41,6 +42,7 @@ class AchievementDefinitionResponse(BaseModel):
             threshold=achievement.threshold,
             event_type_id=achievement.event_type_id,
             event_type_name=achievement.event_type.name if achievement.event_type else None,
+            applicable_formats=achievement.applicable_formats,
             fish_id=achievement.fish_id,
             fish_name=achievement.fish.name if achievement.fish else None,
             icon_url=achievement.icon_url,
@@ -128,6 +130,23 @@ class EventTypeStatsResponse(BaseModel):
     # Last activity
     last_event_date: Optional[datetime] = None
 
+    # TA-specific stats (nullable - only for TA participants)
+    ta_total_matches: Optional[int] = None
+    ta_match_wins: Optional[int] = None
+    ta_match_losses: Optional[int] = None
+    ta_match_ties: Optional[int] = None
+    ta_total_catches: Optional[int] = None
+    ta_tournament_wins: Optional[int] = None
+    ta_tournament_podiums: Optional[int] = None
+
+    # TSF-specific stats (nullable - only for TSF participants)
+    tsf_total_days: Optional[int] = None
+    tsf_sector_wins: Optional[int] = None
+    tsf_total_catches: Optional[int] = None
+    tsf_tournament_wins: Optional[int] = None
+    tsf_tournament_podiums: Optional[int] = None
+    tsf_best_position_points: Optional[int] = None
+
     model_config = ConfigDict(from_attributes=True)
 
     @classmethod
@@ -154,6 +173,21 @@ class EventTypeStatsResponse(BaseModel):
             consecutive_events=stats.consecutive_events,
             max_consecutive_events=stats.max_consecutive_events,
             last_event_date=stats.last_event_date,
+            # TA-specific stats
+            ta_total_matches=stats.ta_total_matches,
+            ta_match_wins=stats.ta_match_wins,
+            ta_match_losses=stats.ta_match_losses,
+            ta_match_ties=stats.ta_match_ties,
+            ta_total_catches=stats.ta_total_catches,
+            ta_tournament_wins=stats.ta_tournament_wins,
+            ta_tournament_podiums=stats.ta_tournament_podiums,
+            # TSF-specific stats
+            tsf_total_days=stats.tsf_total_days,
+            tsf_sector_wins=stats.tsf_sector_wins,
+            tsf_total_catches=stats.tsf_total_catches,
+            tsf_tournament_wins=stats.tsf_tournament_wins,
+            tsf_tournament_podiums=stats.tsf_tournament_podiums,
+            tsf_best_position_points=stats.tsf_best_position_points,
         )
 
 

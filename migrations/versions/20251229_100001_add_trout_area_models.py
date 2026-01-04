@@ -40,6 +40,17 @@ def upgrade() -> None:
     )
     op.create_index(op.f("ix_ta_points_rules_id"), "ta_points_rules", ["id"], unique=False)
 
+    # Seed default point rules
+    op.execute("""
+        INSERT INTO ta_points_rules (code, points, label, description, is_active) VALUES
+            ('V', 3.0, 'Victory', 'Points for winning a match', true),
+            ('T', 1.5, 'Tie', 'Points for a tie when both caught fish', true),
+            ('T0', 1.0, 'Tie Zero', 'Points for a tie when neither caught fish', true),
+            ('L', 0.5, 'Loss', 'Points for losing but catching fish', true),
+            ('L0', 0.0, 'Loss Zero', 'Points for losing without catching fish', true)
+        ON CONFLICT (code) DO NOTHING;
+    """)
+
     # =========================================================================
     # TA Event Settings
     # =========================================================================

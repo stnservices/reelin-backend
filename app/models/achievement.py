@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Optional
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -54,6 +55,23 @@ class AchievementType(str, Enum):
     COMEBACK_KING = "comeback_king"      # Improve 5+ ranks from initial position
     DIVERSITY_MASTER = "diversity_master"  # Catch every available species in single event
 
+    # TA-specific achievement types
+    TA_MATCH_WINS = "ta_match_wins"          # Number of TA match wins (tiered)
+    TA_TOURNAMENT_WIN = "ta_tournament_win"  # Win a TA tournament (special)
+    TA_PERFECT_LEG = "ta_perfect_leg"        # Win all matches in a single leg (special)
+    TA_CLEAN_SHEET = "ta_clean_sheet"        # Win match with opponent at 0 catches (special)
+
+    # TSF-specific achievement types
+    TSF_SECTOR_WINS = "tsf_sector_wins"              # Number of TSF sector wins (tiered)
+    TSF_TOURNAMENT_WIN = "tsf_tournament_win"        # Win a TSF tournament (special)
+    TSF_DAY_WINNER = "tsf_day_winner"                # Win a TSF competition day (special)
+    TSF_CONSISTENT_PERFORMER = "tsf_consistent_performer"  # Top 5 all days of multi-day event (special)
+
+    # Cross-format achievement types
+    CROSS_FORMAT_PARTICIPATION = "cross_format_participation"  # Participated in SF + TA + TSF
+    CROSS_FORMAT_WINS = "cross_format_wins"                    # Won in all 3 formats
+    CROSS_FORMAT_PODIUMS = "cross_format_podiums"              # Podium in all 3 formats
+
 
 class AchievementDefinition(Base):
     """
@@ -82,6 +100,10 @@ class AchievementDefinition(Base):
         ForeignKey("event_types.id", ondelete="SET NULL"), nullable=True, index=True
     )
 
+    # Format applicability (null = applies to all formats)
+    # Valid values: ["sf"], ["ta"], ["tsf"], ["sf", "ta"], ["ta", "tsf"], ["sf", "ta", "tsf"], or null
+    applicable_formats: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+
     # Fish species specificity (for species-specific achievements like "Pike Master")
     fish_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("fish.id", ondelete="SET NULL"), nullable=True, index=True
@@ -109,6 +131,21 @@ class AchievementDefinition(Base):
 
     def __repr__(self) -> str:
         return f"<AchievementDefinition(id={self.id}, code={self.code}, tier={self.tier})>"
+
+    def applies_to_format(self, format_code: str) -> bool:
+        """
+        Check if this achievement applies to a given format.
+
+        Args:
+            format_code: One of "sf", "ta", "tsf"
+
+        Returns:
+            True if achievement applies to this format, False otherwise.
+            Returns True if applicable_formats is None (applies to all).
+        """
+        if self.applicable_formats is None:
+            return True
+        return format_code in self.applicable_formats
 
 
 class UserAchievement(Base):

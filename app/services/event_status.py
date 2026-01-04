@@ -19,7 +19,8 @@ from app.models.enrollment import EnrollmentStatus, EventEnrollment
 from app.models.event import Event, EventStatus
 from app.models.team import Team, TeamMember
 from app.models.user import UserAccount
-from app.models.trout_area import TALineup, TAGameCard
+from app.models.trout_area import TALineup, TAGameCard, TAMatch, TAMatchStatus
+from app.models.trout_shore import TSFLineup, TSFSectorValidator
 
 logger = logging.getLogger(__name__)
 
@@ -112,8 +113,18 @@ class EventStatusService:
                 allowed_transitions=allowed,
             )
 
-    async def check_start_preconditions(self, event: Event) -> None:
-        """Check preconditions for starting an event."""
+    async def check_start_preconditions(self, event: Event) -> list[str]:
+        """
+        Check preconditions for starting an event.
+
+        Returns:
+            List of warning messages (non-blocking issues).
+
+        Raises:
+            PreconditionFailedError: If blocking preconditions are not met.
+        """
+        warnings: list[str] = []
+
         # Must have at least one approved participant
         approved_query = select(func.count(EventEnrollment.id)).where(
             EventEnrollment.event_id == event.id,
@@ -199,6 +210,49 @@ class EventStatusService:
                     details={"gamecard_count": 0},
                 )
 
+            # Warning: Check for incomplete matches from previous run (non-blocking)
+            incomplete_query = select(func.count(TAMatch.id)).where(
+                TAMatch.event_id == event.id,
+                TAMatch.status.notin_([TAMatchStatus.COMPLETED.value, TAMatchStatus.CANCELLED.value]),
+            )
+            incomplete_result = await self.db.execute(incomplete_query)
+            incomplete_count = incomplete_result.scalar() or 0
+
+            if incomplete_count > 0:
+                warnings.append(
+                    f"Warning: {incomplete_count} incomplete match(es) from previous run"
+                )
+
+        # For Trout Shore Fishing events, check lineups and sector validators
+        if event.event_type and event.event_type.code == "trout_shore":
+            # Check for lineups
+            lineup_query = select(func.count(TSFLineup.id)).where(
+                TSFLineup.event_id == event.id,
+            )
+            lineup_result = await self.db.execute(lineup_query)
+            lineup_count = lineup_result.scalar() or 0
+
+            if lineup_count == 0:
+                raise PreconditionFailedError(
+                    message="Cannot start Trout Shore Fishing event: No lineups generated. Please generate lineups first.",
+                    details={"lineup_count": 0},
+                )
+
+            # Check for sector validators
+            validator_query = select(func.count(TSFSectorValidator.id)).where(
+                TSFSectorValidator.event_id == event.id,
+            )
+            validator_result = await self.db.execute(validator_query)
+            validator_count = validator_result.scalar() or 0
+
+            if validator_count == 0:
+                raise PreconditionFailedError(
+                    message="Cannot start Trout Shore Fishing event: No sector validators assigned. Please assign validators first.",
+                    details={"validator_count": 0},
+                )
+
+        return warnings
+
     async def update_status(
         self,
         event_id: int,
@@ -206,18 +260,22 @@ class EventStatusService:
         user: UserAccount,
         reason: Optional[str] = None,
         force: bool = False,
-    ) -> Tuple[Event, str]:
+    ) -> Tuple[Event, str, list[str]]:
         """
         Update event status based on action.
 
-        Returns tuple of (updated_event, previous_status).
+        Returns tuple of (updated_event, previous_status, warnings).
         """
+        warnings: list[str] = []
+
         try:
             # Handle delete/restore separately
             if action == "delete":
-                return await self._soft_delete(event_id, user)
+                event, prev = await self._soft_delete(event_id, user)
+                return event, prev, []
             elif action == "restore":
-                return await self._restore(event_id, user)
+                event, prev = await self._restore(event_id, user)
+                return event, prev, []
 
             # Get event
             event = await self.get_event(event_id)
@@ -247,7 +305,7 @@ class EventStatusService:
 
             # Check preconditions for start
             if action == "start" and not force:
-                await self.check_start_preconditions(event)
+                warnings = await self.check_start_preconditions(event)
 
             # Update status
             event.status = target_status
@@ -288,7 +346,7 @@ class EventStatusService:
             await self.db.commit()
             await self.db.refresh(event, ["event_type", "scoring_config"])
 
-            return event, previous_status
+            return event, previous_status, warnings
 
         except (NotFoundError, AuthorizationError, StatusTransitionError, PreconditionFailedError):
             # Re-raise our custom exceptions
