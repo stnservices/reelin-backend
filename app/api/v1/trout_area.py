@@ -1936,6 +1936,69 @@ async def start_match(
     return match
 
 
+@router.post("/events/{event_id}/matches/start-leg")
+async def start_leg_matches(
+    event_id: int,
+    leg_number: int = Query(..., description="Leg number to start"),
+    phase: Optional[str] = Query(None, description="Phase filter (e.g., semifinal, final_grand)"),
+    request: Request = None,
+    current_user: UserAccount = Depends(EventOwnerOrAdmin()),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Start all scheduled matches in a specific leg/phase.
+
+    This allows organizers to start an entire knockout round at once,
+    enabling mobile users to input their scores.
+
+    Args:
+        event_id: Event ID
+        leg_number: The display leg number (round_number in DB)
+        phase: Optional phase filter (required for knockout phases)
+
+    Returns:
+        Count of matches started
+    """
+    await get_ta_event(event_id, db, request)
+
+    # Find all scheduled matches for this leg (using round_number for display consistency)
+    query = (
+        select(TAMatch)
+        .where(
+            TAMatch.event_id == event_id,
+            TAMatch.round_number == leg_number,
+            TAMatch.status == TAMatchStatus.SCHEDULED.value,
+        )
+    )
+
+    if phase:
+        query = query.where(TAMatch.phase == phase)
+
+    result = await db.execute(query)
+    matches = result.scalars().all()
+
+    if not matches:
+        return {
+            "message": "No scheduled matches found for this leg",
+            "started_count": 0,
+        }
+
+    # Start all matches
+    now = datetime.now(timezone.utc)
+    for match in matches:
+        match.status = TAMatchStatus.IN_PROGRESS.value
+        match.started_at = now
+
+    await db.commit()
+
+    return {
+        "message": f"Started {len(matches)} matches",
+        "started_count": len(matches),
+        "leg_number": leg_number,
+        "phase": phase,
+    }
+
+
 @router.patch("/events/{event_id}/matches/{match_id}/results", response_model=TAMatchResponse)
 async def edit_match_results(
     event_id: int,
