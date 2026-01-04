@@ -3571,14 +3571,13 @@ async def get_leg_matches(
     ranking_service = TARankingService(db)
     matches = await ranking_service.get_leg_matches(event_id, leg_number, phase)
 
-    current_phase = TATournamentPhaseAPI(
-        settings.additional_rules.get("current_phase", "qualifier") if settings else "qualifier"
-    )
+    # Return the requested phase filter, or default to qualifier if not specified
+    response_phase = TATournamentPhaseAPI(phase) if phase else TATournamentPhaseAPI.QUALIFIER
 
     return {
         "event_id": event_id,
         "leg_number": leg_number,
-        "phase": current_phase,
+        "phase": response_phase,
         "matches": matches,
         "total_matches": len(matches),
     }

@@ -599,12 +599,17 @@ class TARankingService:
         leg_number: int,
         phase: Optional[str] = None,
     ) -> list[dict]:
-        """Get all matches for a specific leg with A vs B details."""
+        """Get all matches for a specific leg with A vs B details.
+
+        Note: leg_number parameter is the display/round number (1, 2, 3... within each phase),
+        not the sequential leg_number field which continues across phases.
+        This matches the schedule endpoint behavior where round_number is returned as leg_number.
+        """
         query = (
             select(TAMatch)
             .where(
                 TAMatch.event_id == event_id,
-                TAMatch.leg_number == leg_number,
+                TAMatch.round_number == leg_number,  # Use round_number for display consistency
             )
             .order_by(TAMatch.match_number)
         )
@@ -640,9 +645,12 @@ class TARankingService:
 
             match_details.append({
                 "match_id": m.id,
-                "leg_number": m.leg_number,
+                "leg_number": m.round_number,  # Use round_number as display leg_number for consistency
                 "round_number": m.round_number,
                 "match_number": m.match_number,
+                "phase": m.phase,
+                "seat_a": m.seat_a,
+                "seat_b": m.seat_b,
                 "competitor_a_id": m.competitor_a_id,
                 "competitor_a_name": f"{user_a.profile.first_name} {user_a.profile.last_name}".strip() if user_a and user_a.profile else None,
                 "competitor_a_catches": m.competitor_a_catches or 0,
