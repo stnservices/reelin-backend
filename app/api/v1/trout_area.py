@@ -362,6 +362,65 @@ async def _cascade_knockout_update(db: AsyncSession, event_id: int, match: "TAMa
             "small_final_b": sf_results[1]["loser"],
         }
 
+    # Check if both finals are completed → update final_standings
+    if phase in [TATournamentPhase.FINAL_GRAND.value, TATournamentPhase.FINAL_SMALL.value]:
+        finals_query = select(TAMatch).where(
+            TAMatch.event_id == event_id,
+            TAMatch.phase.in_([
+                TATournamentPhase.FINAL_GRAND.value,
+                TATournamentPhase.FINAL_SMALL.value,
+            ]),
+        )
+        finals_result = await db.execute(finals_query)
+        finals = list(finals_result.scalars().all())
+
+        all_completed = len(finals) == 2 and all(m.status == TAMatchStatus.COMPLETED.value for m in finals)
+        if all_completed:
+            # Both finals done - update knockout bracket final_standings
+            grand_final = next((m for m in finals if m.phase == TATournamentPhase.FINAL_GRAND.value), None)
+            small_final = next((m for m in finals if m.phase == TATournamentPhase.FINAL_SMALL.value), None)
+
+            final_standings = {}
+            if grand_final:
+                gf_a = grand_final.competitor_a_catches or 0
+                gf_b = grand_final.competitor_b_catches or 0
+                if gf_a > gf_b:
+                    final_standings["1"] = grand_final.competitor_a_id
+                    final_standings["2"] = grand_final.competitor_b_id
+                elif gf_b > gf_a:
+                    final_standings["1"] = grand_final.competitor_b_id
+                    final_standings["2"] = grand_final.competitor_a_id
+                else:  # Tie - competitor_a (higher seed) wins
+                    final_standings["1"] = grand_final.competitor_a_id
+                    final_standings["2"] = grand_final.competitor_b_id
+
+            if small_final:
+                sf_a = small_final.competitor_a_catches or 0
+                sf_b = small_final.competitor_b_catches or 0
+                if sf_a > sf_b:
+                    final_standings["3"] = small_final.competitor_a_id
+                    final_standings["4"] = small_final.competitor_b_id
+                elif sf_b > sf_a:
+                    final_standings["3"] = small_final.competitor_b_id
+                    final_standings["4"] = small_final.competitor_a_id
+                else:  # Tie - competitor_a (higher seed) wins
+                    final_standings["3"] = small_final.competitor_a_id
+                    final_standings["4"] = small_final.competitor_b_id
+
+            # Update knockout bracket
+            from app.models.trout_area import TAKnockoutBracket
+            bracket_query = select(TAKnockoutBracket).where(TAKnockoutBracket.event_id == event_id)
+            bracket_result = await db.execute(bracket_query)
+            bracket = bracket_result.scalar_one_or_none()
+            if bracket:
+                bracket.final_standings = final_standings
+                bracket.is_completed = True
+
+            return {
+                "cascaded_to": "final_standings",
+                "final_standings": final_standings,
+            }
+
     return None
 
 
@@ -3494,11 +3553,12 @@ async def generate_knockout_bracket(
     # ========================================================================
     requalification_winners = []
     if settings.has_requalification and settings.requalification_slots > 0:
-        # Positions knockout_qualifiers+1 to knockout_qualifiers+requalification_slots compete
-        # E.g., if knockout_qualifiers=4 and requalification_slots=4:
-        # Positions 5,6,7,8 compete: Match1: 5 vs 8, Match2: 6 vs 7
-        start_pos = settings.knockout_qualifiers + 1
-        end_pos = settings.knockout_qualifiers + settings.requalification_slots
+        # Use direct_to_semifinal to determine who competes in requalification
+        # E.g., if direct_to_semifinal=2 and requalification_slots=4:
+        # Positions 3,4,5,6 compete: Match1: 3 vs 6, Match2: 4 vs 5
+        direct_count = getattr(settings, 'direct_to_semifinal', 2)
+        start_pos = direct_count + 1
+        end_pos = direct_count + settings.requalification_slots
 
         requalification_positions = []
         for standing in standings:
@@ -3530,13 +3590,16 @@ async def generate_knockout_bracket(
     semifinal_competitors = []
 
     if settings.has_requalification and settings.requalification_slots > 0:
-        # Top 2 from qualifier + placeholder for requalification winners
-        for standing in standings[:2]:
+        # Use direct_to_semifinal config (how many bypass requalification)
+        direct_count = getattr(settings, 'direct_to_semifinal', 2)
+        for standing in standings[:direct_count]:
             semifinal_competitors.append(standing.user_id)
         # Requalification winners will be determined later
-        # For now, create semifinals with top 4 from qualifier
-        # (requalification winners will replace positions 3,4 when they complete)
-        for standing in standings[2:4]:
+        # For now, fill remaining semifinal slots with next ranked from qualifier
+        # (requalification winners will replace these positions when they complete)
+        requalification_winners = settings.requalification_slots // 2
+        remaining_slots = requalification_winners
+        for standing in standings[direct_count:direct_count + remaining_slots]:
             semifinal_competitors.append(standing.user_id)
     else:
         # Top 4 go directly to semifinals
@@ -3598,9 +3661,13 @@ async def generate_knockout_bracket(
 
     # Set direct placements for those who didn't make knockout
     direct_placements = {}
-    placement_start = settings.knockout_qualifiers + 1
+    direct_count = getattr(settings, 'direct_to_semifinal', 2)
     if settings.has_requalification:
-        placement_start = settings.knockout_qualifiers + settings.requalification_slots + 1
+        # Those after requalification participants get direct placement
+        placement_start = direct_count + settings.requalification_slots + 1
+    else:
+        # Top 4 in semifinals, rest get direct placement from 5th onwards
+        placement_start = 5
 
     for standing in standings:
         if standing.rank >= placement_start:
@@ -4125,6 +4192,45 @@ async def get_standings(
             available_phases.insert(1, "requalification")
     else:
         available_phases = ["qualifier"]
+
+    # Check if knockout bracket is completed - apply final standings from knockout
+    if settings.has_knockout_stage and not phase:
+        from app.models.trout_area import TAKnockoutBracket
+        bracket_query = select(TAKnockoutBracket).where(
+            TAKnockoutBracket.event_id == event_id,
+            TAKnockoutBracket.is_completed == True,
+        )
+        bracket_result = await db.execute(bracket_query)
+        bracket = bracket_result.scalar_one_or_none()
+
+        if bracket and bracket.final_standings:
+            # Reorder items based on knockout final_standings (positions 1-4)
+            final_standings = bracket.final_standings  # {"1": user_id, "2": user_id, ...}
+            user_id_to_item = {item.user_id: item for item in items}
+
+            reordered_items = []
+            used_user_ids = set()
+
+            # First, add knockout placements (1st through 4th)
+            for position in ["1", "2", "3", "4"]:
+                if position in final_standings:
+                    user_id = final_standings[position]
+                    if user_id in user_id_to_item:
+                        item = user_id_to_item[user_id]
+                        item.rank = int(position)  # Override rank with knockout placement
+                        reordered_items.append(item)
+                        used_user_ids.add(user_id)
+
+            # Then add remaining participants (5th onwards) in original order
+            remaining_rank = len(reordered_items) + 1
+            for item in items:
+                if item.user_id not in used_user_ids:
+                    if item.rank is not None:  # Not DQ
+                        item.rank = remaining_rank
+                        remaining_rank += 1
+                    reordered_items.append(item)
+
+            items = reordered_items
 
     return {
         "items": items,

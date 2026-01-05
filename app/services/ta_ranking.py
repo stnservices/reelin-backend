@@ -70,6 +70,8 @@ class TARankingService:
     def __init__(self, db: AsyncSession):
         self.db = db
         self._points_rules: dict[str, Decimal] = {}
+        # Cache for direct match results: {(event_id, user_a, user_b): 1/-1/0}
+        self._direct_match_cache: dict[tuple[int, int, int], int] = {}
 
     async def _load_points_rules(self) -> None:
         """Load points rules from database."""
@@ -86,6 +88,76 @@ class TARankingService:
     def _get_points(self, outcome: TAMatchOutcome) -> Decimal:
         """Get points for a match outcome."""
         return self._points_rules.get(outcome.value, Decimal("0"))
+
+    async def _get_direct_match_result(
+        self,
+        event_id: int,
+        user_a_id: int,
+        user_b_id: int,
+        phase: Optional[str] = None,
+    ) -> int:
+        """
+        Get the direct match result between two users (Story 12.2: 8th tiebreaker).
+
+        Returns:
+            1 if user_a won against user_b
+            -1 if user_b won against user_a
+            0 if no direct match or tie
+        """
+        # Check cache first
+        cache_key = (event_id, user_a_id, user_b_id)
+        if cache_key in self._direct_match_cache:
+            return self._direct_match_cache[cache_key]
+
+        # Query for direct match between these two users
+        query = select(TAMatch).where(
+            TAMatch.event_id == event_id,
+            TAMatch.status == TAMatchStatus.COMPLETED.value,
+            (
+                (TAMatch.competitor_a_id == user_a_id) & (TAMatch.competitor_b_id == user_b_id) |
+                (TAMatch.competitor_a_id == user_b_id) & (TAMatch.competitor_b_id == user_a_id)
+            ),
+        )
+        if phase:
+            query = query.where(TAMatch.phase == phase)
+
+        result = await self.db.execute(query)
+        matches = result.scalars().all()
+
+        if not matches:
+            self._direct_match_cache[cache_key] = 0
+            self._direct_match_cache[(event_id, user_b_id, user_a_id)] = 0
+            return 0
+
+        # Sum up wins for each user across all direct matches
+        user_a_wins = 0
+        user_b_wins = 0
+
+        for match in matches:
+            if match.competitor_a_id == user_a_id:
+                if match.competitor_a_outcome_code == 'V':
+                    user_a_wins += 1
+                elif match.competitor_b_outcome_code == 'V':
+                    user_b_wins += 1
+            else:  # user_b is competitor_a
+                if match.competitor_a_outcome_code == 'V':
+                    user_b_wins += 1
+                elif match.competitor_b_outcome_code == 'V':
+                    user_a_wins += 1
+
+        # Determine result
+        if user_a_wins > user_b_wins:
+            result_val = 1
+        elif user_b_wins > user_a_wins:
+            result_val = -1
+        else:
+            result_val = 0
+
+        # Cache both directions
+        self._direct_match_cache[cache_key] = result_val
+        self._direct_match_cache[(event_id, user_b_id, user_a_id)] = -result_val
+
+        return result_val
 
     async def is_leg_complete(
         self,
@@ -408,7 +480,7 @@ class TARankingService:
         """
         Recalculate all ranks for an event.
 
-        Ranking is based on (7 tiebreakers):
+        Ranking is based on (8 tiebreakers - Story 12.2):
         1. Total points (desc) - primary
         2. Total fish caught (desc)
         3. Number of victories (desc)
@@ -416,7 +488,11 @@ class TARankingService:
         5. Ties without fish (desc)
         6. Losses with fish (asc - fewer is better)
         7. Losses without fish (asc - fewer is better)
+        8. Direct match result (if still tied)
         """
+        # Clear direct match cache for fresh calculation
+        self._direct_match_cache.clear()
+
         query = (
             select(TAQualifierStanding)
             .options(selectinload(TAQualifierStanding.user).selectinload(UserAccount.profile))
@@ -432,7 +508,7 @@ class TARankingService:
             )
         )
         result = await self.db.execute(query)
-        standings = result.scalars().all()
+        standings = list(result.scalars().all())
 
         movements = []
         previous_leader = None
@@ -443,14 +519,57 @@ class TARankingService:
                 previous_leader = s.user_id
                 break
 
+        # Helper to get standing stats tuple for comparison (first 7 criteria)
+        def get_stats_tuple(s: TAQualifierStanding) -> tuple:
+            return (
+                s.total_points,
+                s.total_fish_caught,
+                s.total_victories,
+                s.ties_with_fish,
+                s.ties_without_fish,
+                s.losses_with_fish,
+                s.losses_without_fish,
+            )
+
+        # Story 12.2: Apply 8th tiebreaker (direct match) for tied standings
+        # Group consecutive standings with identical 7-criteria stats
+        i = 0
+        while i < len(standings):
+            # Find the end of the tie group
+            tie_start = i
+            tie_stats = get_stats_tuple(standings[i])
+            while i < len(standings) and get_stats_tuple(standings[i]) == tie_stats:
+                i += 1
+            tie_end = i
+
+            # If there's a tie group (more than 1 standing)
+            if tie_end - tie_start > 1:
+                tie_group = standings[tie_start:tie_end]
+
+                # Resolve ties using direct match (8th tiebreaker)
+                # Simple bubble sort with async direct match lookup
+                for j in range(len(tie_group)):
+                    for k in range(j + 1, len(tie_group)):
+                        direct_result = await self._get_direct_match_result(
+                            event_id,
+                            tie_group[j].user_id,
+                            tie_group[k].user_id,
+                        )
+                        # If k beat j in direct match, swap them
+                        if direct_result == -1:
+                            tie_group[j], tie_group[k] = tie_group[k], tie_group[j]
+
+                # Put sorted tie group back
+                standings[tie_start:tie_end] = tie_group
+
         # Assign new ranks
-        for i, standing in enumerate(standings, 1):
+        for rank_pos, standing in enumerate(standings, 1):
             previous_rank = standing.rank
-            standing.rank = i
+            standing.rank = rank_pos
             standing.updated_at = datetime.now(timezone.utc)
 
-            change = (previous_rank - i) if previous_rank else i
-            is_new_leader = (i == 1 and standing.user_id != previous_leader)
+            change = (previous_rank - rank_pos) if previous_rank else rank_pos
+            is_new_leader = (rank_pos == 1 and standing.user_id != previous_leader)
 
             user_name = (
                 f"{standing.user.profile.first_name} {standing.user.profile.last_name}".strip()
@@ -458,12 +577,12 @@ class TARankingService:
                 else f"User {standing.user_id}"
             )
 
-            if previous_rank != i:
+            if previous_rank != rank_pos:
                 movements.append(RankingMovement(
                     user_id=standing.user_id,
                     user_name=user_name,
                     previous_rank=previous_rank,
-                    current_rank=i,
+                    current_rank=rank_pos,
                     change=change,
                     is_new_leader=is_new_leader,
                     total_points=standing.total_points,
@@ -622,7 +741,7 @@ class TARankingService:
                     comp["user_name"] = f"User {comp['user_id']}"
                     comp["user_avatar"] = None
 
-        # Sort using tie-break rules
+        # Sort using tie-break rules (first 7 criteria)
         def compare_competitors(a, b):
             # 1) points desc
             if a["points"] != b["points"]:
@@ -649,8 +768,59 @@ class TARankingService:
 
         comp_list.sort(key=cmp_to_key(compare_competitors))
 
-        # Assign ranks (shared ranks for identical stats)
-        self._assign_ranks(comp_list)
+        # Story 12.2: Apply 8th tiebreaker (direct match) for tied competitors
+        def get_stats_tuple(c: dict) -> tuple:
+            return (
+                c["points"],
+                c["captures"],
+                c["victories"],
+                c["ties_with_fish"],
+                c["ties_without_fish"],
+                c["losses_with_fish"],
+                c["losses_without_fish"],
+            )
+
+        # Clear direct match cache for fresh calculation
+        self._direct_match_cache.clear()
+
+        # Track direct match results between consecutive competitors for rank sharing
+        direct_match_results: dict[tuple[int, int], int] = {}
+
+        # Group consecutive competitors with identical 7-criteria stats and resolve with direct match
+        i = 0
+        while i < len(comp_list):
+            tie_start = i
+            tie_stats = get_stats_tuple(comp_list[i])
+            while i < len(comp_list) and get_stats_tuple(comp_list[i]) == tie_stats:
+                i += 1
+            tie_end = i
+
+            # If there's a tie group (more than 1 competitor)
+            if tie_end - tie_start > 1:
+                tie_group = comp_list[tie_start:tie_end]
+
+                # Resolve ties using direct match (8th tiebreaker)
+                for j in range(len(tie_group)):
+                    for k in range(j + 1, len(tie_group)):
+                        direct_result = await self._get_direct_match_result(
+                            event_id,
+                            tie_group[j]["user_id"],
+                            tie_group[k]["user_id"],
+                            phase,
+                        )
+                        # Store result for rank sharing decision
+                        direct_match_results[(tie_group[j]["user_id"], tie_group[k]["user_id"])] = direct_result
+                        direct_match_results[(tie_group[k]["user_id"], tie_group[j]["user_id"])] = -direct_result
+                        # If k beat j in direct match, swap them
+                        if direct_result == -1:
+                            tie_group[j], tie_group[k] = tie_group[k], tie_group[j]
+
+                # Put sorted tie group back
+                comp_list[tie_start:tie_end] = tie_group
+
+        # Assign ranks with 8th tiebreaker awareness
+        # Only share ranks if stats are identical AND direct match didn't resolve
+        self._assign_ranks_with_direct_match(comp_list, direct_match_results)
 
         return comp_list
 
@@ -686,6 +856,66 @@ class TARankingService:
                 comp["rank"] = i + 1
                 last_rank = i + 1
             last_stats = current_stats
+
+    def _assign_ranks_with_direct_match(
+        self,
+        comp_list: list[dict],
+        direct_match_results: dict[tuple[int, int], int],
+    ) -> None:
+        """
+        Assign ranks considering direct match results (Story 12.2: 8th tiebreaker).
+
+        Competitors share a rank ONLY if:
+        1. Their 7-criteria stats are identical, AND
+        2. Their direct match result is 0 (no direct match or tied record)
+
+        If direct match was decisive (non-zero), they get sequential ranks.
+        """
+        if not comp_list:
+            return
+
+        last_rank = 1
+        last_stats = None
+        last_user_id = None
+
+        for i, comp in enumerate(comp_list):
+            current_stats = (
+                comp["points"],
+                comp["captures"],
+                comp["victories"],
+                comp["ties_with_fish"],
+                comp["ties_without_fish"],
+                comp["losses_with_fish"],
+                comp["losses_without_fish"],
+            )
+            current_user_id = comp["user_id"]
+
+            if i == 0:
+                comp["rank"] = 1
+                last_stats = current_stats
+                last_user_id = current_user_id
+                continue
+
+            # Check if should share rank:
+            # 1. Stats must be identical
+            # 2. Direct match between them must be 0 (undecided)
+            if current_stats == last_stats:
+                # Check direct match result between this and previous competitor
+                direct_result = direct_match_results.get((last_user_id, current_user_id), 0)
+                if direct_result == 0:
+                    # Still tied after 8th tiebreaker - share rank
+                    comp["rank"] = last_rank
+                else:
+                    # Direct match resolved the tie - sequential rank
+                    comp["rank"] = i + 1
+                    last_rank = i + 1
+            else:
+                # Different stats - sequential rank
+                comp["rank"] = i + 1
+                last_rank = i + 1
+
+            last_stats = current_stats
+            last_user_id = current_user_id
 
     async def get_leg_matches(
         self,

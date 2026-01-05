@@ -159,9 +159,10 @@ class TAEventSettings(Base):
 
     # Knockout Stage Settings
     has_knockout_stage: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    knockout_qualifiers: Mapped[int] = mapped_column(Integer, default=4, nullable=False)  # Top N go directly to semifinals
+    knockout_qualifiers: Mapped[int] = mapped_column(Integer, default=4, nullable=False)  # Total semifinal slots
     has_requalification: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     requalification_slots: Mapped[int] = mapped_column(Integer, default=4, nullable=False)  # How many compete in requalification
+    direct_to_semifinal: Mapped[int] = mapped_column(Integer, default=2, nullable=False)  # How many bypass requalification
 
     # Direct placement for lower ranked (positions after requalification: 9, 10, 11...)
     direct_placement_from: Mapped[int] = mapped_column(Integer, default=9, nullable=False)

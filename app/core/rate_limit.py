@@ -16,5 +16,7 @@ limiter = Limiter(
 )
 
 # Rate limit configurations
-AUTH_RATE_LIMIT = "5/minute"  # 5 requests per minute for auth endpoints
+# Note: Increased auth rate limit because tournament events have 50+ users
+# connecting from same WiFi network (shared IP) at fishing ponds
+AUTH_RATE_LIMIT = "100/minute"  # 100 requests per minute for auth endpoints
 FORGOT_PASSWORD_RATE_LIMIT = "3/minute"  # 3 requests per minute for password reset

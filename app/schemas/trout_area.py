@@ -193,8 +193,9 @@ class TAEventSettingsBase(BaseModel):
     total_legs: Optional[int] = None
     pairing_algorithm: PairingAlgorithmAPI = PairingAlgorithmAPI.ROUND_ROBIN_FULL
     has_knockout_bracket: bool = Field(default=True, description="Whether event includes knockout bracket phase")
-    qualification_top_n: int = Field(default=4, ge=2, description="Top N go directly to semifinals")
-    requalification_spots: int = Field(default=4, ge=0, description="Positions N+1 to N+requalification_spots compete")
+    qualification_top_n: int = Field(default=4, ge=2, description="Total semifinal slots")
+    direct_to_semifinal: int = Field(default=2, ge=1, le=8, description="How many bypass requalification and go direct to semifinals")
+    requalification_spots: int = Field(default=4, ge=0, description="How many compete in requalification (winners = spots/2)")
     enable_requalification: bool = Field(default=True)
     enable_team_scoring: bool = Field(default=False)
     team_size: Optional[int] = Field(default=None, ge=2, le=10)
@@ -216,6 +217,7 @@ class TAEventSettingsUpdate(BaseModel):
     pairing_algorithm: Optional[PairingAlgorithmAPI] = None
     has_knockout_bracket: Optional[bool] = Field(default=None, description="Whether event includes knockout bracket phase")
     qualification_top_n: Optional[int] = Field(default=None, ge=2)
+    direct_to_semifinal: Optional[int] = Field(default=None, ge=1, le=8)
     requalification_spots: Optional[int] = Field(default=None, ge=0)
     enable_requalification: Optional[bool] = None
     enable_team_scoring: Optional[bool] = None
@@ -236,8 +238,9 @@ class TAEventSettingsResponse(BaseModel):
     total_legs: Optional[int] = None
     pairing_algorithm: PairingAlgorithmAPI = PairingAlgorithmAPI.ROUND_ROBIN_FULL
     has_knockout_bracket: bool = True  # Maps to has_knockout_stage
-    qualification_top_n: int = 4  # Maps to knockout_qualifiers (top 4 go to semifinals)
-    requalification_spots: int = 4  # Maps to requalification_slots (positions 5-8 compete)
+    qualification_top_n: int = 4  # Maps to knockout_qualifiers (total semifinal slots)
+    direct_to_semifinal: int = 2  # How many bypass requalification
+    requalification_spots: int = 4  # Maps to requalification_slots (positions compete)
     enable_requalification: bool = True  # Maps to has_requalification
     enable_team_scoring: bool = False  # Maps to is_team_event
     team_size: Optional[int] = None
@@ -262,6 +265,7 @@ class TAEventSettingsResponse(BaseModel):
             data["legs_per_match"] = getattr(values, "number_of_legs", 5)
             data["has_knockout_bracket"] = getattr(values, "has_knockout_stage", True)
             data["qualification_top_n"] = getattr(values, "knockout_qualifiers", 4)
+            data["direct_to_semifinal"] = getattr(values, "direct_to_semifinal", 2)
             data["requalification_spots"] = getattr(values, "requalification_slots", 4)
             data["enable_requalification"] = getattr(values, "has_requalification", True)
             data["enable_team_scoring"] = getattr(values, "is_team_event", False)
