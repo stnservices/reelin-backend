@@ -269,13 +269,13 @@ async def _cascade_knockout_update(db: AsyncSession, event_id: int, match: "TAMa
         if len(semifinals) < 2 or len(requalification_winners) < 2:
             return None
 
-        # Update semifinal competitor_b (positions 3,4) with requalification winners
-        # SF1: Qualifier #1 vs Requalification Winner #2
-        # SF2: Qualifier #2 vs Requalification Winner #1
+        # Update semifinal competitor_b with requalification winners
+        # SF1: Seed 1 vs Winner of 3v5 (requalification match #1)
+        # SF2: Seed 2 vs Winner of 4v6 (requalification match #2)
         old_sf1_b = semifinals[0].competitor_b_id
         old_sf2_b = semifinals[1].competitor_b_id
-        new_sf1_b = requalification_winners[1]
-        new_sf2_b = requalification_winners[0]
+        new_sf1_b = requalification_winners[0]  # Winner of match 1 (3v5)
+        new_sf2_b = requalification_winners[1]  # Winner of match 2 (4v6)
 
         if old_sf1_b != new_sf1_b:
             semifinals[0].competitor_b_id = new_sf1_b
@@ -3555,7 +3555,8 @@ async def generate_knockout_bracket(
     if settings.has_requalification and settings.requalification_slots > 0:
         # Use direct_to_semifinal to determine who competes in requalification
         # E.g., if direct_to_semifinal=2 and requalification_slots=4:
-        # Positions 3,4,5,6 compete: Match1: 3 vs 6, Match2: 4 vs 5
+        # Positions 3,4,5,6 compete: Match1: 3 vs 5, Match2: 4 vs 6
+        # (Standard bracket: higher seed vs mid-range, not top vs bottom)
         direct_count = getattr(settings, 'direct_to_semifinal', 2)
         start_pos = direct_count + 1
         end_pos = direct_count + settings.requalification_slots
@@ -3565,19 +3566,24 @@ async def generate_knockout_bracket(
             if start_pos <= standing.rank <= end_pos:
                 requalification_positions.append(standing)
 
-        # Create requalification matches (top vs bottom seeding)
+        # Create requalification matches (standard bracket seeding: 3v5, 4v6)
+        # This ensures winners face the direct qualifiers fairly in semifinals:
+        # - Winner of 3v5 faces seed 2 in semifinal
+        # - Winner of 4v6 faces seed 1 in semifinal
         num_requalification = len(requalification_positions) // 2
         for i in range(num_requalification):
-            top_seed = requalification_positions[i] if i < len(requalification_positions) else None
-            bottom_seed = requalification_positions[-(i+1)] if len(requalification_positions) > i else None
+            # Match i pairs position i with position i+num_requalification
+            # For 4 players [3,4,5,6]: Match1=3v5, Match2=4v6
+            seed_a = requalification_positions[i] if i < len(requalification_positions) else None
+            seed_b = requalification_positions[i + num_requalification] if (i + num_requalification) < len(requalification_positions) else None
 
-            if top_seed and bottom_seed:
+            if seed_a and seed_b:
                 match = await create_bracket_match(
                     phase=TATournamentPhase.REQUALIFICATION.value,
                     match_number=i + 1,
                     leg_number=next_leg,
-                    competitor_a_id=top_seed.user_id,
-                    competitor_b_id=bottom_seed.user_id,
+                    competitor_a_id=seed_a.user_id,
+                    competitor_b_id=seed_b.user_id,
                 )
                 matches_created.append(match)
 
@@ -3606,24 +3612,27 @@ async def generate_knockout_bracket(
         for standing in standings[:4]:
             semifinal_competitors.append(standing.user_id)
 
-    # Semifinal 1: Seed 1 vs Seed 4
+    # Semifinal bracket structure:
+    # - SF1: Seed 1 vs Winner of Requalification Match 1 (3v5)
+    # - SF2: Seed 2 vs Winner of Requalification Match 2 (4v6)
+    # When requalification exists, positions 2 and 3 in semifinal_competitors
+    # are placeholders that will be replaced by requalification winners.
     if len(semifinal_competitors) >= 4:
         sf1 = await create_bracket_match(
             phase=TATournamentPhase.SEMIFINAL.value,
             match_number=1,
             leg_number=next_leg,
-            competitor_a_id=semifinal_competitors[0],
-            competitor_b_id=semifinal_competitors[3],
+            competitor_a_id=semifinal_competitors[0],  # Seed 1
+            competitor_b_id=semifinal_competitors[2],  # Winner of 3v5 (placeholder: seed 3)
         )
         matches_created.append(sf1)
 
-        # Semifinal 2: Seed 2 vs Seed 3
         sf2 = await create_bracket_match(
             phase=TATournamentPhase.SEMIFINAL.value,
             match_number=2,
             leg_number=next_leg,
-            competitor_a_id=semifinal_competitors[1],
-            competitor_b_id=semifinal_competitors[2],
+            competitor_a_id=semifinal_competitors[1],  # Seed 2
+            competitor_b_id=semifinal_competitors[3],  # Winner of 4v6 (placeholder: seed 4)
         )
         matches_created.append(sf2)
 
@@ -3972,21 +3981,21 @@ async def advance_requalification_to_semifinals(
         )
 
     # Update semifinals with requalification winners
-    # SF1 (Seed 1 vs Seed 4): Replace Seed 4 with requalification winner #2
-    # SF2 (Seed 2 vs Seed 3): Replace Seed 3 with requalification winner #1
-    # This gives higher requalification winner an easier path (vs Seed 2 instead of Seed 1)
+    # Standard bracket seeding:
+    # - SF1: Seed 1 vs Winner of 3v5 (requalification match #1)
+    # - SF2: Seed 2 vs Winner of 4v6 (requalification match #2)
 
     old_sf1_b = semifinals[0].competitor_b_id
     old_sf2_b = semifinals[1].competitor_b_id
 
     if len(requalification_winners) >= 2:
-        # SF1: Qualifier #1 vs Requalification Winner #2
-        semifinals[0].competitor_b_id = requalification_winners[1]
-        # SF2: Qualifier #2 vs Requalification Winner #1
-        semifinals[1].competitor_b_id = requalification_winners[0]
+        # SF1: Seed 1 vs Winner of 3v5 (requalification match #1)
+        semifinals[0].competitor_b_id = requalification_winners[0]
+        # SF2: Seed 2 vs Winner of 4v6 (requalification match #2)
+        semifinals[1].competitor_b_id = requalification_winners[1]
     elif len(requalification_winners) == 1:
-        # Only one requalification match - winner goes to SF2
-        semifinals[1].competitor_b_id = requalification_winners[0]
+        # Only one requalification match - winner goes to SF1
+        semifinals[0].competitor_b_id = requalification_winners[0]
 
     # Update game cards for affected semifinals
     for sf in semifinals:
