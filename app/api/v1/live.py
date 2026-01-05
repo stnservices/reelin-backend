@@ -35,6 +35,7 @@ class EventLiveStatusResponse(BaseModel):
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     is_live: bool  # True only if event is ongoing
+    event_type: str  # street_fishing, trout_area, trout_shore
 
 
 @router.get("/events/{event_id}/status", response_model=EventLiveStatusResponse)
@@ -72,6 +73,7 @@ async def get_event_live_status(
         start_date=event.start_date.isoformat() if event.start_date else None,
         end_date=event.end_date.isoformat() if event.end_date else None,
         is_live=event.status == EventStatus.ONGOING.value,
+        event_type=event.event_type or "street_fishing",
     )
 
 
@@ -110,6 +112,7 @@ async def get_event_live_status_by_slug(
         start_date=event.start_date.isoformat() if event.start_date else None,
         end_date=event.end_date.isoformat() if event.end_date else None,
         is_live=event.status == EventStatus.ONGOING.value,
+        event_type=event.event_type or "street_fishing",
     )
 
 

@@ -29,7 +29,7 @@ def sanitize_filename(name: str) -> str:
     return name[:50]
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, select, and_
+from sqlalchemy import func, select, and_, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -43,7 +43,7 @@ from app.utils.lifecycle_guards import require_modifiable_status, require_draft_
 
 from app.models.user import UserAccount, UserProfile
 from app.models.event import Event, EventStatus
-from app.models.enrollment import EventEnrollment
+from app.models.enrollment import EventEnrollment, EnrollmentStatus
 from app.models.trout_area import (
     TAPointsRule,
     TAEventPointConfig,
@@ -119,6 +119,7 @@ from app.schemas.trout_area import (
 from app.schemas.common import MessageResponse
 from app.services.ta_pairing import TAPairingService, PairingAlgorithm
 from app.models.club import ClubMembership, MembershipStatus
+from app.api.v1.live import live_scoring_service
 
 router = APIRouter()
 
@@ -126,6 +127,243 @@ router = APIRouter()
 # =============================================================================
 # Helper Functions
 # =============================================================================
+
+
+# =============================================================================
+# SSE Broadcast Functions for Live Public Leaderboard
+# =============================================================================
+
+async def broadcast_ta_leg_complete(
+    event_id: int,
+    leg_number: int,
+    phase: str,
+    standings_updated: bool = True,
+) -> None:
+    """Broadcast leg completion to live scoring subscribers."""
+    await live_scoring_service.broadcast(event_id, {
+        "type": "ta_leg_complete",
+        "event_id": event_id,
+        "leg_number": leg_number,
+        "phase": phase,
+        "standings_updated": standings_updated,
+    })
+
+
+async def broadcast_ta_standings_update(
+    event_id: int,
+    phase: str,
+    top_changes: list[dict] | None = None,
+) -> None:
+    """Broadcast standings update after recalculation."""
+    await live_scoring_service.broadcast(event_id, {
+        "type": "ta_standings_update",
+        "event_id": event_id,
+        "phase": phase,
+        "top_changes": top_changes or [],
+    })
+
+
+async def broadcast_ta_phase_advanced(
+    event_id: int,
+    from_phase: str,
+    to_phase: str,
+) -> None:
+    """Broadcast phase advancement (e.g., qualifier → semifinals)."""
+    await live_scoring_service.broadcast(event_id, {
+        "type": "ta_phase_advanced",
+        "event_id": event_id,
+        "from_phase": from_phase,
+        "to_phase": to_phase,
+    })
+
+
+async def broadcast_ta_bracket_generated(
+    event_id: int,
+    semifinalists: list[int],
+    requalification_participants: list[int] | None = None,
+) -> None:
+    """Broadcast knockout bracket generation."""
+    await live_scoring_service.broadcast(event_id, {
+        "type": "ta_bracket_generated",
+        "event_id": event_id,
+        "semifinalists": semifinalists,
+        "requalification_participants": requalification_participants or [],
+    })
+
+
+async def broadcast_ta_match_result(
+    event_id: int,
+    match_id: int,
+    phase: str,
+    leg_number: int,
+    competitor_a_id: int,
+    competitor_b_id: int,
+    competitor_a_catches: int,
+    competitor_b_catches: int,
+    winner_id: int | None,
+) -> None:
+    """Broadcast individual match result completion."""
+    await live_scoring_service.broadcast(event_id, {
+        "type": "ta_match_result",
+        "event_id": event_id,
+        "match_id": match_id,
+        "phase": phase,
+        "leg_number": leg_number,
+        "competitor_a_id": competitor_a_id,
+        "competitor_b_id": competitor_b_id,
+        "competitor_a_catches": competitor_a_catches,
+        "competitor_b_catches": competitor_b_catches,
+        "winner_id": winner_id,
+    })
+
+
+async def _cascade_knockout_update(db: AsyncSession, event_id: int, match: "TAMatch") -> dict | None:
+    """
+    Cascade updates to downstream phases when a knockout match result is edited.
+
+    - If a requalification match is edited → update semifinal matches with new winners
+    - If a semifinal match is edited → update finals matches with new winners/losers
+
+    Returns cascade info or None if no cascade needed.
+    """
+    from app.models.trout_area import TAMatch, TAGameCard, TAGameCardStatus
+
+    phase = match.phase
+
+    # Only cascade for requalification and semifinal phases
+    if phase == TATournamentPhase.REQUALIFICATION.value:
+        # Get all requalification matches to check if all are completed
+        requalification_query = select(TAMatch).where(
+            TAMatch.event_id == event_id,
+            TAMatch.phase == TATournamentPhase.REQUALIFICATION.value,
+        ).order_by(TAMatch.match_number)
+        result = await db.execute(requalification_query)
+        requalification_matches = result.scalars().all()
+
+        # Only cascade if ALL requalification matches are completed
+        all_completed = all(m.status == TAMatchStatus.COMPLETED.value for m in requalification_matches)
+        if not all_completed:
+            return None
+
+        # Determine winners from all requalification matches
+        requalification_winners = []
+        for m in requalification_matches:
+            a_catches = m.competitor_a_catches or 0
+            b_catches = m.competitor_b_catches or 0
+            if a_catches > b_catches:
+                winner_id = m.competitor_a_id
+            elif b_catches > a_catches:
+                winner_id = m.competitor_b_id
+            else:
+                winner_id = m.competitor_a_id  # Tie goes to higher seed
+            requalification_winners.append(winner_id)
+
+        # Get semifinal matches
+        sf_query = select(TAMatch).where(
+            TAMatch.event_id == event_id,
+            TAMatch.phase == TATournamentPhase.SEMIFINAL.value,
+        ).order_by(TAMatch.match_number)
+        sf_result = await db.execute(sf_query)
+        semifinals = list(sf_result.scalars().all())
+
+        if len(semifinals) < 2 or len(requalification_winners) < 2:
+            return None
+
+        # Update semifinal competitor_b (positions 3,4) with requalification winners
+        # SF1: Qualifier #1 vs Requalification Winner #2
+        # SF2: Qualifier #2 vs Requalification Winner #1
+        old_sf1_b = semifinals[0].competitor_b_id
+        old_sf2_b = semifinals[1].competitor_b_id
+        new_sf1_b = requalification_winners[1]
+        new_sf2_b = requalification_winners[0]
+
+        if old_sf1_b != new_sf1_b:
+            semifinals[0].competitor_b_id = new_sf1_b
+            # Update game cards - delete old, update opponent for competitor_a, create new
+            await db.execute(delete(TAGameCard).where(
+                TAGameCard.match_id == semifinals[0].id,
+                TAGameCard.user_id == old_sf1_b,
+            ))
+            await db.execute(update(TAGameCard).where(
+                TAGameCard.match_id == semifinals[0].id,
+                TAGameCard.user_id == semifinals[0].competitor_a_id,
+            ).values(opponent_id=new_sf1_b))
+
+        if old_sf2_b != new_sf2_b:
+            semifinals[1].competitor_b_id = new_sf2_b
+            await db.execute(delete(TAGameCard).where(
+                TAGameCard.match_id == semifinals[1].id,
+                TAGameCard.user_id == old_sf2_b,
+            ))
+            await db.execute(update(TAGameCard).where(
+                TAGameCard.match_id == semifinals[1].id,
+                TAGameCard.user_id == semifinals[1].competitor_a_id,
+            ).values(opponent_id=new_sf2_b))
+
+        return {"cascaded_to": "semifinals", "updated_winners": requalification_winners}
+
+    elif phase == TATournamentPhase.SEMIFINAL.value:
+        # Get all semifinal matches to check if all are completed
+        sf_query = select(TAMatch).where(
+            TAMatch.event_id == event_id,
+            TAMatch.phase == TATournamentPhase.SEMIFINAL.value,
+        ).order_by(TAMatch.match_number)
+        sf_result = await db.execute(sf_query)
+        semifinals = list(sf_result.scalars().all())
+
+        all_completed = all(m.status == TAMatchStatus.COMPLETED.value for m in semifinals)
+        if not all_completed or len(semifinals) < 2:
+            return None
+
+        # Determine winners and losers from semifinals
+        sf_results = []
+        for sf in semifinals:
+            a_catches = sf.competitor_a_catches or 0
+            b_catches = sf.competitor_b_catches or 0
+            if a_catches > b_catches:
+                winner_id = sf.competitor_a_id
+                loser_id = sf.competitor_b_id
+            elif b_catches > a_catches:
+                winner_id = sf.competitor_b_id
+                loser_id = sf.competitor_a_id
+            else:
+                winner_id = sf.competitor_a_id
+                loser_id = sf.competitor_b_id
+            sf_results.append({"winner": winner_id, "loser": loser_id})
+
+        # Get finals matches (Grand Final and Small Final)
+        finals_query = select(TAMatch).where(
+            TAMatch.event_id == event_id,
+            TAMatch.phase.in_([
+                TATournamentPhase.FINAL_GRAND.value,
+                TATournamentPhase.FINAL_SMALL.value,
+            ]),
+        )
+        finals_result = await db.execute(finals_query)
+        finals = {m.phase: m for m in finals_result.scalars().all()}
+
+        # Update Grand Final with winners
+        grand_final = finals.get(TATournamentPhase.FINAL_GRAND.value)
+        if grand_final:
+            grand_final.competitor_a_id = sf_results[0]["winner"]
+            grand_final.competitor_b_id = sf_results[1]["winner"]
+
+        # Update Small Final with losers
+        small_final = finals.get(TATournamentPhase.FINAL_SMALL.value)
+        if small_final:
+            small_final.competitor_a_id = sf_results[0]["loser"]
+            small_final.competitor_b_id = sf_results[1]["loser"]
+
+        return {
+            "cascaded_to": "finals",
+            "grand_final_a": sf_results[0]["winner"],
+            "grand_final_b": sf_results[1]["winner"],
+            "small_final_a": sf_results[0]["loser"],
+            "small_final_b": sf_results[1]["loser"],
+        }
+
+    return None
+
 
 async def get_ta_event(
     event_id: int,
@@ -236,7 +474,8 @@ async def update_standings_for_match(
     db: AsyncSession,
     match: TAMatch,
     point_config: Optional[TAEventPointConfig] = None,
-) -> None:
+    skip_rank_recalculation: bool = False,
+) -> dict:
     """
     Update standings for both competitors after a match completes.
 
@@ -244,11 +483,20 @@ async def update_standings_for_match(
     1. Gets or creates standings for both players
     2. Updates totals (points, catches, W/T/L breakdown)
     3. Updates leg_results JSONB
-    4. Recalculates ranks for all participants in the event
-    5. Updates knockout qualification based on settings
+    4. Checks if leg is complete - only then recalculates ranks (Story 12.1 optimization)
+    5. Broadcasts SSE event when leg completes
+
+    Args:
+        db: Database session
+        match: The completed match
+        point_config: Optional custom point configuration
+        skip_rank_recalculation: Skip rank recalculation (for batch operations)
+
+    Returns:
+        dict with leg_complete status and leg_number
     """
     if match.status != TAMatchStatus.COMPLETED.value:
-        return
+        return {"leg_complete": False, "leg_number": None, "ranks_updated": False}
 
     # Get point values (default if no config)
     point_values = {
@@ -364,8 +612,44 @@ async def update_standings_for_match(
 
     await db.flush()
 
-    # Recalculate ranks for all participants
-    await recalculate_event_ranks(db, match.event_id)
+    # Story 12.1: Only recalculate ranks when leg is complete (optimization)
+    leg_complete = False
+    ranks_updated = False
+
+    if not skip_rank_recalculation:
+        from app.services.ta_ranking import TARankingService
+        ranking_service = TARankingService(db)
+
+        # Check if this leg is now complete
+        leg_complete = await ranking_service.is_leg_complete(
+            match.event_id,
+            match.leg_number,
+            match.phase,
+        )
+
+        if leg_complete:
+            # Leg is complete - recalculate ranks once for the whole leg
+            await recalculate_event_ranks(db, match.event_id)
+            ranks_updated = True
+
+            # Broadcast SSE event for leg completion
+            try:
+                await redis_cache.publish_sse_event(match.event_id, {
+                    "type": "ta_leg_complete",
+                    "event_id": match.event_id,
+                    "leg_number": match.leg_number,
+                    "phase": match.phase,
+                    "message": f"Leg {match.leg_number} completed - standings updated",
+                })
+            except Exception as e:
+                logger.error(f"Failed to broadcast ta_leg_complete SSE: {e}")
+
+    return {
+        "leg_complete": leg_complete,
+        "leg_number": match.leg_number,
+        "phase": match.phase,
+        "ranks_updated": ranks_updated,
+    }
 
 
 async def recalculate_event_ranks(db: AsyncSession, event_id: int) -> None:
@@ -2087,6 +2371,28 @@ async def edit_match_results(
             card.status = TAGameCardStatus.VALIDATED.value
             card.updated_at = now
 
+        # Cascade updates to downstream phases if this is a knockout match
+        cascade_result = await _cascade_knockout_update(db, event_id, match)
+
+        # Broadcast SSE match result for live public leaderboard
+        winner_id = None
+        if match.competitor_a_catches > match.competitor_b_catches:
+            winner_id = match.competitor_a_id
+        elif match.competitor_b_catches > match.competitor_a_catches:
+            winner_id = match.competitor_b_id
+
+        await broadcast_ta_match_result(
+            event_id=event_id,
+            match_id=match.id,
+            phase=match.phase,
+            leg_number=match.round_number,
+            competitor_a_id=match.competitor_a_id,
+            competitor_b_id=match.competitor_b_id,
+            competitor_a_catches=match.competitor_a_catches or 0,
+            competitor_b_catches=match.competitor_b_catches or 0,
+            winner_id=winner_id,
+        )
+
     await db.commit()
     await db.refresh(match)
 
@@ -2979,6 +3285,13 @@ async def recalculate_standings(
     await ranking_service._recalculate_ranks(event_id)
     await db.commit()
 
+    # Broadcast SSE standings update for live public leaderboard
+    await broadcast_ta_standings_update(
+        event_id=event_id,
+        phase=TATournamentPhase.QUALIFIER.value,
+        top_changes=None,  # Full recalculation doesn't track individual changes
+    )
+
     return {"message": f"Standings recalculated for {len(user_stats)} participants", "details": {"participants_ranked": len(user_stats)}}
 
 
@@ -3257,19 +3570,7 @@ async def generate_knockout_bracket(
     # FINALS (Grand Final + Small Final)
     # ========================================================================
     # Finals competitors will be determined from semifinal results
-    # For now, create empty placeholder matches
-
-    # Small Final (3rd/4th place) - losers of semifinals
-    small_final = await create_bracket_match(
-        phase=TATournamentPhase.FINAL_SMALL.value,
-        match_number=1,
-        leg_number=next_leg,
-        competitor_a_id=None,  # Will be set when SF1 completes
-        competitor_b_id=None,  # Will be set when SF2 completes
-        winner_placement=3,
-        loser_placement=4,
-    )
-    matches_created.append(small_final)
+    # Winners go to Grand Final (1st/2nd), Losers go to Small Final (3rd/4th)
 
     # Grand Final (1st/2nd place) - winners of semifinals
     grand_final = await create_bracket_match(
@@ -3282,6 +3583,18 @@ async def generate_knockout_bracket(
         loser_placement=2,
     )
     matches_created.append(grand_final)
+
+    # Small Final (3rd/4th place) - losers of semifinals
+    small_final = await create_bracket_match(
+        phase=TATournamentPhase.FINAL_SMALL.value,
+        match_number=1,
+        leg_number=next_leg,
+        competitor_a_id=None,  # Will be set when SF1 completes
+        competitor_b_id=None,  # Will be set when SF2 completes
+        winner_placement=3,
+        loser_placement=4,
+    )
+    matches_created.append(small_final)
 
     # Set direct placements for those who didn't make knockout
     direct_placements = {}
@@ -3296,6 +3609,32 @@ async def generate_knockout_bracket(
     bracket.direct_placements = direct_placements
 
     await db.commit()
+
+    # Broadcast SSE event for live public leaderboard
+    semifinalist_ids = []
+    requalification_ids = []
+    for m in matches_created:
+        if m.phase == TATournamentPhase.SEMIFINAL.value:
+            if m.competitor_a_id:
+                semifinalist_ids.append(m.competitor_a_id)
+            if m.competitor_b_id:
+                semifinalist_ids.append(m.competitor_b_id)
+        elif m.phase == TATournamentPhase.REQUALIFICATION.value:
+            if m.competitor_a_id:
+                requalification_ids.append(m.competitor_a_id)
+            if m.competitor_b_id:
+                requalification_ids.append(m.competitor_b_id)
+
+    await broadcast_ta_bracket_generated(
+        event_id=event_id,
+        semifinalists=list(set(semifinalist_ids)),
+        requalification_participants=list(set(requalification_ids)) if requalification_ids else None,
+    )
+    await broadcast_ta_phase_advanced(
+        event_id=event_id,
+        from_phase=TATournamentPhase.QUALIFIER.value,
+        to_phase=TATournamentPhase.SEMIFINAL.value if not settings.has_requalification else TATournamentPhase.REQUALIFICATION.value,
+    )
 
     return {
         "message": f"Knockout bracket generated: {len(matches_created)} matches created",
@@ -3473,6 +3812,176 @@ async def advance_to_finals(
     }
 
 
+@router.post(
+    "/events/{event_id}/advance-requalification",
+)
+async def advance_requalification_to_semifinals(
+    event_id: int,
+    request: Request,
+    current_user: UserAccount = Depends(EventOwnerOrAdmin()),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Advance requalification winners to semifinals.
+
+    This endpoint:
+    1. Checks that all requalification matches are completed
+    2. Determines winners from each requalification match
+    3. Updates semifinal matches with requalification winners (replacing placeholder positions)
+    4. Updates game cards for semifinals with new opponent info
+
+    Seeding logic:
+    - Semifinal 1: Qualifier #1 vs Requalification Winner #2 (lower seed wins = harder path)
+    - Semifinal 2: Qualifier #2 vs Requalification Winner #1 (higher seed wins = easier path)
+
+    Requirements:
+    - All requalification matches must be completed
+    - Semifinal matches must exist (bracket already generated)
+    - has_requalification must be enabled
+    """
+    event = await get_ta_event(event_id, db, request)
+    settings = event.ta_settings
+
+    if not settings or not settings.has_knockout_stage:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Event does not have knockout stage enabled",
+        )
+
+    if not settings.has_requalification:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Event does not have requalification enabled",
+        )
+
+    # Get requalification matches
+    requalification_query = select(TAMatch).where(
+        TAMatch.event_id == event_id,
+        TAMatch.phase == TATournamentPhase.REQUALIFICATION.value,
+    ).order_by(TAMatch.match_number)
+    result = await db.execute(requalification_query)
+    requalification_matches = result.scalars().all()
+
+    if not requalification_matches:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Requalification matches not found. Generate bracket first.",
+        )
+
+    # Check all requalification matches are completed
+    incomplete = [m for m in requalification_matches if m.status != TAMatchStatus.COMPLETED.value]
+    if incomplete:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot advance: {len(incomplete)} requalification match(es) not completed",
+        )
+
+    # Determine winners from requalification
+    requalification_winners = []
+    for match in requalification_matches:
+        a_catches = match.competitor_a_catches or 0
+        b_catches = match.competitor_b_catches or 0
+        if a_catches > b_catches:
+            winner_id = match.competitor_a_id
+        elif b_catches > a_catches:
+            winner_id = match.competitor_b_id
+        else:
+            # Tie - use higher seed (competitor_a is always higher seed)
+            winner_id = match.competitor_a_id
+        requalification_winners.append(winner_id)
+
+    # Get semifinal matches
+    semifinal_query = select(TAMatch).where(
+        TAMatch.event_id == event_id,
+        TAMatch.phase == TATournamentPhase.SEMIFINAL.value,
+    ).order_by(TAMatch.match_number)
+    sf_result = await db.execute(semifinal_query)
+    semifinals = list(sf_result.scalars().all())
+
+    if len(semifinals) < 2:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Semifinals not found. Generate bracket first.",
+        )
+
+    # Update semifinals with requalification winners
+    # SF1 (Seed 1 vs Seed 4): Replace Seed 4 with requalification winner #2
+    # SF2 (Seed 2 vs Seed 3): Replace Seed 3 with requalification winner #1
+    # This gives higher requalification winner an easier path (vs Seed 2 instead of Seed 1)
+
+    old_sf1_b = semifinals[0].competitor_b_id
+    old_sf2_b = semifinals[1].competitor_b_id
+
+    if len(requalification_winners) >= 2:
+        # SF1: Qualifier #1 vs Requalification Winner #2
+        semifinals[0].competitor_b_id = requalification_winners[1]
+        # SF2: Qualifier #2 vs Requalification Winner #1
+        semifinals[1].competitor_b_id = requalification_winners[0]
+    elif len(requalification_winners) == 1:
+        # Only one requalification match - winner goes to SF2
+        semifinals[1].competitor_b_id = requalification_winners[0]
+
+    # Update game cards for affected semifinals
+    for sf in semifinals:
+        # Delete old game cards for the old competitor_b (placeholder)
+        old_competitor = old_sf1_b if sf == semifinals[0] else old_sf2_b
+        new_competitor = sf.competitor_b_id
+
+        if old_competitor and old_competitor != new_competitor:
+            # Delete old game card for removed competitor
+            await db.execute(
+                delete(TAGameCard).where(
+                    TAGameCard.match_id == sf.id,
+                    TAGameCard.user_id == old_competitor,
+                )
+            )
+
+            # Update existing game card for competitor_a to point to new opponent
+            await db.execute(
+                update(TAGameCard).where(
+                    TAGameCard.match_id == sf.id,
+                    TAGameCard.user_id == sf.competitor_a_id,
+                ).values(opponent_id=new_competitor)
+            )
+
+            # Create new game card for requalification winner
+            existing_card = await db.execute(
+                select(TAGameCard).where(
+                    TAGameCard.match_id == sf.id,
+                    TAGameCard.user_id == new_competitor,
+                )
+            )
+            if not existing_card.scalar_one_or_none():
+                card = TAGameCard(
+                    event_id=event_id,
+                    match_id=sf.id,
+                    leg_number=sf.leg_number,
+                    user_id=new_competitor,
+                    opponent_id=sf.competitor_a_id,
+                    my_seat=1,
+                    opponent_seat=1,
+                    is_ghost_opponent=False,
+                    status=TAGameCardStatus.DRAFT.value,
+                    phase=TATournamentPhase.SEMIFINAL.value,
+                )
+                db.add(card)
+
+    await db.commit()
+
+    return {
+        "message": "Requalification winners advanced to semifinals",
+        "requalification_winners": requalification_winners,
+        "semifinal_1": {
+            "competitor_a_id": semifinals[0].competitor_a_id,
+            "competitor_b_id": semifinals[0].competitor_b_id,
+        },
+        "semifinal_2": {
+            "competitor_a_id": semifinals[1].competitor_a_id,
+            "competitor_b_id": semifinals[1].competitor_b_id,
+        },
+    }
+
+
 @router.get(
     "/events/{event_id}/standings",
     response_model=TAQualifierStandingListResponse,
@@ -3483,38 +3992,127 @@ async def get_standings(
     phase: Optional[TATournamentPhaseAPI] = None,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Get current standings for a TA event."""
+    """Get current standings for a TA event.
+
+    For qualifier phase (or no phase specified): Returns stored TAQualifierStanding records.
+    For knockout phases: Dynamically calculates standings from completed matches in that phase.
+    """
+    from app.services.ta_ranking import TARankingService
+
     event = await get_ta_event(event_id, db, request)
     settings = event.ta_settings
 
-    query = (
-        select(TAQualifierStanding)
-        .options(selectinload(TAQualifierStanding.user).selectinload(UserAccount.profile))
-        .where(TAQualifierStanding.event_id == event_id)
-        .order_by(TAQualifierStanding.rank)
-    )
-    result = await db.execute(query)
-    standings = result.scalars().all()
-
     items = []
-    for standing in standings:
-        item = TAQualifierStandingResponse(
-            id=standing.id,
-            event_id=standing.event_id,
-            user_id=standing.user_id,
-            rank=standing.rank,
-            total_points=standing.total_points,
-            total_catches=standing.total_fish_caught,
-            total_length=0.0,  # Not used
-            matches_played=standing.total_matches,
-            victories=standing.total_victories,
-            ties=standing.total_ties,
-            losses=standing.total_losses,
-            updated_at=standing.updated_at,
-            user_name=standing.user.profile.full_name if standing.user and standing.user.profile else None,
-            user_avatar=standing.user.effective_avatar_url if standing.user else None,
+
+    # Knockout phases that need dynamic calculation from matches
+    knockout_phases = {
+        TATournamentPhaseAPI.REQUALIFICATION,
+        TATournamentPhaseAPI.SEMIFINAL,
+        TATournamentPhaseAPI.FINAL_GRAND,
+        TATournamentPhaseAPI.FINAL_SMALL,
+    }
+
+    if phase and phase in knockout_phases:
+        # For knockout phases, calculate standings from completed matches
+        ranking_service = TARankingService(db)
+        rankings = await ranking_service.compute_leg_ranking(event_id, phase=phase.value)
+
+        # Story 12.6: Get DQ status for all users in this phase
+        user_ids = [r["user_id"] for r in rankings]
+        dq_query = (
+            select(EventEnrollment.user_id)
+            .where(
+                EventEnrollment.event_id == event_id,
+                EventEnrollment.user_id.in_(user_ids),
+                EventEnrollment.status == EnrollmentStatus.DISQUALIFIED.value,
+            )
         )
-        items.append(item)
+        dq_result = await db.execute(dq_query)
+        dq_user_ids = {row[0] for row in dq_result.fetchall()}
+
+        dq_items = []
+        non_dq_items = []
+
+        for ranking in rankings:
+            user_id = ranking["user_id"]
+            is_dq = user_id in dq_user_ids
+
+            item = TAQualifierStandingResponse(
+                id=0,  # Dynamic calculation, no stored ID
+                event_id=event_id,
+                user_id=user_id,
+                rank=None if is_dq else ranking.get("rank", 0),  # Story 12.6: No rank for DQ
+                total_points=ranking["points"],
+                total_catches=ranking["captures"],
+                total_length=0.0,
+                matches_played=ranking["matches_played"],
+                victories=ranking["victories"],
+                ties=ranking["ties_with_fish"] + ranking["ties_without_fish"],
+                losses=ranking["losses_with_fish"] + ranking["losses_without_fish"],
+                updated_at=datetime.now(timezone.utc),
+                user_name=ranking.get("user_name"),
+                user_avatar=ranking.get("user_avatar"),
+                is_disqualified=is_dq,  # Story 12.6
+            )
+
+            if is_dq:
+                dq_items.append(item)
+            else:
+                non_dq_items.append(item)
+
+        # Story 12.6: DQ users appear at bottom
+        items = non_dq_items + dq_items
+    else:
+        # For qualifier phase (or no phase), use stored TAQualifierStanding
+        # Story 12.6: Include enrollment for DQ status
+        query = (
+            select(TAQualifierStanding)
+            .options(
+                selectinload(TAQualifierStanding.user).selectinload(UserAccount.profile),
+                selectinload(TAQualifierStanding.enrollment),
+            )
+            .where(TAQualifierStanding.event_id == event_id)
+            .order_by(TAQualifierStanding.rank)
+        )
+        result = await db.execute(query)
+        standings = result.scalars().all()
+
+        # Story 12.6: Separate DQ and non-DQ users
+        dq_items = []
+        non_dq_items = []
+
+        for standing in standings:
+            # Check DQ status from enrollment (Story 12.6)
+            is_dq = (
+                standing.enrollment is not None
+                and standing.enrollment.status == EnrollmentStatus.DISQUALIFIED.value
+            )
+
+            item = TAQualifierStandingResponse(
+                id=standing.id,
+                event_id=standing.event_id,
+                user_id=standing.user_id,
+                rank=None if is_dq else standing.rank,  # Story 12.6: No rank for DQ users
+                total_points=standing.total_points,
+                total_catches=standing.total_fish_caught,
+                total_length=0.0,  # Not used
+                matches_played=standing.total_matches,
+                victories=standing.total_victories,
+                ties=standing.total_ties,
+                losses=standing.total_losses,
+                updated_at=standing.updated_at,
+                user_name=standing.user.profile.full_name if standing.user and standing.user.profile else None,
+                user_avatar=standing.user.effective_avatar_url if standing.user else None,
+                is_disqualified=is_dq,  # Story 12.6
+            )
+
+            if is_dq:
+                dq_items.append(item)
+            else:
+                non_dq_items.append(item)
+
+        # Story 12.6: DQ users appear at bottom of leaderboard
+        items = non_dq_items + dq_items
 
     current_phase = TATournamentPhaseAPI(
         settings.additional_rules.get("current_phase", "qualifier")
@@ -3531,7 +4129,7 @@ async def get_standings(
     return {
         "items": items,
         "total": len(items),
-        "phase": current_phase,
+        "phase": phase.value if phase else current_phase.value,
         "qualified_count": min(len(items), settings.knockout_qualifiers),
         "requalification_count": settings.requalification_slots if settings.has_requalification else 0,
         "has_knockout_bracket": settings.has_knockout_stage,
@@ -3610,6 +4208,34 @@ async def get_overall_ranking(
         "is_cumulative": True,
         "rankings": rankings,
         "total_participants": len(rankings),
+    }
+
+
+@router.get("/events/{event_id}/leg-status/{leg_number}")
+async def get_leg_completion_status(
+    event_id: int,
+    leg_number: int,
+    request: Request,
+    phase: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Get leg completion status for standings recalculation (Story 12.1).
+
+    Returns completion percentage and whether the leg is complete.
+    Used by frontend to show leg progress and trigger standings refresh.
+    """
+    from app.services.ta_ranking import TARankingService
+
+    # Verify event exists and user has access
+    await get_ta_event(event_id, db, request)
+
+    ranking_service = TARankingService(db)
+    status = await ranking_service.get_leg_completion_status(event_id, leg_number, phase)
+
+    return {
+        "event_id": event_id,
+        **status,
     }
 
 

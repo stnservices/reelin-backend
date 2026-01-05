@@ -577,7 +577,7 @@ class TAQualifierStandingResponse(BaseModel):
     id: int
     event_id: int
     user_id: int
-    rank: int
+    rank: Optional[int] = None  # None for DQ users (Story 12.6)
     total_points: Decimal
     total_catches: int
     total_length: float
@@ -590,6 +590,9 @@ class TAQualifierStandingResponse(BaseModel):
     # Nested user info
     user_name: Optional[str] = None
     user_avatar: Optional[str] = None
+
+    # Disqualification status (Story 12.6)
+    is_disqualified: bool = False
 
 
 class TAQualifierStandingListResponse(BaseModel):

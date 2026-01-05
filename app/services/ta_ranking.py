@@ -87,6 +87,100 @@ class TARankingService:
         """Get points for a match outcome."""
         return self._points_rules.get(outcome.value, Decimal("0"))
 
+    async def is_leg_complete(
+        self,
+        event_id: int,
+        leg_number: int,
+        phase: Optional[str] = None,
+    ) -> bool:
+        """
+        Check if all matches in a leg are completed.
+
+        A leg is complete when all game cards for that leg have status = 'completed'
+        (validated by both players).
+
+        Args:
+            event_id: The event ID
+            leg_number: The leg number to check
+            phase: Optional phase filter (qualifier, semifinal, etc.)
+
+        Returns:
+            True if all matches in the leg are completed, False otherwise
+        """
+        # Count incomplete game cards in this leg
+        query = select(func.count(TAGameCard.id)).where(
+            TAGameCard.event_id == event_id,
+            TAGameCard.leg_number == leg_number,
+            TAGameCard.status != TAGameCardStatus.VALIDATED.value,
+        )
+
+        if phase:
+            query = query.where(TAGameCard.phase == phase)
+
+        result = await self.db.execute(query)
+        incomplete_count = result.scalar() or 0
+
+        # Also check if there are any cards at all for this leg
+        total_query = select(func.count(TAGameCard.id)).where(
+            TAGameCard.event_id == event_id,
+            TAGameCard.leg_number == leg_number,
+        )
+        if phase:
+            total_query = total_query.where(TAGameCard.phase == phase)
+
+        total_result = await self.db.execute(total_query)
+        total_count = total_result.scalar() or 0
+
+        # Leg is complete if there are cards and none are incomplete
+        return total_count > 0 and incomplete_count == 0
+
+    async def get_leg_completion_status(
+        self,
+        event_id: int,
+        leg_number: int,
+        phase: Optional[str] = None,
+    ) -> dict:
+        """
+        Get detailed leg completion status.
+
+        Returns:
+            dict with total_cards, completed_cards, is_complete, completion_percentage
+        """
+        # Total cards in this leg
+        total_query = select(func.count(TAGameCard.id)).where(
+            TAGameCard.event_id == event_id,
+            TAGameCard.leg_number == leg_number,
+        )
+        if phase:
+            total_query = total_query.where(TAGameCard.phase == phase)
+
+        total_result = await self.db.execute(total_query)
+        total_cards = total_result.scalar() or 0
+
+        # Completed (validated) cards
+        completed_query = select(func.count(TAGameCard.id)).where(
+            TAGameCard.event_id == event_id,
+            TAGameCard.leg_number == leg_number,
+            TAGameCard.status == TAGameCardStatus.VALIDATED.value,
+        )
+        if phase:
+            completed_query = completed_query.where(TAGameCard.phase == phase)
+
+        completed_result = await self.db.execute(completed_query)
+        completed_cards = completed_result.scalar() or 0
+
+        is_complete = total_cards > 0 and completed_cards == total_cards
+        completion_percentage = (completed_cards / total_cards * 100) if total_cards > 0 else 0
+
+        return {
+            "leg_number": leg_number,
+            "phase": phase,
+            "total_cards": total_cards,
+            "completed_cards": completed_cards,
+            "is_complete": is_complete,
+            "completion_percentage": round(completion_percentage, 1),
+        }
+
     async def calculate_match_outcome(
         self,
         match: TAMatch,
