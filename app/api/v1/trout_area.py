@@ -277,28 +277,63 @@ async def _cascade_knockout_update(db: AsyncSession, event_id: int, match: "TAMa
         new_sf1_b = requalification_winners[0]  # Winner of match 1 (3v5)
         new_sf2_b = requalification_winners[1]  # Winner of match 2 (4v6)
 
+        # Helper to ensure game cards exist for both SF competitors
+        async def ensure_sf_game_cards(sf_match: TAMatch, comp_a_id: int, comp_b_id: int):
+            """Ensure game cards exist for both semifinal competitors."""
+            for user_id, opponent_id in [(comp_a_id, comp_b_id), (comp_b_id, comp_a_id)]:
+                if user_id:
+                    existing = await db.execute(select(TAGameCard).where(
+                        TAGameCard.match_id == sf_match.id,
+                        TAGameCard.user_id == user_id,
+                    ))
+                    existing_card = existing.scalar_one_or_none()
+                    if existing_card:
+                        # Update opponent if changed
+                        if existing_card.opponent_id != opponent_id:
+                            existing_card.opponent_id = opponent_id
+                    else:
+                        # Create new card
+                        db.add(TAGameCard(
+                            event_id=event_id,
+                            match_id=sf_match.id,
+                            leg_number=sf_match.leg_number,
+                            user_id=user_id,
+                            opponent_id=opponent_id,
+                            my_seat=1,
+                            opponent_seat=1,
+                            is_ghost_opponent=False,
+                            status=TAGameCardStatus.DRAFT.value,
+                        ))
+
         if old_sf1_b != new_sf1_b:
             semifinals[0].competitor_b_id = new_sf1_b
-            # Update game cards - delete old, update opponent for competitor_a, create new
-            await db.execute(delete(TAGameCard).where(
-                TAGameCard.match_id == semifinals[0].id,
-                TAGameCard.user_id == old_sf1_b,
-            ))
-            await db.execute(update(TAGameCard).where(
-                TAGameCard.match_id == semifinals[0].id,
-                TAGameCard.user_id == semifinals[0].competitor_a_id,
-            ).values(opponent_id=new_sf1_b))
+            # Delete old placeholder's game card
+            if old_sf1_b:
+                await db.execute(delete(TAGameCard).where(
+                    TAGameCard.match_id == semifinals[0].id,
+                    TAGameCard.user_id == old_sf1_b,
+                ))
+            # Ensure both competitors have game cards
+            await ensure_sf_game_cards(
+                semifinals[0],
+                semifinals[0].competitor_a_id,
+                new_sf1_b
+            )
 
         if old_sf2_b != new_sf2_b:
             semifinals[1].competitor_b_id = new_sf2_b
-            await db.execute(delete(TAGameCard).where(
-                TAGameCard.match_id == semifinals[1].id,
-                TAGameCard.user_id == old_sf2_b,
-            ))
-            await db.execute(update(TAGameCard).where(
-                TAGameCard.match_id == semifinals[1].id,
-                TAGameCard.user_id == semifinals[1].competitor_a_id,
-            ).values(opponent_id=new_sf2_b))
+            # Delete old placeholder's game card
+            if old_sf2_b:
+                await db.execute(delete(TAGameCard).where(
+                    TAGameCard.match_id == semifinals[1].id,
+                    TAGameCard.user_id == old_sf2_b,
+                ))
+            # Ensure both competitors have game cards
+            await ensure_sf_game_cards(
+                semifinals[1],
+                semifinals[1].competitor_a_id,
+                new_sf2_b
+            )
 
         return {"cascaded_to": "semifinals", "updated_winners": requalification_winners}
 
@@ -345,14 +380,92 @@ async def _cascade_knockout_update(db: AsyncSession, event_id: int, match: "TAMa
         # Update Grand Final with winners
         grand_final = finals.get(TATournamentPhase.FINAL_GRAND.value)
         if grand_final:
-            grand_final.competitor_a_id = sf_results[0]["winner"]
-            grand_final.competitor_b_id = sf_results[1]["winner"]
+            old_gf_a = grand_final.competitor_a_id
+            old_gf_b = grand_final.competitor_b_id
+            new_gf_a = sf_results[0]["winner"]
+            new_gf_b = sf_results[1]["winner"]
+            grand_final.competitor_a_id = new_gf_a
+            grand_final.competitor_b_id = new_gf_b
+
+            # Delete old game cards and create new ones for grand final
+            if old_gf_a and old_gf_a != new_gf_a:
+                await db.execute(delete(TAGameCard).where(
+                    TAGameCard.match_id == grand_final.id,
+                    TAGameCard.user_id == old_gf_a,
+                ))
+            if old_gf_b and old_gf_b != new_gf_b:
+                await db.execute(delete(TAGameCard).where(
+                    TAGameCard.match_id == grand_final.id,
+                    TAGameCard.user_id == old_gf_b,
+                ))
+
+            # Create/update game cards for grand final competitors
+            for user_id, opponent_id in [(new_gf_a, new_gf_b), (new_gf_b, new_gf_a)]:
+                if user_id:
+                    existing = await db.execute(select(TAGameCard).where(
+                        TAGameCard.match_id == grand_final.id,
+                        TAGameCard.user_id == user_id,
+                    ))
+                    existing_card = existing.scalar_one_or_none()
+                    if existing_card:
+                        existing_card.opponent_id = opponent_id
+                    else:
+                        db.add(TAGameCard(
+                            event_id=event_id,
+                            match_id=grand_final.id,
+                            leg_number=grand_final.leg_number,
+                            user_id=user_id,
+                            opponent_id=opponent_id,
+                            my_seat=1,
+                            opponent_seat=1,
+                            is_ghost_opponent=False,
+                            status=TAGameCardStatus.DRAFT.value,
+                        ))
 
         # Update Small Final with losers
         small_final = finals.get(TATournamentPhase.FINAL_SMALL.value)
         if small_final:
-            small_final.competitor_a_id = sf_results[0]["loser"]
-            small_final.competitor_b_id = sf_results[1]["loser"]
+            old_sf_a = small_final.competitor_a_id
+            old_sf_b = small_final.competitor_b_id
+            new_sf_a = sf_results[0]["loser"]
+            new_sf_b = sf_results[1]["loser"]
+            small_final.competitor_a_id = new_sf_a
+            small_final.competitor_b_id = new_sf_b
+
+            # Delete old game cards and create new ones for small final
+            if old_sf_a and old_sf_a != new_sf_a:
+                await db.execute(delete(TAGameCard).where(
+                    TAGameCard.match_id == small_final.id,
+                    TAGameCard.user_id == old_sf_a,
+                ))
+            if old_sf_b and old_sf_b != new_sf_b:
+                await db.execute(delete(TAGameCard).where(
+                    TAGameCard.match_id == small_final.id,
+                    TAGameCard.user_id == old_sf_b,
+                ))
+
+            # Create/update game cards for small final competitors
+            for user_id, opponent_id in [(new_sf_a, new_sf_b), (new_sf_b, new_sf_a)]:
+                if user_id:
+                    existing = await db.execute(select(TAGameCard).where(
+                        TAGameCard.match_id == small_final.id,
+                        TAGameCard.user_id == user_id,
+                    ))
+                    existing_card = existing.scalar_one_or_none()
+                    if existing_card:
+                        existing_card.opponent_id = opponent_id
+                    else:
+                        db.add(TAGameCard(
+                            event_id=event_id,
+                            match_id=small_final.id,
+                            leg_number=small_final.leg_number,
+                            user_id=user_id,
+                            opponent_id=opponent_id,
+                            my_seat=1,
+                            opponent_seat=1,
+                            is_ghost_opponent=False,
+                            status=TAGameCardStatus.DRAFT.value,
+                        ))
 
         return {
             "cascaded_to": "finals",
@@ -4425,6 +4538,7 @@ async def export_standings_csv(
     from fastapi.responses import StreamingResponse
     from io import StringIO
     import csv
+    from app.services.ta_ranking import TARankingService
 
     event = await get_ta_event(event_id, db, request, require_settings=False)
     event_name_safe = sanitize_filename(event.name) if event.name else f"Event_{event_id}"
@@ -4756,12 +4870,13 @@ async def export_game_cards_csv(
     event_name_safe = sanitize_filename(event.name) if event.name else f"Event_{event_id}"
     start_date_str = event.start_date.strftime("%d%m%Y") if event.start_date else "nodate"
 
-    # Get all game cards with user details
+    # Get all game cards with user details and match info
     cards_query = (
         select(TAGameCard)
         .options(
             selectinload(TAGameCard.user).selectinload(UserAccount.profile),
             selectinload(TAGameCard.opponent).selectinload(UserAccount.profile),
+            selectinload(TAGameCard.match),
         )
         .where(TAGameCard.event_id == event_id)
         .order_by(TAGameCard.leg_number, TAGameCard.my_seat)
@@ -4783,17 +4898,18 @@ async def export_game_cards_csv(
     writer.writerow(["=== GAME CARDS ==="])
     writer.writerow([])
 
-    # Header
+    # Simplified header - most useful columns for organizers
     writer.writerow([
-        "Leg", "Match ID",
-        "Owner Name", "Owner Seat",
-        "My Catches", "Opponent Catches",
-        "Opponent Name", "Opponent Seat",
-        "Is Submitted", "Submitted At",
-        "Is Validated", "Validated At",
-        "I Validated Opponent", "I Validated At",
-        "Status", "Is Disputed", "Dispute Reason",
-        "Is Ghost Opponent"
+        "Leg",
+        "Phase",
+        "Player Name",
+        "Catches",
+        "Opponent Name",
+        "Opponent Catches",
+        "Result",
+        "Status",
+        "Disputed",
+        "Notes"
     ])
 
     # Data rows
@@ -4808,31 +4924,56 @@ async def export_game_cards_csv(
         # Get opponent name
         opponent_name = ""
         if card.is_ghost_opponent:
-            opponent_name = "[GHOST]"
+            opponent_name = "[BYE]"
         elif card.opponent and card.opponent.profile:
             opponent_name = f"{card.opponent.profile.last_name} {card.opponent.profile.first_name}".strip()
         elif card.opponent:
             opponent_name = f"User {card.opponent_id}"
 
+        # Get phase from match
+        phase = "Qualifier"
+        if card.match and card.match.phase:
+            phase_map = {
+                "qualifier": "Qualifier",
+                "requalification": "Requalification",
+                "semifinal": "Semifinal",
+                "final_grand": "Grand Final",
+                "final_small": "Small Final (3rd/4th)",
+            }
+            phase = phase_map.get(card.match.phase, card.match.phase)
+
+        # Determine result
+        result = ""
+        my_catches = card.my_catches or 0
+        opp_catches = card.opponent_catches or 0
+        if card.is_validated:
+            if card.is_ghost_opponent:
+                result = "WIN (Bye)"
+            elif my_catches > opp_catches:
+                result = "WIN"
+            elif my_catches < opp_catches:
+                result = "LOSS"
+            else:
+                result = "TIE"
+        elif card.is_submitted:
+            result = "Pending validation"
+        else:
+            result = "Not submitted"
+
+        # Notes (dispute reason if any)
+        notes = card.dispute_reason or ""
+
         writer.writerow([
             card.leg_number,
-            card.match_id,
+            phase,
             owner_name,
-            card.my_seat,
             card.my_catches if card.my_catches is not None else "",
-            card.opponent_catches if card.opponent_catches is not None else "",
             opponent_name,
-            card.opponent_seat or "",
-            "Yes" if card.is_submitted else "No",
-            card.submitted_at.strftime("%Y-%m-%d %H:%M") if card.submitted_at else "",
-            "Yes" if card.is_validated else "No",
-            card.validated_at.strftime("%Y-%m-%d %H:%M") if card.validated_at else "",
-            "Yes" if card.i_validated_opponent else "No",
-            card.i_validated_at.strftime("%Y-%m-%d %H:%M") if card.i_validated_at else "",
+            card.opponent_catches if card.opponent_catches is not None else "",
+            result,
             card.status or "",
-            "Yes" if card.is_disputed else "No",
-            card.dispute_reason or "",
-            "Yes" if card.is_ghost_opponent else "No",
+            "Yes" if card.is_disputed else "",
+            notes,
         ])
 
     writer.writerow([])
