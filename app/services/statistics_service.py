@@ -11,7 +11,7 @@ from app.models.statistics import UserEventTypeStats
 from app.models.event import Event, EventType, EventStatus
 from app.models.catch import Catch, CatchStatus, EventScoreboard
 from app.models.enrollment import EventEnrollment
-from app.models.trout_area import TAMatch, TAMatchStatus, TAGameCard, TAQualifierStanding
+from app.models.trout_area import TAMatch, TAMatchStatus, TAGameCard, TAGameCardStatus, TAQualifierStanding
 from app.models.trout_shore import TSFDayStanding, TSFLegPosition, TSFFinalStanding
 
 
@@ -473,9 +473,13 @@ class StatisticsService:
         total_ties = ties_a_count + ties_b_count
 
         # === Catches from Game Cards ===
+        # Only count validated game cards from completed matches
         catches_result = await db.execute(
             select(func.coalesce(func.sum(TAGameCard.my_catches), 0))
+            .join(TAMatch, TAGameCard.match_id == TAMatch.id)
             .where(TAGameCard.user_id == user_id)
+            .where(TAGameCard.status == TAGameCardStatus.VALIDATED.value)
+            .where(TAMatch.status == TAMatchStatus.COMPLETED.value)
             .where(TAGameCard.my_catches.isnot(None))
         )
         total_catches = catches_result.scalar() or 0

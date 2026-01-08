@@ -37,10 +37,13 @@ from app.api.v1.analytics import router as analytics_router
 from app.api.v1.recommendations import router as recommendations_router
 from app.api.v1.admin_settings import router as admin_settings_router
 from app.api.v1.admin_organizer_permissions import router as admin_organizer_permissions_router
+from app.api.v1.admin_partners import router as admin_partners_router
+from app.api.v1.admin_statistics import router as admin_statistics_router
 from app.api.v1.trout_area import router as trout_area_router
 from app.api.v1.ta_public import router as ta_public_router
 from app.api.v1.trout_shore import router as trout_shore_router
 from app.api.v1.minigame import router as minigame_router
+from app.api.v1.public import router as public_router
 
 router = APIRouter()
 
@@ -79,7 +82,10 @@ router.include_router(analytics_router, tags=["Analytics"])
 router.include_router(recommendations_router, tags=["Recommendations"])
 router.include_router(admin_settings_router, prefix="/admin/settings", tags=["Admin Settings"])
 router.include_router(admin_organizer_permissions_router, prefix="/admin/organizer-permissions", tags=["Admin Organizer Permissions"])
+router.include_router(admin_partners_router, prefix="/admin/partners", tags=["Admin Partners"])
+router.include_router(admin_statistics_router, prefix="/admin/statistics", tags=["Admin Statistics"])
 router.include_router(trout_area_router, prefix="/ta", tags=["Trout Area (TA)"])
 router.include_router(ta_public_router, tags=["TA Public"])  # Public endpoints, prefix already in router
 router.include_router(trout_shore_router, prefix="/tsf", tags=["Trout Shore Fishing (TSF)"])
 router.include_router(minigame_router, prefix="/minigame", tags=["Minigame"])
+router.include_router(public_router, tags=["Public"])  # No prefix, already has /public

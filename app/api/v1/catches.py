@@ -45,6 +45,7 @@ from app.tasks.notifications import send_catch_notification, send_catch_response
 from app.tasks.achievements import process_achievements_for_catch
 from app.tasks.ai_analysis import queue_catch_analysis
 from app.models.ai_analysis import CatchAiAnalysis
+from app.services.statistics_service import statistics_service
 
 router = APIRouter()
 
@@ -956,6 +957,8 @@ async def validate_catch(
             event_id=catch.event_id,
             user_id=catch.user_id,
         )
+        # Trigger stats recalculation for user
+        await statistics_service.update_user_stats_for_event(db, catch.user_id, catch.event_id)
 
     # Queue leaderboard recalculation
     queue_leaderboard_recalculation(catch.event_id, "catch_validated")
@@ -1141,6 +1144,8 @@ async def revalidate_catch(
             event_id=catch.event_id,
             user_id=catch.user_id,
         )
+        # Trigger stats recalculation for user
+        await statistics_service.update_user_stats_for_event(db, catch.user_id, catch.event_id)
 
     # Queue leaderboard recalculation
     queue_leaderboard_recalculation(catch.event_id, "catch_revalidated")

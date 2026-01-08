@@ -120,6 +120,7 @@ from app.schemas.common import MessageResponse
 from app.services.ta_pairing import TAPairingService, PairingAlgorithm
 from app.models.club import ClubMembership, MembershipStatus
 from app.api.v1.live import live_scoring_service
+from app.services.statistics_service import statistics_service
 
 router = APIRouter()
 
@@ -2565,6 +2566,12 @@ async def edit_match_results(
             winner_id=winner_id,
         )
 
+        # Trigger stats recalculation for both players
+        if match.competitor_a_id:
+            await statistics_service.update_user_stats_for_event(db, match.competitor_a_id, event_id)
+        if match.competitor_b_id:
+            await statistics_service.update_user_stats_for_event(db, match.competitor_b_id, event_id)
+
     await db.commit()
     await db.refresh(match)
 
@@ -2787,6 +2794,10 @@ async def submit_game_card(
                 # Auto-update standings for ghost match
                 await update_standings_for_match(db, match, point_config)
 
+                # Trigger stats recalculation for the player (ghost has no user_id)
+                if card.user_id:
+                    await statistics_service.update_user_stats_for_event(db, card.user_id, event_id)
+
     # Check if opponent has already submitted - if so, update opponent_catches
     if card.opponent_id:
         opponent_card_query = select(TAGameCard).where(
@@ -2976,6 +2987,12 @@ async def validate_opponent_card(
 
                 # Auto-update standings when match completes
                 await update_standings_for_match(db, match, point_config)
+
+                # Trigger stats recalculation for both players
+                if match.competitor_a_id:
+                    await statistics_service.update_user_stats_for_event(db, match.competitor_a_id, event_id)
+                if match.competitor_b_id:
+                    await statistics_service.update_user_stats_for_event(db, match.competitor_b_id, event_id)
     else:
         opponent_card.is_disputed = True
         opponent_card.dispute_reason = data.dispute_reason
@@ -3279,6 +3296,10 @@ async def admin_update_game_card(
 
             # Auto-update standings when match completes
             await update_standings_for_match(db, match, point_config)
+
+            # Trigger stats recalculation for the player (ghost has no user_id)
+            if card.user_id:
+                await statistics_service.update_user_stats_for_event(db, card.user_id, card.event_id)
         else:
             # Regular match - check opponent's card
             opp_card_query = select(TAGameCard).where(
@@ -3305,6 +3326,12 @@ async def admin_update_game_card(
 
                 # Auto-update standings when match completes
                 await update_standings_for_match(db, match, point_config)
+
+                # Trigger stats recalculation for both players
+                if match.player_a_id:
+                    await statistics_service.update_user_stats_for_event(db, match.player_a_id, card.event_id)
+                if match.player_b_id:
+                    await statistics_service.update_user_stats_for_event(db, match.player_b_id, card.event_id)
 
     await db.commit()
     await db.refresh(card)
