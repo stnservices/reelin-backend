@@ -11,7 +11,6 @@ from app.models.user import UserAccount
 from app.models.event import Event
 from app.models.enrollment import EventEnrollment
 from app.models.trout_area import TALineup
-from app.models.trout_shore import TSFLineup
 from app.core.permissions import AdminOnly
 from app.services.statistics_service import statistics_service
 
@@ -41,9 +40,8 @@ async def recalculate_user_stats(
 
     Recalculates:
     - Overall stats (across all event types)
-    - Per event type stats (SF, TA, TSF)
+    - Per event type stats (SF, TA)
     - TA-specific stats (matches, wins, catches)
-    - TSF-specific stats (days, sector wins)
     """
     # Verify user exists
     user = await db.get(UserAccount, user_id)
@@ -76,7 +74,6 @@ async def recalculate_event_stats(
     Includes participants from:
     - Regular enrollments
     - TA lineups (non-ghost)
-    - TSF lineups (non-ghost)
     """
     # Verify event exists
     event = await db.get(Event, event_id)
@@ -103,16 +100,6 @@ async def recalculate_event_stats(
         .where(TALineup.user_id.isnot(None))
     )
     result = await db.execute(ta_lineup_stmt)
-    user_ids.update(row[0] for row in result.fetchall() if row[0])
-
-    # From TSF lineups (non-ghost participants)
-    tsf_lineup_stmt = (
-        select(distinct(TSFLineup.user_id))
-        .where(TSFLineup.event_id == event_id)
-        .where(TSFLineup.is_ghost == False)
-        .where(TSFLineup.user_id.isnot(None))
-    )
-    result = await db.execute(tsf_lineup_stmt)
     user_ids.update(row[0] for row in result.fetchall() if row[0])
 
     if not user_ids:

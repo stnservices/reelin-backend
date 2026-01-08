@@ -61,16 +61,10 @@ class AchievementType(str, Enum):
     TA_PERFECT_LEG = "ta_perfect_leg"        # Win all matches in a single leg (special)
     TA_CLEAN_SHEET = "ta_clean_sheet"        # Win match with opponent at 0 catches (special)
 
-    # TSF-specific achievement types
-    TSF_SECTOR_WINS = "tsf_sector_wins"              # Number of TSF sector wins (tiered)
-    TSF_TOURNAMENT_WIN = "tsf_tournament_win"        # Win a TSF tournament (special)
-    TSF_DAY_WINNER = "tsf_day_winner"                # Win a TSF competition day (special)
-    TSF_CONSISTENT_PERFORMER = "tsf_consistent_performer"  # Top 5 all days of multi-day event (special)
-
     # Cross-format achievement types
-    CROSS_FORMAT_PARTICIPATION = "cross_format_participation"  # Participated in SF + TA + TSF
-    CROSS_FORMAT_WINS = "cross_format_wins"                    # Won in all 3 formats
-    CROSS_FORMAT_PODIUMS = "cross_format_podiums"              # Podium in all 3 formats
+    CROSS_FORMAT_PARTICIPATION = "cross_format_participation"  # Participated in SF + TA
+    CROSS_FORMAT_WINS = "cross_format_wins"                    # Won in both formats
+    CROSS_FORMAT_PODIUMS = "cross_format_podiums"              # Podium in both formats
 
 
 class AchievementDefinition(Base):
@@ -101,7 +95,7 @@ class AchievementDefinition(Base):
     )
 
     # Format applicability (null = applies to all formats)
-    # Valid values: ["sf"], ["ta"], ["tsf"], ["sf", "ta"], ["ta", "tsf"], ["sf", "ta", "tsf"], or null
+    # Valid values: ["sf"], ["ta"], ["sf", "ta"], or null
     applicable_formats: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
 
     # Fish species specificity (for species-specific achievements like "Pike Master")
@@ -137,7 +131,7 @@ class AchievementDefinition(Base):
         Check if this achievement applies to a given format.
 
         Args:
-            format_code: One of "sf", "ta", "tsf"
+            format_code: One of "sf", "ta"
 
         Returns:
             True if achievement applies to this format, False otherwise.

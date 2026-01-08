@@ -752,6 +752,20 @@ class TALegMatchesResponse(BaseModel):
     total_matches: int
 
 
+class TABestPerformance(BaseModel):
+    """Best performance player stats."""
+    user_id: int
+    user_name: Optional[str] = None
+    user_avatar: Optional[str] = None
+    avg_catches_per_match: float
+
+
+class TABestRound(BaseModel):
+    """Best round statistics."""
+    round_number: int
+    total_catches: int
+
+
 class TAEventStatisticsResponse(BaseModel):
     """Event-level statistics for TA competition."""
     event_id: int
@@ -759,10 +773,18 @@ class TAEventStatisticsResponse(BaseModel):
     total_matches: int
     completed_matches: int
     total_catches: int
+    # Calculated stats
+    average_catches_per_match: float = 0.0
+    catches_per_participant: float = 0.0
+    catches_per_match_per_competitor: float = 0.0
+    average_catches_per_minute: float = 0.0
     # Best performers
     top_scorer: Optional[TACompetitorDetailedStats] = None
     most_catches: Optional[TACompetitorDetailedStats] = None
     most_victories: Optional[TACompetitorDetailedStats] = None
+    # NEW: Enhanced stats
+    best_performance: Optional[TABestPerformance] = None
+    best_round: Optional[TABestRound] = None
     # Phase info
     current_phase: TATournamentPhaseAPI
     current_leg: int

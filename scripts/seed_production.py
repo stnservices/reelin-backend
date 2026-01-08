@@ -53,12 +53,6 @@ EVENT_TYPES = [
         "description": "Trout fishing in designated managed areas. Uses match-based head-to-head scoring.",
         "is_active": True,
     },
-    {
-        "name": "Trout Shore Fishing",
-        "code": "trout_shore",
-        "description": "Shore-based trout fishing competitions. Uses group stage with finals format.",
-        "is_active": True,
-    },
 ]
 
 
@@ -234,49 +228,6 @@ Team score = sum of individual member points.
             "validation": "self",
         },
         "event_types": ["trout_area"],
-    },
-    # -------------------------------------------------------------------------
-    # Trout Shore Fishing - Multi-Day Positional Scoring
-    # -------------------------------------------------------------------------
-    {
-        "name": "TSF Multi-Day Sectors",
-        "code": "tsf_multi_day",
-        "description": """
-Trout Shore Fishing multi-day positional scoring.
-
-STRUCTURE:
-- Competition spans multiple days (usually 2, configurable)
-- Participants divided into sectors/groups
-- Multiple legs per day (typically 4)
-
-SCORING (Position-Based, Lower = Better):
-- 1st place: 1 point
-- 2nd place: 2 points
-- 3rd place: 3 points
-- N-th place: N points
-
-RANKINGS:
-- Daily ranking per sector
-- Overall ranking across all days
-- Final standing = sum of all position points
-
-TIEBREAKERS:
-1. Total Position Points (lower wins)
-2. Number of 1st Places
-3. Number of 2nd Places
-4. Best Single Leg
-""".strip(),
-        "default_top_x": 4,
-        "default_catch_slots": 4,
-        "rules": {
-            "scoring_type": "position",
-            "scoring_direction": "lower",  # lower is better
-            "default_days": 2,
-            "default_legs_per_day": 4,
-            "default_sectors": 4,
-            "tiebreakers": ["total_position_points", "first_places", "second_places", "best_single_leg"],
-        },
-        "event_types": ["trout_shore"],
     },
 ]
 
@@ -607,7 +558,7 @@ async def main():
     print("   - Fish species and currencies are seeded via migrations")
     print("   - Update ADMIN_PASSWORD in production")
     print("   - Configure Stripe price IDs in environment")
-    print("   - TA/TSF tables require migration before seeding")
+    print("   - TA tables require migration before seeding")
 
 
 if __name__ == "__main__":

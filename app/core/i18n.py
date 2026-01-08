@@ -128,25 +128,6 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "ta_invalid_seat": "Invalid seat assignment",
         "ta_participant_not_in_match": "You are not a participant in this match",
 
-        # Trout Shore Fishing (TSF) errors
-        "tsf_event_not_found": "Trout Shore Fishing event not found",
-        "tsf_settings_not_found": "TSF settings not configured for this event",
-        "tsf_invalid_event_type": "This event is not a Trout Shore Fishing competition",
-        "tsf_day_not_found": "Competition day not found",
-        "tsf_leg_not_found": "Competition leg not found",
-        "tsf_position_not_found": "Position record not found",
-        "tsf_invalid_day_number": "Invalid day number (valid: 1 to {max})",
-        "tsf_invalid_leg_number": "Invalid leg number (valid: 1 to {max})",
-        "tsf_day_not_active": "This competition day is not active",
-        "tsf_leg_not_active": "This competition leg is not active",
-        "tsf_lineup_not_found": "TSF lineup not found",
-        "tsf_position_already_submitted": "Position has already been submitted for this leg",
-        "tsf_invalid_position": "Invalid position value (must be between 1 and {max})",
-        "tsf_duplicate_position": "This position is already assigned to another participant",
-        "tsf_standings_not_calculated": "Standings have not been calculated yet",
-        "tsf_day_already_completed": "This competition day has already been completed",
-        "tsf_sector_assignment_conflict": "Sector assignment conflict detected",
-
         # Entry editing permissions
         "cannot_edit_others_entry": "You can only edit entries you created",
         "leg_completed_cannot_edit": "Cannot edit after leg completion",
@@ -290,25 +271,6 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "ta_draw_already_done": "Tragerea la sorți a fost deja efectuată pentru acest eveniment",
         "ta_invalid_seat": "Atribuire de loc invalidă",
         "ta_participant_not_in_match": "Nu sunteți participant în acest meci",
-
-        # Trout Shore Fishing (TSF) errors
-        "tsf_event_not_found": "Evenimentul TSF nu a fost găsit",
-        "tsf_settings_not_found": "Setările TSF nu sunt configurate pentru acest eveniment",
-        "tsf_invalid_event_type": "Acest eveniment nu este o competiție Trout Shore Fishing",
-        "tsf_day_not_found": "Ziua de competiție nu a fost găsită",
-        "tsf_leg_not_found": "Manșa de competiție nu a fost găsită",
-        "tsf_position_not_found": "Înregistrarea poziției nu a fost găsită",
-        "tsf_invalid_day_number": "Număr de zi invalid (valid: 1 până la {max})",
-        "tsf_invalid_leg_number": "Număr de manșă invalid (valid: 1 până la {max})",
-        "tsf_day_not_active": "Această zi de competiție nu este activă",
-        "tsf_leg_not_active": "Această manșă de competiție nu este activă",
-        "tsf_lineup_not_found": "Lineup-ul TSF nu a fost găsit",
-        "tsf_position_already_submitted": "Poziția a fost deja înregistrată pentru această manșă",
-        "tsf_invalid_position": "Valoare poziție invalidă (trebuie să fie între 1 și {max})",
-        "tsf_duplicate_position": "Această poziție este deja atribuită altui participant",
-        "tsf_standings_not_calculated": "Clasamentele nu au fost calculate încă",
-        "tsf_day_already_completed": "Această zi de competiție a fost deja finalizată",
-        "tsf_sector_assignment_conflict": "Conflict detectat în atribuirea sectorului",
 
         # Entry editing permissions
         "cannot_edit_others_entry": "Poți edita doar intrările pe care le-ai creat",

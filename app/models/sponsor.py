@@ -1,7 +1,6 @@
 """Sponsor model."""
 
 from datetime import datetime
-from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
@@ -11,26 +10,6 @@ from app.database import Base
 
 if TYPE_CHECKING:
     from app.models.user import UserAccount
-
-
-class SponsorTier(str, Enum):
-    """Sponsor tier levels - determines visibility and placement."""
-
-    PLATINUM = "platinum"  # Top billing, largest logo display
-    GOLD = "gold"          # Premium placement
-    SILVER = "silver"      # Standard prominent placement
-    BRONZE = "bronze"      # Standard placement
-    PARTNER = "partner"    # Supporting partner
-
-
-# Tier display order for sorting (lower = higher priority)
-TIER_ORDER = {
-    SponsorTier.PLATINUM: 1,
-    SponsorTier.GOLD: 2,
-    SponsorTier.SILVER: 3,
-    SponsorTier.BRONZE: 4,
-    SponsorTier.PARTNER: 5,
-}
 
 
 class Sponsor(Base):
@@ -49,9 +28,6 @@ class Sponsor(Base):
     logo_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     website_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     contact_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    tier: Mapped[str] = mapped_column(
-        String(20), default=SponsorTier.PARTNER.value, nullable=False, index=True
-    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     display_order: Mapped[int] = mapped_column(default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

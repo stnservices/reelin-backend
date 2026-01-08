@@ -12,7 +12,7 @@ from app.core.permissions import AdminOnly
 from app.models.user import UserAccount
 from app.models.event import EventType, ScoringConfig
 from app.models.fish import Fish
-from app.models.sponsor import Sponsor, SponsorTier, TIER_ORDER
+from app.models.sponsor import Sponsor
 from app.models.location import Country, City, FishingSpot
 from app.models.event import Event, EventFishScoring
 from app.models.event_sponsor import EventSponsor
@@ -139,7 +139,6 @@ class SponsorCreate(BaseModel):
     logo_url: Optional[str] = None
     website_url: Optional[str] = None
     contact_email: Optional[str] = None
-    tier: str = Field(default=SponsorTier.PARTNER.value)
     display_order: int = 0
     is_active: bool = True
 
@@ -151,7 +150,6 @@ class SponsorUpdate(BaseModel):
     logo_url: Optional[str] = None
     website_url: Optional[str] = None
     contact_email: Optional[str] = None
-    tier: Optional[str] = None
     display_order: Optional[int] = None
     is_active: Optional[bool] = None
     is_global: Optional[bool] = None  # If True, sets owner_id to None (global sponsor)
@@ -735,7 +733,7 @@ async def list_sponsors(
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(AdminOnly),
 ):
-    """List all sponsors ordered by tier then display_order.
+    """List all sponsors ordered by display_order.
 
     Admin can see all sponsors (global + organizer-owned) with owner info.
     """
@@ -746,9 +744,6 @@ async def list_sponsors(
     result = await db.execute(query)
     sponsors = result.scalars().all()
 
-    # Sort by tier priority and convert to response
-    sorted_sponsors = sorted(sponsors, key=lambda s: (TIER_ORDER.get(SponsorTier(s.tier), 99), s.display_order, s.name))
-
     return [
         {
             "id": s.id,
@@ -757,82 +752,14 @@ async def list_sponsors(
             "logo_url": s.logo_url,
             "website_url": s.website_url,
             "contact_email": s.contact_email,
-            "tier": s.tier,
             "display_order": s.display_order,
             "is_active": s.is_active,
             "owner_id": s.owner_id,
             "owner_email": s.owner.email if s.owner else None,
             "is_global": s.owner_id is None,
         }
-        for s in sorted_sponsors
+        for s in sponsors
     ]
-
-
-@router.get("/sponsors/grouped")
-async def list_sponsors_grouped(
-    include_inactive: bool = False,
-    db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(AdminOnly),
-):
-    """List sponsors grouped by tier."""
-    query = select(Sponsor)
-    if not include_inactive:
-        query = query.where(Sponsor.is_active == True)
-    query = query.order_by(Sponsor.display_order, Sponsor.name)
-    result = await db.execute(query)
-    sponsors = result.scalars().all()
-
-    # Group by tier
-    grouped = {tier.value: [] for tier in SponsorTier}
-    for sponsor in sponsors:
-        tier_key = sponsor.tier if sponsor.tier in grouped else SponsorTier.PARTNER.value
-        grouped[tier_key].append({
-            "id": sponsor.id,
-            "name": sponsor.name,
-            "description": sponsor.description,
-            "logo_url": sponsor.logo_url,
-            "website_url": sponsor.website_url,
-            "contact_email": sponsor.contact_email,
-            "tier": sponsor.tier,
-            "display_order": sponsor.display_order,
-            "is_active": sponsor.is_active,
-        })
-
-    # Return in tier order with tier descriptions
-    return {
-        "tiers": [
-            {
-                "tier": SponsorTier.PLATINUM.value,
-                "name": "Platinum",
-                "description": "Top billing, largest logo display",
-                "sponsors": grouped[SponsorTier.PLATINUM.value],
-            },
-            {
-                "tier": SponsorTier.GOLD.value,
-                "name": "Gold",
-                "description": "Premium placement",
-                "sponsors": grouped[SponsorTier.GOLD.value],
-            },
-            {
-                "tier": SponsorTier.SILVER.value,
-                "name": "Silver",
-                "description": "Standard prominent placement",
-                "sponsors": grouped[SponsorTier.SILVER.value],
-            },
-            {
-                "tier": SponsorTier.BRONZE.value,
-                "name": "Bronze",
-                "description": "Standard placement",
-                "sponsors": grouped[SponsorTier.BRONZE.value],
-            },
-            {
-                "tier": SponsorTier.PARTNER.value,
-                "name": "Partner",
-                "description": "Supporting partner",
-                "sponsors": grouped[SponsorTier.PARTNER.value],
-            },
-        ]
-    }
 
 
 @router.post("/sponsors", status_code=status.HTTP_201_CREATED)
@@ -871,7 +798,6 @@ async def create_sponsor(
         "logo_url": sponsor.logo_url,
         "website_url": sponsor.website_url,
         "contact_email": sponsor.contact_email,
-        "tier": sponsor.tier,
         "display_order": sponsor.display_order,
         "is_active": sponsor.is_active,
         "owner_id": None,
@@ -916,7 +842,6 @@ async def update_sponsor(
         "logo_url": sponsor.logo_url,
         "website_url": sponsor.website_url,
         "contact_email": sponsor.contact_email,
-        "tier": sponsor.tier,
         "display_order": sponsor.display_order,
         "is_active": sponsor.is_active,
         "owner_id": sponsor.owner_id,

@@ -20,7 +20,6 @@ from app.models.event import Event, EventStatus
 from app.models.team import Team, TeamMember
 from app.models.user import UserAccount
 from app.models.trout_area import TALineup, TAGameCard, TAMatch, TAMatchStatus
-from app.models.trout_shore import TSFLineup, TSFSectorValidator
 
 logger = logging.getLogger(__name__)
 
@@ -221,34 +220,6 @@ class EventStatusService:
             if incomplete_count > 0:
                 warnings.append(
                     f"Warning: {incomplete_count} incomplete match(es) from previous run"
-                )
-
-        # For Trout Shore Fishing events, check lineups and sector validators
-        if event.event_type and event.event_type.code == "trout_shore":
-            # Check for lineups
-            lineup_query = select(func.count(TSFLineup.id)).where(
-                TSFLineup.event_id == event.id,
-            )
-            lineup_result = await self.db.execute(lineup_query)
-            lineup_count = lineup_result.scalar() or 0
-
-            if lineup_count == 0:
-                raise PreconditionFailedError(
-                    message="Cannot start Trout Shore Fishing event: No lineups generated. Please generate lineups first.",
-                    details={"lineup_count": 0},
-                )
-
-            # Check for sector validators
-            validator_query = select(func.count(TSFSectorValidator.id)).where(
-                TSFSectorValidator.event_id == event.id,
-            )
-            validator_result = await self.db.execute(validator_query)
-            validator_count = validator_result.scalar() or 0
-
-            if validator_count == 0:
-                raise PreconditionFailedError(
-                    message="Cannot start Trout Shore Fishing event: No sector validators assigned. Please assign validators first.",
-                    details={"validator_count": 0},
                 )
 
         return warnings

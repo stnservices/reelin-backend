@@ -81,16 +81,6 @@ class UserEventTypeStats(Base):
     ta_tournament_wins: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     ta_tournament_podiums: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
-    # ==========================================================================
-    # TSF-specific stats (nullable - only populated for TSF participants)
-    # ==========================================================================
-    tsf_total_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    tsf_sector_wins: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    tsf_total_catches: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    tsf_tournament_wins: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    tsf_tournament_podiums: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    tsf_best_position_points: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-
     # Timestamps
     last_updated: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False

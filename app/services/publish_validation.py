@@ -15,7 +15,6 @@ from sqlalchemy.orm import selectinload
 from app.core.exceptions import NotFoundError
 from app.models.event import Event, EventStatus, EventFishScoring
 from app.models.trout_area import TAEventSettings
-from app.models.trout_shore import TSFEventSettings
 
 logger = logging.getLogger(__name__)
 
@@ -44,11 +43,6 @@ class ValidationKeys:
     TA_NO_ALGORITHM = "validation.publish.ta.no_algorithm"
     TA_NO_LEGS = "validation.publish.ta.no_legs"
 
-    # TSF-specific keys
-    TSF_NO_SETTINGS = "validation.publish.tsf.no_settings"
-    TSF_NO_DAYS = "validation.publish.tsf.no_days"
-    TSF_NO_SECTORS = "validation.publish.tsf.no_sectors"
-
 
 class PublishValidationService:
     """Service for validating event publish readiness."""
@@ -75,7 +69,6 @@ class PublishValidationService:
                 selectinload(Event.event_type),
                 selectinload(Event.scoring_config),
                 selectinload(Event.ta_settings),
-                selectinload(Event.tsf_settings),
             )
             .where(Event.id == event_id, Event.is_deleted == False)
         )
@@ -128,10 +121,6 @@ class PublishValidationService:
             ta_missing, ta_checks = self._validate_ta(event)
             missing_items.extend(ta_missing)
             checks.update(ta_checks)
-        elif format_code == "tsf":
-            tsf_missing, tsf_checks = self._validate_tsf(event)
-            missing_items.extend(tsf_missing)
-            checks.update(tsf_checks)
 
         is_ready = len(missing_items) == 0
 
@@ -259,47 +248,5 @@ class PublishValidationService:
         checks["ta_has_legs"] = has_legs
         if not has_legs:
             missing_items.append(ValidationKeys.TA_NO_LEGS)
-
-        return missing_items, checks
-
-    def _validate_tsf(self, event: Event) -> Tuple[List[str], Dict[str, bool]]:
-        """
-        Validate Trout Shore Fishing (TSF) specific fields.
-
-        Args:
-            event: The event to validate
-
-        Returns:
-            Tuple of (missing_items, checks)
-        """
-        missing_items: List[str] = []
-        checks: Dict[str, bool] = {}
-
-        settings: TSFEventSettings | None = event.tsf_settings
-
-        # Check settings exist
-        has_settings = settings is not None
-        checks["tsf_has_settings"] = has_settings
-
-        if not has_settings:
-            missing_items.append(ValidationKeys.TSF_NO_SETTINGS)
-            # Cannot check other TSF fields without settings
-            checks["tsf_has_days"] = False
-            checks["tsf_has_sectors"] = False
-            return missing_items, checks
-
-        # Check number of days is set and valid
-        has_days = settings.number_of_days is not None and settings.number_of_days > 0
-        checks["tsf_has_days"] = has_days
-        if not has_days:
-            missing_items.append(ValidationKeys.TSF_NO_DAYS)
-
-        # Check number of sectors is set and valid
-        has_sectors = (
-            settings.number_of_sectors is not None and settings.number_of_sectors > 0
-        )
-        checks["tsf_has_sectors"] = has_sectors
-        if not has_sectors:
-            missing_items.append(ValidationKeys.TSF_NO_SECTORS)
 
         return missing_items, checks

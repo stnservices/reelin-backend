@@ -79,6 +79,13 @@ class Settings(BaseSettings):
     # External APIs
     openweathermap_api_key: str = ""  # For fishing forecast feature
 
+    # reCAPTCHA (Google reCAPTCHA v3)
+    recaptcha_secret_key: str = ""
+    recaptcha_min_score: float = 0.5  # Minimum score to consider valid (0.0-1.0)
+
+    # Contact form settings
+    contact_admin_email: str = "contact@reelin.ro"
+
     # App Version (for mobile update checks)
     app_version: str = "1.0.0"  # Current latest version
     app_min_version_ios: str = "1.0.0"  # Minimum supported iOS version

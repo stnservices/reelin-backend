@@ -53,7 +53,7 @@ class SponsorBriefResponse(BaseModel):
     name: str
     logo_url: Optional[str] = None
     website_url: Optional[str] = None
-    tier: str
+    display_order: int = 0
 
 
 class EventTypeResponse(BaseModel):
@@ -64,7 +64,7 @@ class EventTypeResponse(BaseModel):
     id: int
     name: str
     code: str
-    format_code: str  # sf, ta, tsf - determines which wizard/format to use
+    format_code: str  # sf, ta - determines which wizard/format to use
     description: Optional[str] = None
     icon_url: Optional[str] = None
     is_active: bool
@@ -78,12 +78,12 @@ class ScoringConfigResponse(BaseModel):
     id: int
     name: str
     code: str
-    format_code: str  # sf, ta, tsf
+    format_code: str  # sf, ta
     description: Optional[str] = None
     calculation_info: Optional[str] = None  # Detailed scoring explanation
     team_scoring_info: Optional[str] = None  # Team scoring explanation
-    default_top_x: int = 10
-    default_catch_slots: int = 5
+    default_top_x: Optional[int] = None
+    default_catch_slots: Optional[int] = None
     rules: Dict[str, Any] = {}
     is_active: bool
     event_types: List[EventTypeResponse] = []

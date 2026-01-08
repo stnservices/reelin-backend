@@ -1,6 +1,6 @@
 """Celery tasks for format-aware achievement processing.
 
-Handles achievement processing after TA and TSF event completion,
+Handles achievement processing after TA event completion,
 with proper format filtering and participant discovery.
 """
 
@@ -30,7 +30,7 @@ async def _process_format_event_achievements(
 
     Args:
         event_id: Event ID
-        format_code: Format code ("sf", "ta", "tsf")
+        format_code: Format code ("sf", "ta")
 
     Returns:
         Dict with processing results
@@ -130,14 +130,14 @@ async def _process_format_event_achievements(
 @celery_app.task(name="achievements.process_format_event")
 def process_format_event_achievements(event_id: int, format_code: str) -> dict:
     """
-    Process achievements for all participants of a TA/TSF event.
+    Process achievements for all participants of a TA event.
 
     Called after event completion (stop action) to check and award
     format-specific achievements for all participants.
 
     Args:
         event_id: Event ID
-        format_code: Format code ("ta" or "tsf")
+        format_code: Format code ("ta")
 
     Returns:
         Dict with processing results

@@ -1,7 +1,7 @@
 """Event format utilities for achievement processing.
 
 Provides helpers to:
-- Map event types to format codes (sf, ta, tsf)
+- Map event types to format codes (sf, ta)
 - Get participant IDs for different event formats
 """
 
@@ -25,7 +25,7 @@ def get_format_code(event_type: Optional[EventType]) -> Optional[str]:
         event_type: The EventType model instance
 
     Returns:
-        Format code: "sf", "ta", "tsf", or None if unknown
+        Format code: "sf", "ta", or None if unknown
     """
     if event_type is None:
         return None
@@ -36,8 +36,6 @@ def get_format_code(event_type: Optional[EventType]) -> Optional[str]:
 
     if "trout_area" in type_code or "trout area" in type_name:
         return "ta"
-    elif "trout_shore" in type_code or "trout shore" in type_name:
-        return "tsf"
     else:
         return "sf"  # Default to street fishing
 
@@ -53,7 +51,7 @@ async def get_event_participant_ids(
     Args:
         db: Database session
         event_id: Event ID
-        format_code: Format code ("sf", "ta", "tsf")
+        format_code: Format code ("sf", "ta")
 
     Returns:
         List of participant user IDs (non-ghost, non-null)
@@ -66,17 +64,6 @@ async def get_event_participant_ids(
             .where(TALineup.event_id == event_id)
             .where(TALineup.is_ghost == False)
             .where(TALineup.user_id.isnot(None))
-        )
-        return [row[0] for row in result.fetchall()]
-
-    elif format_code == "tsf":
-        # TSF: Get from TSFLineup
-        from app.models.trout_shore import TSFLineup
-        result = await db.execute(
-            select(distinct(TSFLineup.user_id))
-            .where(TSFLineup.event_id == event_id)
-            .where(TSFLineup.is_ghost == False)
-            .where(TSFLineup.user_id.isnot(None))
         )
         return [row[0] for row in result.fetchall()]
 

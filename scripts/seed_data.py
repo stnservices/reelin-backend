@@ -115,11 +115,6 @@ async def seed_event_types(db: AsyncSession) -> dict[str, int]:
             "code": "trout_area",
             "description": "Trout fishing in designated areas with match format",
         },
-        {
-            "name": "Trout Shore Fishing",
-            "code": "trout_shore",
-            "description": "Shore-based trout fishing competitions",
-        },
     ]
 
     type_ids = {}
@@ -183,19 +178,6 @@ async def seed_event_types(db: AsyncSession) -> dict[str, int]:
                 "points_loss_no_fish": 0.0,
             },
             "event_types": ["trout_area"],
-        },
-        # Trout Shore - Group stage
-        {
-            "name": "Group Stage + Finals",
-            "code": "tsf_group",
-            "description": "Group stage followed by finals",
-            "rules": {
-                "scoring_type": "group_stage",
-                "groups": 4,
-                "qualifiers_per_group": 2,
-                "finals_format": "elimination",
-            },
-            "event_types": ["trout_shore"],
         },
     ]
 

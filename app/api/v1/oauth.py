@@ -1,6 +1,6 @@
 """OAuth authentication endpoints for social login."""
 
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -92,6 +92,24 @@ def get_frontend_success_url() -> str:
     return f"{settings.frontend_url}/auth/callback?success=true"
 
 
+def get_cookie_domain() -> str | None:
+    """
+    Extract cookie domain for cross-subdomain sharing.
+
+    For production (e.g., api.reelin.ro -> .reelin.ro), allows cookies
+    set by the API to be read by the frontend on a different subdomain.
+    Returns None for localhost to use default browser behavior.
+    """
+    parsed = urlparse(settings.frontend_url)
+    if not parsed.hostname or parsed.hostname.startswith("localhost") or parsed.hostname == "127.0.0.1":
+        return None
+    # Get root domain (e.g., "reelin.ro" from "www.reelin.ro")
+    parts = parsed.hostname.split(".")
+    if len(parts) >= 2:
+        return "." + ".".join(parts[-2:])  # ".reelin.ro"
+    return None
+
+
 # ============= Google OAuth =============
 
 @router.get("/google")
@@ -141,12 +159,15 @@ async def google_callback(
 
         # Redirect to frontend with tokens in cookies
         response = RedirectResponse(url=get_frontend_success_url())
+        cookie_domain = get_cookie_domain()
+
         response.set_cookie(
             key="access_token",
             value=access_token,
             httponly=False,  # Allow JS to read for OAuth callback
             secure=not settings.debug,
             samesite="lax",
+            domain=cookie_domain,  # Share across subdomains in production
             max_age=60,  # Short-lived, just for transport
         )
         response.set_cookie(
@@ -155,6 +176,7 @@ async def google_callback(
             httponly=False,  # Allow JS to read for OAuth callback
             secure=not settings.debug,
             samesite="lax",
+            domain=cookie_domain,  # Share across subdomains in production
             max_age=60,  # Short-lived, just for transport
         )
         return response
@@ -304,12 +326,15 @@ async def facebook_callback(
 
         # Redirect to frontend with tokens in cookies
         response = RedirectResponse(url=get_frontend_success_url())
+        cookie_domain = get_cookie_domain()
+
         response.set_cookie(
             key="access_token",
             value=access_token,
             httponly=False,  # Allow JS to read for OAuth callback
             secure=not settings.debug,
             samesite="lax",
+            domain=cookie_domain,  # Share across subdomains in production
             max_age=60,  # Short-lived, just for transport
         )
         response.set_cookie(
@@ -318,6 +343,7 @@ async def facebook_callback(
             httponly=False,  # Allow JS to read for OAuth callback
             secure=not settings.debug,
             samesite="lax",
+            domain=cookie_domain,  # Share across subdomains in production
             max_age=60,  # Short-lived, just for transport
         )
         return response

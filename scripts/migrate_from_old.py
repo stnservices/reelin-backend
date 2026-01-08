@@ -143,8 +143,6 @@ def map_event_type_code(old_type_id: str) -> str:
 
     if "trout" in type_lower and "area" in type_lower:
         return "trout_area"
-    if "trout" in type_lower and "shore" in type_lower:
-        return "trout_shore"
     if "trout" in type_lower:
         return "trout_area"
 
@@ -156,8 +154,6 @@ def map_scoring_config_code(old_scoring_type: str, event_type_code: str) -> str:
     if not old_scoring_type:
         if event_type_code == "trout_area":
             return "ta_match"
-        if event_type_code == "trout_shore":
-            return "tsf_group"
         return "sf_top_x_by_species"
 
     scoring_lower = old_scoring_type.lower()

@@ -13,7 +13,6 @@ from app.celery_app import celery_app
 from app.database import async_session_maker
 from app.models.event import Event, EventStatus
 from app.models.trout_area import TALineup
-from app.models.trout_shore import TSFLineup
 from app.services.statistics_service import StatisticsService
 
 logger = logging.getLogger(__name__)
@@ -29,10 +28,6 @@ def recalculate_event_stats(self, event_id: int):
 
     For TA events:
     - Gets all real participants from TALineup (not ghosts)
-    - Recalculates stats for each using StatisticsService
-
-    For TSF events:
-    - Gets all real participants from TSFLineup (not ghosts)
     - Recalculates stats for each using StatisticsService
 
     Args:
@@ -78,8 +73,7 @@ async def _async_recalculate_event_stats(event_id: int) -> dict:
             )
             return {"error": "Event not completed", "status": event.status}
 
-        # 2. Get unique participants from TA and TSF lineups
-        # Check both lineup types and combine user_ids (handles multi-format events)
+        # 2. Get unique participants from TA lineups
         user_ids_set = set()
 
         # Check for TA participants
@@ -91,17 +85,6 @@ async def _async_recalculate_event_stats(event_id: int) -> dict:
             .distinct()
         )
         for row in ta_participants_result.fetchall():
-            user_ids_set.add(row[0])
-
-        # Check for TSF participants
-        tsf_participants_result = await db.execute(
-            select(TSFLineup.user_id)
-            .where(TSFLineup.event_id == event_id)
-            .where(TSFLineup.is_ghost == False)
-            .where(TSFLineup.user_id.isnot(None))
-            .distinct()
-        )
-        for row in tsf_participants_result.fetchall():
             user_ids_set.add(row[0])
 
         user_ids = list(user_ids_set)

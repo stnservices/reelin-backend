@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.event import Event, EventFishScoring, EventType, ScoringConfig
 from app.models.trout_area import TAEventSettings
-from app.models.trout_shore import TSFEventSettings
 from app.services.publish_validation import (
     PublishValidationService,
     ValidationKeys,
@@ -67,15 +66,6 @@ def ta_event_type():
 
 
 @pytest.fixture
-def tsf_event_type():
-    """Create a Trout Shore Fishing event type."""
-    event_type = MagicMock(spec=EventType)
-    event_type.code = "tsf"
-    event_type.format_code = "tsf"
-    return event_type
-
-
-@pytest.fixture
 def valid_sf_event(sf_event_type, future_date):
     """Create a valid SF event with all required fields."""
     event = MagicMock(spec=Event)
@@ -87,7 +77,6 @@ def valid_sf_event(sf_event_type, future_date):
     event.event_type = sf_event_type
     event.scoring_config = MagicMock(spec=ScoringConfig)
     event.ta_settings = None
-    event.tsf_settings = None
     event.is_deleted = False
     return event
 
@@ -109,29 +98,6 @@ def valid_ta_event(ta_event_type, future_date):
     ta_settings.number_of_legs = 5
     ta_settings.match_duration_minutes = 60
     event.ta_settings = ta_settings
-    event.tsf_settings = None
-    event.is_deleted = False
-    return event
-
-
-@pytest.fixture
-def valid_tsf_event(tsf_event_type, future_date):
-    """Create a valid TSF event with all required fields."""
-    event = MagicMock(spec=Event)
-    event.id = 3
-    event.name = "Test TSF Event"
-    event.location = "Test Location"
-    event.start_date = future_date
-    event.end_date = future_date + timedelta(days=2)
-    event.event_type = tsf_event_type
-    event.scoring_config = None
-    event.ta_settings = None
-
-    # TSF settings
-    tsf_settings = MagicMock(spec=TSFEventSettings)
-    tsf_settings.number_of_days = 2
-    tsf_settings.number_of_sectors = 4
-    event.tsf_settings = tsf_settings
     event.is_deleted = False
     return event
 
@@ -319,53 +285,6 @@ class TestTAValidation:
 
 
 # =============================================================================
-# TSF-Specific Validation Tests
-# =============================================================================
-
-
-class TestTSFValidation:
-    """Tests for Trout Shore Fishing specific validation checks."""
-
-    def test_tsf_missing_settings(self, validation_service, valid_tsf_event):
-        """Test validation fails when TSF event has no settings."""
-        valid_tsf_event.tsf_settings = None
-
-        missing, checks = validation_service._validate_tsf(valid_tsf_event)
-
-        assert ValidationKeys.TSF_NO_SETTINGS in missing
-        assert checks["tsf_has_settings"] is False
-        assert checks["tsf_has_days"] is False
-        assert checks["tsf_has_sectors"] is False
-
-    def test_tsf_missing_days(self, validation_service, valid_tsf_event):
-        """Test validation fails when TSF event has no days configured."""
-        valid_tsf_event.tsf_settings.number_of_days = 0
-
-        missing, checks = validation_service._validate_tsf(valid_tsf_event)
-
-        assert ValidationKeys.TSF_NO_DAYS in missing
-        assert checks["tsf_has_days"] is False
-
-    def test_tsf_missing_sectors(self, validation_service, valid_tsf_event):
-        """Test validation fails when TSF event has no sectors configured."""
-        valid_tsf_event.tsf_settings.number_of_sectors = 0
-
-        missing, checks = validation_service._validate_tsf(valid_tsf_event)
-
-        assert ValidationKeys.TSF_NO_SECTORS in missing
-        assert checks["tsf_has_sectors"] is False
-
-    def test_tsf_valid_event(self, validation_service, valid_tsf_event):
-        """Test all TSF validations pass for valid event."""
-        missing, checks = validation_service._validate_tsf(valid_tsf_event)
-
-        assert len(missing) == 0
-        assert checks["tsf_has_settings"] is True
-        assert checks["tsf_has_days"] is True
-        assert checks["tsf_has_sectors"] is True
-
-
-# =============================================================================
 # Full Validation Tests
 # =============================================================================
 
@@ -434,30 +353,6 @@ class TestFullValidation:
             assert ValidationKeys.TA_NO_SETTINGS in missing
 
     @pytest.mark.asyncio
-    async def test_valid_tsf_event_is_ready(self, validation_service, valid_tsf_event, mock_db):
-        """Test valid TSF event returns is_ready=True."""
-        with patch.object(
-            validation_service, "get_event", return_value=valid_tsf_event
-        ):
-            is_ready, missing, checks = await validation_service.validate_publish_readiness(3)
-
-            assert is_ready is True
-            assert len(missing) == 0
-
-    @pytest.mark.asyncio
-    async def test_invalid_tsf_event_not_ready(self, validation_service, valid_tsf_event, mock_db):
-        """Test TSF event without days returns is_ready=False."""
-        valid_tsf_event.tsf_settings.number_of_days = 0
-
-        with patch.object(
-            validation_service, "get_event", return_value=valid_tsf_event
-        ):
-            is_ready, missing, checks = await validation_service.validate_publish_readiness(3)
-
-            assert is_ready is False
-            assert ValidationKeys.TSF_NO_DAYS in missing
-
-    @pytest.mark.asyncio
     async def test_common_validation_failures(
         self, validation_service, valid_sf_event, mock_db, past_date
     ):
@@ -503,9 +398,3 @@ class TestValidationKeys:
         """Test TA keys have validation.publish.ta prefix."""
         assert ValidationKeys.TA_NO_SETTINGS.startswith("validation.publish.ta.")
         assert ValidationKeys.TA_NO_LEGS.startswith("validation.publish.ta.")
-
-    def test_tsf_keys_have_correct_prefix(self):
-        """Test TSF keys have validation.publish.tsf prefix."""
-        assert ValidationKeys.TSF_NO_SETTINGS.startswith("validation.publish.tsf.")
-        assert ValidationKeys.TSF_NO_DAYS.startswith("validation.publish.tsf.")
-        assert ValidationKeys.TSF_NO_SECTORS.startswith("validation.publish.tsf.")

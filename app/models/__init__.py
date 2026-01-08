@@ -49,6 +49,7 @@ from app.models.app_settings import AppSettings
 from app.models.ai_analysis import CatchAiAnalysis, AiAnalysisStatus
 from app.models.ml_model import MLModel, MLPredictionLog
 from app.models.organizer_permissions import OrganizerEventTypeAccess, NationalEventOrganizer
+from app.models.partner import Partner
 
 # Minigame
 from app.models.minigame import MinigameScore
@@ -69,19 +70,6 @@ from app.models.trout_area import (
     TAGameCardStatus,
 )
 
-# Trout Shore Fishing (TSF) models
-from app.models.trout_shore import (
-    TSFEventSettings,
-    TSFDay,
-    TSFLeg,
-    TSFLineup,
-    TSFSectorValidator,
-    TSFLegPosition,
-    TSFDayStanding,
-    TSFFinalStanding,
-    TSFDayStatus,
-    TSFLegStatus,
-)
 
 __all__ = [
     # User
@@ -193,6 +181,8 @@ __all__ = [
     # Organizer Permissions
     "OrganizerEventTypeAccess",
     "NationalEventOrganizer",
+    # Partner
+    "Partner",
     # Minigame
     "MinigameScore",
     # Trout Area (TA)
@@ -208,15 +198,4 @@ __all__ = [
     "TATournamentPhase",
     "TAMatchStatus",
     "TAGameCardStatus",
-    # Trout Shore Fishing (TSF)
-    "TSFEventSettings",
-    "TSFDay",
-    "TSFLeg",
-    "TSFLineup",
-    "TSFSectorValidator",
-    "TSFLegPosition",
-    "TSFDayStanding",
-    "TSFFinalStanding",
-    "TSFDayStatus",
-    "TSFLegStatus",
 ]

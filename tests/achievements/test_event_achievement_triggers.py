@@ -3,7 +3,6 @@
 Tests cover:
 - Format code mapping (get_format_code)
 - TA event completion achievement processing
-- TSF event completion achievement processing
 - Format code passed correctly to achievement engine
 - Stats updated before achievements checked
 """
@@ -40,24 +39,6 @@ class TestGetFormatCode:
 
         result = get_format_code(event_type)
         assert result == "ta"
-
-    def test_trout_shore_code_returns_tsf(self):
-        """Event type with trout_shore code returns 'tsf'."""
-        event_type = MagicMock()
-        event_type.code = "trout_shore"
-        event_type.name = "Trout Shore Competition"
-
-        result = get_format_code(event_type)
-        assert result == "tsf"
-
-    def test_trout_shore_name_returns_tsf(self):
-        """Event type with 'trout shore' in name returns 'tsf'."""
-        event_type = MagicMock()
-        event_type.code = "custom"
-        event_type.name = "Trout Shore Fishing"
-
-        result = get_format_code(event_type)
-        assert result == "tsf"
 
     def test_street_fishing_returns_sf(self):
         """Standard event type returns 'sf' (default)."""
@@ -101,19 +82,6 @@ class TestGetEventParticipantIds:
         with patch("app.utils.event_formats.TALineup"):
             result = await get_event_participant_ids(mock_db, 1, "ta")
             assert result == [1, 2, 3]
-            mock_db.execute.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_tsf_format_queries_tsf_lineup(self):
-        """TSF format queries TSFLineup table."""
-        mock_db = AsyncMock()
-        mock_result = MagicMock()
-        mock_result.fetchall.return_value = [(4,), (5,)]
-        mock_db.execute.return_value = mock_result
-
-        with patch("app.utils.event_formats.TSFLineup"):
-            result = await get_event_participant_ids(mock_db, 1, "tsf")
-            assert result == [4, 5]
             mock_db.execute.assert_called_once()
 
     @pytest.mark.asyncio
@@ -224,11 +192,11 @@ class TestProcessFormatEventAchievements:
             # Mock achievement check
             mock_achievement.check_and_award_achievements = AsyncMock(return_value=[])
 
-            await _process_format_event_achievements(1, "tsf")
+            await _process_format_event_achievements(1, "ta")
 
             # Verify format_code was passed
             call_kwargs = mock_achievement.check_and_award_achievements.call_args[1]
-            assert call_kwargs["format_code"] == "tsf"
+            assert call_kwargs["format_code"] == "ta"
             assert call_kwargs["trigger"] == "event_completed"
 
     @pytest.mark.asyncio

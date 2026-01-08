@@ -35,7 +35,7 @@ class EventLiveStatusResponse(BaseModel):
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     is_live: bool  # True only if event is ongoing
-    event_type: str  # street_fishing, trout_area, trout_shore
+    event_type: str  # street_fishing, trout_area
 
 
 @router.get("/events/{event_id}/status", response_model=EventLiveStatusResponse)

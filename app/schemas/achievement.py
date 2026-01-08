@@ -139,14 +139,6 @@ class EventTypeStatsResponse(BaseModel):
     ta_tournament_wins: Optional[int] = None
     ta_tournament_podiums: Optional[int] = None
 
-    # TSF-specific stats (nullable - only for TSF participants)
-    tsf_total_days: Optional[int] = None
-    tsf_sector_wins: Optional[int] = None
-    tsf_total_catches: Optional[int] = None
-    tsf_tournament_wins: Optional[int] = None
-    tsf_tournament_podiums: Optional[int] = None
-    tsf_best_position_points: Optional[int] = None
-
     model_config = ConfigDict(from_attributes=True)
 
     @classmethod
@@ -181,13 +173,6 @@ class EventTypeStatsResponse(BaseModel):
             ta_total_catches=stats.ta_total_catches,
             ta_tournament_wins=stats.ta_tournament_wins,
             ta_tournament_podiums=stats.ta_tournament_podiums,
-            # TSF-specific stats
-            tsf_total_days=stats.tsf_total_days,
-            tsf_sector_wins=stats.tsf_sector_wins,
-            tsf_total_catches=stats.tsf_total_catches,
-            tsf_tournament_wins=stats.tsf_tournament_wins,
-            tsf_tournament_podiums=stats.tsf_tournament_podiums,
-            tsf_best_position_points=stats.tsf_best_position_points,
         )
 
 

@@ -45,7 +45,6 @@ class EventCountsByType(BaseModel):
 
     street_fishing: int = 0
     trout_area: int = 0
-    trout_shore: int = 0
     boat_fishing: int = 0
     predator_cup: int = 0
     aquachallenge: int = 0
@@ -110,7 +109,6 @@ async def get_public_stats(
         event_counts=EventCountsByType(
             street_fishing=counts_by_type.get("street_fishing", 0),
             trout_area=counts_by_type.get("trout_area", 0),
-            trout_shore=counts_by_type.get("trout_shore", 0),
             boat_fishing=counts_by_type.get("boat_fishing", 0),
             predator_cup=counts_by_type.get("predator_cup", 0),
             aquachallenge=counts_by_type.get("aquachallenge", 0),

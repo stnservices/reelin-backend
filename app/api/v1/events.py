@@ -20,7 +20,7 @@ from app.models.fish import Fish
 from app.models.enrollment import EventEnrollment
 from app.models.admin import AdminActionLog, AdminActionType
 from app.models.event_sponsor import EventSponsor
-from app.models.sponsor import Sponsor, SponsorTier, TIER_ORDER
+from app.models.sponsor import Sponsor
 from app.models.rules import OrganizerRule, OrganizerRuleDefault
 from app.schemas.event import (
     EventCreate,
@@ -556,12 +556,12 @@ async def get_event(
     sponsors_result = await db.execute(sponsors_query)
     event_sponsors = sponsors_result.scalars().all()
 
-    # Build sponsors list sorted by tier priority
+    # Build sponsors list sorted by display_order
     sponsors_list = []
     if event_sponsors:
         sorted_sponsors = sorted(
             [es for es in event_sponsors if es.sponsor and es.sponsor.is_active],
-            key=lambda es: (TIER_ORDER.get(SponsorTier(es.sponsor.tier) if es.sponsor.tier else SponsorTier.PARTNER, 99), es.display_order)
+            key=lambda es: (es.display_order, es.sponsor.name)
         )
         sponsors_list = [
             {
@@ -569,7 +569,7 @@ async def get_event(
                 "name": es.sponsor.name,
                 "logo_url": es.sponsor.logo_url,
                 "website_url": es.sponsor.website_url,
-                "tier": es.sponsor.tier,
+                "display_order": es.display_order,
             }
             for es in sorted_sponsors
         ]
@@ -656,6 +656,15 @@ async def get_event(
         } if event.created_by else None,
         "organizer_club_name": organizer_club_name,
         "organizer_club_logo_url": organizer_club_logo_url,
+        "event_type": {
+            "id": event.event_type.id,
+            "name": event.event_type.name,
+            "code": event.event_type.code,
+            "format_code": event.event_type.format_code,
+            "description": event.event_type.description,
+            "icon_url": event.event_type.icon_url,
+            "is_active": event.event_type.is_active,
+        } if event.event_type else None,
         "rule": {
             "id": event.rule.id,
             "name": event.rule.name,
@@ -745,12 +754,12 @@ async def get_event_by_slug(
     sponsors_result = await db.execute(sponsors_query)
     event_sponsors = sponsors_result.scalars().all()
 
-    # Build sponsors list sorted by tier priority
+    # Build sponsors list sorted by display_order
     sponsors_list = []
     if event_sponsors:
         sorted_sponsors = sorted(
             [es for es in event_sponsors if es.sponsor and es.sponsor.is_active],
-            key=lambda es: (TIER_ORDER.get(SponsorTier(es.sponsor.tier) if es.sponsor.tier else SponsorTier.PARTNER, 99), es.display_order)
+            key=lambda es: (es.display_order, es.sponsor.name)
         )
         sponsors_list = [
             {
@@ -758,7 +767,7 @@ async def get_event_by_slug(
                 "name": es.sponsor.name,
                 "logo_url": es.sponsor.logo_url,
                 "website_url": es.sponsor.website_url,
-                "tier": es.sponsor.tier,
+                "display_order": es.display_order,
             }
             for es in sorted_sponsors
         ]
@@ -845,6 +854,15 @@ async def get_event_by_slug(
         } if event.created_by else None,
         "organizer_club_name": organizer_club_name,
         "organizer_club_logo_url": organizer_club_logo_url,
+        "event_type": {
+            "id": event.event_type.id,
+            "name": event.event_type.name,
+            "code": event.event_type.code,
+            "format_code": event.event_type.format_code,
+            "description": event.event_type.description,
+            "icon_url": event.event_type.icon_url,
+            "is_active": event.event_type.is_active,
+        } if event.event_type else None,
         "rule": {
             "id": event.rule.id,
             "name": event.rule.name,
@@ -1306,11 +1324,6 @@ async def get_publish_readiness(
     TA-specific checks:
     - ta_has_settings: TA settings exist
     - ta_has_legs: Number of legs configured
-
-    TSF-specific checks:
-    - tsf_has_settings: TSF settings exist
-    - tsf_has_days: Number of days configured
-    - tsf_has_sectors: Number of sectors configured
     """
     from app.services.publish_validation import PublishValidationService
 
@@ -1389,10 +1402,10 @@ async def update_event_status(
         from app.tasks.statistics import recalculate_event_stats
         recalculate_event_stats.delay(event_id)
 
-        # Trigger achievement processing for TA/TSF events (SF handled separately)
+        # Trigger achievement processing for TA events (SF handled separately)
         from app.utils.event_formats import get_format_code
         format_code = get_format_code(event.event_type)
-        if format_code in ("ta", "tsf"):
+        if format_code == "ta":
             from app.tasks.achievement_processing import process_format_event_achievements
             process_format_event_achievements.delay(event_id, format_code)
 
@@ -2482,7 +2495,7 @@ async def list_event_sponsors(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """
-    List sponsors associated with an event, grouped by tier.
+    List sponsors associated with an event, sorted by display_order.
     Public endpoint.
     """
     # Verify event exists
@@ -2503,28 +2516,23 @@ async def list_event_sponsors(
     sponsors_result = await db.execute(sponsors_query)
     event_sponsors = sponsors_result.scalars().all()
 
-    # Group by tier
-    grouped = {tier.value: [] for tier in SponsorTier}
+    # Build flat list sorted by display_order
+    sponsors_list = []
     for es in event_sponsors:
         sponsor = es.sponsor
         if sponsor and sponsor.is_active:
-            tier_key = sponsor.tier if sponsor.tier in grouped else SponsorTier.PARTNER.value
-            grouped[tier_key].append({
+            sponsors_list.append({
                 "id": sponsor.id,
                 "name": sponsor.name,
                 "logo_url": sponsor.logo_url,
                 "website_url": sponsor.website_url,
-                "tier": sponsor.tier,
                 "display_order": es.display_order,
             })
 
     return {
         "event_id": event_id,
-        "tiers": [
-            {"tier": tier.value, "name": tier.value.capitalize(), "sponsors": grouped[tier.value]}
-            for tier in SponsorTier
-        ],
-        "total": sum(len(s) for s in grouped.values()),
+        "sponsors": sponsors_list,
+        "total": len(sponsors_list),
     }
 
 

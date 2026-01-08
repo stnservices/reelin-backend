@@ -3,21 +3,32 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 
 class AdminMessageCreate(BaseModel):
-    """Request schema for creating a message to admin."""
+    """Request schema for creating a message to admin (authenticated users)."""
 
     subject: str = Field(..., min_length=5, max_length=200)
     message: str = Field(..., min_length=10, max_length=2000)
+
+
+class PublicContactCreate(BaseModel):
+    """Request schema for public contact form (non-authenticated users)."""
+
+    name: str = Field(..., min_length=2, max_length=200)
+    email: EmailStr
+    phone: Optional[str] = Field(None, max_length=50)
+    subject: str = Field(..., min_length=5, max_length=200)
+    message: str = Field(..., min_length=10, max_length=2000)
+    recaptcha_token: str = Field(..., min_length=10)
 
 
 class AdminMessageResponse(BaseModel):
     """Response schema for admin message."""
 
     id: int
-    sender_id: int
+    sender_id: Optional[int] = None  # Nullable for non-auth submissions
     sender_name: str
     sender_email: str
     sender_phone: Optional[str] = None

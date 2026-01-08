@@ -40,16 +40,6 @@ from app.schemas.trout_area import (
     TADurationEstimateResponse,
 )
 
-# Trout Shore Fishing schemas
-from app.schemas.trout_shore import (
-    TSFEventSettingsResponse,
-    TSFDayResponse,
-    TSFLegResponse,
-    TSFLineupResponse,
-    TSFLegPositionResponse,
-    TSFDayStandingResponse,
-    TSFFinalStandingResponse,
-)
 
 # Minigame schemas
 from app.schemas.minigame import (
@@ -96,14 +86,6 @@ __all__ = [
     "TAGameCardResponse",
     "TAQualifierStandingResponse",
     "TADurationEstimateResponse",
-    # Trout Shore Fishing
-    "TSFEventSettingsResponse",
-    "TSFDayResponse",
-    "TSFLegResponse",
-    "TSFLineupResponse",
-    "TSFLegPositionResponse",
-    "TSFDayStandingResponse",
-    "TSFFinalStandingResponse",
     # Minigame
     "MinigameScoreCreate",
     "MinigameScoreResponse",

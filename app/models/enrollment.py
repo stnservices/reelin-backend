@@ -41,6 +41,9 @@ class EventEnrollment(Base):
     # Draw number for seating/position assignment
     draw_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
+    # Enrollment number - sequential per event, assigned on approval
+    enrollment_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+
     # Approval tracking
     approved_by_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("user_accounts.id", ondelete="SET NULL"), nullable=True

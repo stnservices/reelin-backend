@@ -77,13 +77,6 @@ class AchievementService:
             AchievementTier.GOLD.value: 50,
             AchievementTier.PLATINUM.value: 100,
         },
-        # TSF-specific tiered achievements
-        AchievementType.TSF_SECTOR_WINS.value: {
-            AchievementTier.BRONZE.value: 5,
-            AchievementTier.SILVER.value: 15,
-            AchievementTier.GOLD.value: 30,
-            AchievementTier.PLATINUM.value: 50,
-        },
     }
 
     # All predator fish slugs (matches migration seed data)
@@ -213,7 +206,7 @@ class AchievementService:
             catch_id: Optional catch context
             context: Optional additional context data
             format_code: If provided, only check achievements applicable to this format.
-                        Valid values: "sf", "ta", "tsf", or None (check all).
+                        Valid values: "sf", "ta", or None (check all).
 
         Returns list of newly awarded achievements.
         """
@@ -919,8 +912,8 @@ class AchievementService:
     ) -> List[AchievementDefinition]:
         """Check and award cross-format achievements.
 
-        These achievements require participation/wins/podiums across all 3 formats
-        (SF, TA, TSF). They have applicable_formats = NULL and are checked
+        These achievements require participation/wins/podiums across both formats
+        (SF, TA). They have applicable_formats = NULL and are checked
         regardless of the format_code.
         """
         newly_awarded = []
@@ -944,10 +937,9 @@ class AchievementService:
         # Check format participation
         has_sf = stats.total_events > 0
         has_ta = stats.ta_total_matches is not None and stats.ta_total_matches > 0
-        has_tsf = stats.tsf_total_days is not None and stats.tsf_total_days > 0
 
-        # Format Explorer: Participated in all 3 formats
-        if has_sf and has_ta and has_tsf:
+        # Format Explorer: Participated in both formats
+        if has_sf and has_ta:
             awarded = await AchievementService._award_achievement(
                 db, user_id, "format_explorer", event_id, None
             )
@@ -957,12 +949,11 @@ class AchievementService:
         # Check wins in each format
         has_sf_win = stats.total_wins > 0
         has_ta_win = stats.ta_tournament_wins is not None and stats.ta_tournament_wins > 0
-        has_tsf_win = stats.tsf_tournament_wins is not None and stats.tsf_tournament_wins > 0
 
-        # Triple Threat: Won in all 3 formats
-        if has_sf_win and has_ta_win and has_tsf_win:
+        # Dual Champion: Won in both formats
+        if has_sf_win and has_ta_win:
             awarded = await AchievementService._award_achievement(
-                db, user_id, "triple_threat", event_id, None
+                db, user_id, "dual_champion", event_id, None
             )
             if awarded:
                 newly_awarded.append(awarded)
@@ -970,10 +961,9 @@ class AchievementService:
         # Check podiums in each format
         has_sf_podium = stats.podium_finishes > 0
         has_ta_podium = stats.ta_tournament_podiums is not None and stats.ta_tournament_podiums > 0
-        has_tsf_podium = stats.tsf_tournament_podiums is not None and stats.tsf_tournament_podiums > 0
 
-        # Versatile Angler: Podium in all 3 formats
-        if has_sf_podium and has_ta_podium and has_tsf_podium:
+        # Versatile Angler: Podium in both formats
+        if has_sf_podium and has_ta_podium:
             awarded = await AchievementService._award_achievement(
                 db, user_id, "versatile_angler", event_id, None
             )

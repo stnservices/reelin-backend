@@ -40,7 +40,6 @@ class EventType(Base):
     The `format_code` determines which competition format/wizard to use:
     - 'sf' = Street Fishing format (catch & measure, individual scoring)
     - 'ta' = Trout Area format (head-to-head matches, game cards)
-    - 'tsf' = Trout Shore Fishing format (multi-day, sectors, validators)
 
     Event Types are "brands" that use one of the base formats.
     For example: "Boat Fishing" and "Predator Cup" both use the 'sf' format.
@@ -51,7 +50,7 @@ class EventType(Base):
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     code: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)  # street_fishing, boat_fishing, etc.
-    format_code: Mapped[str] = mapped_column(String(10), nullable=False, default='sf')  # sf, ta, tsf
+    format_code: Mapped[str] = mapped_column(String(10), nullable=False, default='sf')  # sf, ta
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     icon_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -79,7 +78,6 @@ class ScoringConfig(Base):
     Format codes:
     - 'sf' = Street Fishing format
     - 'ta' = Trout Area format
-    - 'tsf' = Trout Shore Fishing format
 
     The `code` field identifies which scoring logic to use.
     """
@@ -89,7 +87,7 @@ class ScoringConfig(Base):
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     code: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
-    format_code: Mapped[str] = mapped_column(String(10), nullable=False, default='sf')  # sf, ta, tsf
+    format_code: Mapped[str] = mapped_column(String(10), nullable=False, default='sf')  # sf, ta
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Detailed explanation of how scoring works (for organizers)
@@ -289,24 +287,6 @@ class Event(Base):
         "TAEventPointConfig", back_populates="event", uselist=False, cascade="all, delete-orphan"
     )
 
-    # =========================================================================
-    # Trout Shore Fishing (TSF) Relationships
-    # =========================================================================
-    tsf_settings: Mapped[Optional["TSFEventSettings"]] = relationship(
-        "TSFEventSettings", back_populates="event", uselist=False, cascade="all, delete-orphan"
-    )
-    tsf_days: Mapped[list["TSFDay"]] = relationship(
-        "TSFDay", back_populates="event", lazy="dynamic", cascade="all, delete-orphan"
-    )
-    tsf_lineups: Mapped[list["TSFLineup"]] = relationship(
-        "TSFLineup", back_populates="event", lazy="dynamic", cascade="all, delete-orphan"
-    )
-    tsf_final_standings: Mapped[list["TSFFinalStanding"]] = relationship(
-        "TSFFinalStanding", back_populates="event", lazy="dynamic", cascade="all, delete-orphan"
-    )
-    tsf_point_config: Mapped[Optional["TSFEventPointConfig"]] = relationship(
-        "TSFEventPointConfig", back_populates="event", uselist=False, cascade="all, delete-orphan"
-    )
 
     @property
     def is_draft(self) -> bool:
@@ -477,10 +457,7 @@ from app.models.event_validator import EventValidator
 from app.models.team import Team
 from app.models.currency import Currency
 
-# TA/TSF imports
+# TA imports
 from app.models.trout_area import (
     TAEventSettings, TALineup, TAMatch, TAKnockoutBracket, TAEventPointConfig
-)
-from app.models.trout_shore import (
-    TSFEventSettings, TSFDay, TSFLineup, TSFFinalStanding, TSFEventPointConfig
 )

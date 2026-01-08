@@ -21,9 +21,9 @@ class AdminMessage(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
 
-    # Sender reference
-    sender_id: Mapped[int] = mapped_column(
-        ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    # Sender reference (nullable for non-authenticated visitors)
+    sender_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="SET NULL"), nullable=True, index=True
     )
 
     # Message content
