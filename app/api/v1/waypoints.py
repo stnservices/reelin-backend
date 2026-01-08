@@ -667,3 +667,46 @@ async def unshare_waypoint(
         shared_with=shared_users,
         total_shared=len(current_shared),
     )
+
+
+@router.delete("/{waypoint_id}/unsubscribe", status_code=status.HTTP_204_NO_CONTENT)
+async def unsubscribe_from_waypoint(
+    waypoint_id: int,
+    current_user: UserAccount = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Remove yourself from a shared waypoint's recipient list.
+
+    This allows any user to remove a waypoint that was shared with them,
+    preventing abuse from excessive sharing.
+    """
+    # Get waypoint
+    result = await db.execute(
+        select(UserWaypoint).where(UserWaypoint.id == waypoint_id)
+    )
+    waypoint = result.scalar_one_or_none()
+
+    if not waypoint:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Waypoint not found",
+        )
+
+    # Check if user is in shared_with list
+    current_shared = set(waypoint.shared_with or [])
+    if current_user.id not in current_shared:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This waypoint was not shared with you",
+        )
+
+    # Remove current user from shared_with list
+    current_shared.discard(current_user.id)
+    waypoint.shared_with = list(current_shared)
+    waypoint.is_shared = len(current_shared) > 0
+    waypoint.updated_at = datetime.now(timezone.utc)
+
+    await db.commit()
+
+    return None
