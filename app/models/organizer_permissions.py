@@ -11,6 +11,7 @@ from app.database import Base
 if TYPE_CHECKING:
     from app.models.user import UserAccount
     from app.models.event import EventType
+    from app.models.billing import OrganizerBillingProfile
 
 
 class OrganizerEventTypeAccess(Base):
@@ -40,6 +41,14 @@ class OrganizerEventTypeAccess(Base):
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    # Default billing profile for events of this type
+    # When organizer creates an event of this type, this billing profile is auto-assigned
+    default_billing_profile_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("organizer_billing_profiles.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     # Relationships
     user: Mapped["UserAccount"] = relationship(
         "UserAccount", foreign_keys=[user_id], lazy="joined"
@@ -47,6 +56,9 @@ class OrganizerEventTypeAccess(Base):
     event_type: Mapped["EventType"] = relationship("EventType", lazy="joined")
     granted_by: Mapped[Optional["UserAccount"]] = relationship(
         "UserAccount", foreign_keys=[granted_by_id], lazy="joined"
+    )
+    default_billing_profile: Mapped[Optional["OrganizerBillingProfile"]] = relationship(
+        "OrganizerBillingProfile", lazy="joined"
     )
 
     def __repr__(self) -> str:

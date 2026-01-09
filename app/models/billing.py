@@ -61,21 +61,27 @@ class OrganizerBillingProfile(Base):
     """
     Billing profile for organizers.
 
-    One-to-one relationship with UserAccount for users with 'organizer' role.
+    One-to-many relationship with UserAccount - organizers can have multiple
+    billing profiles representing different legal entities (Associations, Companies, Individuals).
     Stores legal and billing information needed for invoicing via Stripe.
+    Each billing profile creates its own Stripe customer.
     """
 
     __tablename__ = "organizer_billing_profiles"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
 
-    # Link to user (organizer)
+    # Link to user (organizer) - not unique, allows multiple profiles per user
     user_id: Mapped[int] = mapped_column(
         ForeignKey("user_accounts.id", ondelete="CASCADE"),
-        unique=True,
         nullable=False,
         index=True,
     )
+
+    # Primary profile designation - only one per user can be primary
+    is_primary: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )  # First profile is auto-set to True
 
     # Legal entity type
     organizer_type: Mapped[str] = mapped_column(
@@ -88,9 +94,12 @@ class OrganizerBillingProfile(Base):
     legal_name: Mapped[str] = mapped_column(
         String(255), nullable=False
     )  # Official registered name
+    cnp: Mapped[Optional[str]] = mapped_column(
+        String(13), nullable=True
+    )  # Cod Numeric Personal (13 digits) - for individual organizer type only
     tax_id: Mapped[Optional[str]] = mapped_column(
         String(50), nullable=True
-    )  # CUI/CIF for associations, CNP for individuals
+    )  # CUI/CIF for companies/associations (not used for individuals)
     registration_number: Mapped[Optional[str]] = mapped_column(
         String(100), nullable=True
     )  # J/number for associations

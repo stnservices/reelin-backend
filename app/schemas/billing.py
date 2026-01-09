@@ -17,6 +17,13 @@ class BillingProfileCreate(BaseModel):
         default="association", pattern="^(association|company|individual)$"
     )
     legal_name: str = Field(..., min_length=1, max_length=255)
+    cnp: Optional[str] = Field(
+        None,
+        min_length=13,
+        max_length=13,
+        pattern=r"^[1-8]\d{12}$",
+        description="CNP (Cod Numeric Personal) - 13 digits, required for individual organizer type"
+    )
     tax_id: Optional[str] = Field(None, max_length=50)
     registration_number: Optional[str] = Field(None, max_length=100)
     billing_address_line1: str = Field(..., min_length=1, max_length=255)
@@ -38,8 +45,19 @@ class BillingProfileUpdate(BaseModel):
         None, pattern="^(association|company|individual)$"
     )
     legal_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    cnp: Optional[str] = Field(
+        None,
+        min_length=13,
+        max_length=13,
+        pattern=r"^[1-8]\d{12}$",
+        description="CNP (Cod Numeric Personal) - 13 digits, for individual organizer type"
+    )
     tax_id: Optional[str] = Field(None, max_length=50)
     registration_number: Optional[str] = Field(None, max_length=100)
+    is_primary: Optional[bool] = Field(
+        None,
+        description="Set to true to make this the primary billing profile (clears other profiles' is_primary)"
+    )
     billing_address_line1: Optional[str] = Field(None, min_length=1, max_length=255)
     billing_address_line2: Optional[str] = None
     billing_city: Optional[str] = Field(None, min_length=1, max_length=100)
@@ -60,8 +78,10 @@ class BillingProfileResponse(BaseModel):
 
     id: int
     user_id: int
+    is_primary: bool = False
     organizer_type: str
     legal_name: str
+    cnp: Optional[str] = None
     tax_id: Optional[str] = None
     registration_number: Optional[str] = None
     billing_address_line1: str
@@ -88,8 +108,10 @@ class BillingProfileListItem(BaseModel):
 
     id: int
     user_id: int
+    is_primary: bool = False
     organizer_type: str
     legal_name: str
+    cnp: Optional[str] = None
     billing_email: str
     is_verified: bool
     is_active: bool
@@ -280,3 +302,34 @@ class AdminBillingSummary(BaseModel):
     total_overdue: int
     profiles_count: int
     verified_profiles: int
+
+
+# ============== Event Type Default Billing Profile Schemas ==============
+
+
+class EventTypeDefaultUpdate(BaseModel):
+    """Schema for setting default billing profile for an event type."""
+
+    billing_profile_id: Optional[int] = Field(
+        None, description="Billing profile ID to set as default. Set to null to clear."
+    )
+
+
+class EventTypeDefaultResponse(BaseModel):
+    """Schema for event type with default billing profile info."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    event_type_id: int
+    event_type_name: str
+    event_type_code: str
+    default_billing_profile_id: Optional[int] = None
+    default_billing_profile_name: Optional[str] = None
+    granted_at: datetime
+
+
+class EventTypeDefaultsListResponse(BaseModel):
+    """Schema for list of event type default billing profile assignments."""
+
+    items: List[EventTypeDefaultResponse]
+    total: int
