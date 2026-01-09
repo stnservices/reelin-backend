@@ -161,6 +161,13 @@ class Event(Base):
         ForeignKey("user_accounts.id", ondelete="RESTRICT"), nullable=False, index=True
     )
 
+    # Billing profile - auto-assigned from event type default or organizer's primary profile
+    billing_profile_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("organizer_billing_profiles.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     # Status
     status: Mapped[str] = mapped_column(
         String(20), default=EventStatus.DRAFT.value, nullable=False, index=True
@@ -231,6 +238,9 @@ class Event(Base):
     )
     deleted_by: Mapped[Optional["UserAccount"]] = relationship(
         "UserAccount", foreign_keys=[deleted_by_id], lazy="joined"
+    )
+    billing_profile: Mapped[Optional["OrganizerBillingProfile"]] = relationship(
+        "OrganizerBillingProfile", lazy="joined"
     )
     rule: Mapped[Optional["OrganizerRule"]] = relationship("OrganizerRule", lazy="joined")
     participation_fee_currency: Mapped[Optional["Currency"]] = relationship("Currency", lazy="joined")
@@ -456,6 +466,7 @@ from app.models.fish import Fish
 from app.models.event_validator import EventValidator
 from app.models.team import Team
 from app.models.currency import Currency
+from app.models.billing import OrganizerBillingProfile
 
 # TA imports
 from app.models.trout_area import (

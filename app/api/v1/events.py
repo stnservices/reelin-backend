@@ -22,6 +22,8 @@ from app.models.admin import AdminActionLog, AdminActionType
 from app.models.event_sponsor import EventSponsor
 from app.models.sponsor import Sponsor
 from app.models.rules import OrganizerRule, OrganizerRuleDefault
+from app.models.organizer_permissions import OrganizerEventTypeAccess
+from app.models.billing import OrganizerBillingProfile
 from app.schemas.event import (
     EventCreate,
     EventUpdate,
@@ -1002,6 +1004,58 @@ async def create_event(
         # Add timestamp to make unique
         slug = f"{slug}-{int(datetime.now(timezone.utc).timestamp())}"
 
+    # Determine billing_profile_id (auto-assign based on event type default or user's primary)
+    billing_profile_id = None
+    if not is_admin:  # Only for organizers, not admins
+        # 1. First check event type access for default billing profile
+        event_type_access_query = select(OrganizerEventTypeAccess).where(
+            OrganizerEventTypeAccess.user_id == current_user.id,
+            OrganizerEventTypeAccess.event_type_id == event_data.event_type_id,
+            OrganizerEventTypeAccess.is_active == True,
+        )
+        event_type_access_result = await db.execute(event_type_access_query)
+        event_type_access = event_type_access_result.scalar_one_or_none()
+
+        if event_type_access and event_type_access.default_billing_profile_id:
+            # Verify the billing profile still exists and is active
+            profile_query = select(OrganizerBillingProfile).where(
+                OrganizerBillingProfile.id == event_type_access.default_billing_profile_id,
+                OrganizerBillingProfile.user_id == current_user.id,
+                OrganizerBillingProfile.is_active == True,
+            )
+            profile_result = await db.execute(profile_query)
+            profile = profile_result.scalar_one_or_none()
+            if profile:
+                billing_profile_id = profile.id
+
+        # 2. If no default set, use primary billing profile
+        if not billing_profile_id:
+            primary_profile_query = select(OrganizerBillingProfile).where(
+                OrganizerBillingProfile.user_id == current_user.id,
+                OrganizerBillingProfile.is_primary == True,
+                OrganizerBillingProfile.is_active == True,
+            )
+            primary_result = await db.execute(primary_profile_query)
+            primary_profile = primary_result.scalar_one_or_none()
+            if primary_profile:
+                billing_profile_id = primary_profile.id
+
+        # 3. If no primary, fall back to oldest profile by created_at
+        if not billing_profile_id:
+            oldest_profile_query = (
+                select(OrganizerBillingProfile)
+                .where(
+                    OrganizerBillingProfile.user_id == current_user.id,
+                    OrganizerBillingProfile.is_active == True,
+                )
+                .order_by(OrganizerBillingProfile.created_at.asc())
+                .limit(1)
+            )
+            oldest_result = await db.execute(oldest_profile_query)
+            oldest_profile = oldest_result.scalar_one_or_none()
+            if oldest_profile:
+                billing_profile_id = oldest_profile.id
+
     # Create event
     event = Event(
         name=event_data.name,
@@ -1029,6 +1083,7 @@ async def create_event(
         allowed_media_type=event_data.allowed_media_type,
         max_video_duration=event_data.max_video_duration,
         created_by_id=current_user.id,
+        billing_profile_id=billing_profile_id,
         status=EventStatus.DRAFT.value,
     )
     db.add(event)
