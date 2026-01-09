@@ -10,6 +10,16 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 # ============== Billing Profile Schemas ==============
 
 
+class BillingProfileBrief(BaseModel):
+    """Brief billing profile info for event responses."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    legal_name: str
+    organizer_type: str
+
+
 class BillingProfileCreate(BaseModel):
     """Schema for creating a billing profile."""
 

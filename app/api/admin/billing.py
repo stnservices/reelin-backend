@@ -24,7 +24,7 @@ from app.models.billing import (
     InvoiceStatus,
     PricingModel,
 )
-from app.models.event import EventType
+from app.models.event import Event, EventType
 from app.models.currency import Currency
 from app.schemas.billing import (
     BillingProfileCreate,
@@ -932,3 +932,68 @@ async def list_currencies(
         }
         for c in currencies
     ]
+
+
+# ============== Event Billing Profile Override ==============
+
+
+@router.patch("/events/{event_id}/billing-profile")
+async def override_event_billing_profile(
+    event_id: int,
+    billing_profile_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+):
+    """
+    Override the billing profile for an event (admin only).
+
+    Can only be done before invoice is generated.
+    The billing profile must belong to the event's organizer.
+    """
+    # Get the event
+    event_query = select(Event).where(Event.id == event_id, Event.is_deleted == False)
+    event_result = await db.execute(event_query)
+    event = event_result.scalar_one_or_none()
+
+    if not event:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Event not found",
+        )
+
+    # Check if invoice already exists for this event
+    invoice_query = select(PlatformInvoice).where(PlatformInvoice.event_id == event_id)
+    invoice_result = await db.execute(invoice_query)
+    existing_invoice = invoice_result.scalar_one_or_none()
+
+    if existing_invoice:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot change billing profile after invoice has been generated",
+        )
+
+    # Verify the billing profile belongs to the event's organizer
+    profile_query = select(OrganizerBillingProfile).where(
+        OrganizerBillingProfile.id == billing_profile_id,
+        OrganizerBillingProfile.user_id == event.created_by_id,
+        OrganizerBillingProfile.is_active == True,
+    )
+    profile_result = await db.execute(profile_query)
+    billing_profile = profile_result.scalar_one_or_none()
+
+    if not billing_profile:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Billing profile not found or does not belong to event organizer",
+        )
+
+    # Update the event's billing profile
+    event.billing_profile_id = billing_profile_id
+    await db.commit()
+
+    return {
+        "message": "Event billing profile updated successfully",
+        "event_id": event_id,
+        "billing_profile_id": billing_profile_id,
+        "billing_profile_name": billing_profile.legal_name,
+    }

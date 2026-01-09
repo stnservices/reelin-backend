@@ -500,6 +500,7 @@ async def get_event(
             selectinload(Event.created_by).selectinload(UserAccount.profile),
             selectinload(Event.rule),
             selectinload(Event.location).selectinload(FishingSpot.city).selectinload(City.country),
+            selectinload(Event.billing_profile),
         )
         .where(Event.id == event_id, Event.is_deleted == False)
     )
@@ -677,6 +678,11 @@ async def get_event(
         "location": location_response,
         "sponsors": sponsors_list,
         "fish_scoring": fish_scoring_list,
+        "billing_profile": {
+            "id": event.billing_profile.id,
+            "legal_name": event.billing_profile.legal_name,
+            "organizer_type": event.billing_profile.organizer_type,
+        } if event.billing_profile else None,
     }
 
     return response
@@ -698,6 +704,7 @@ async def get_event_by_slug(
             selectinload(Event.created_by).selectinload(UserAccount.profile),
             selectinload(Event.rule),
             selectinload(Event.location).selectinload(FishingSpot.city).selectinload(City.country),
+            selectinload(Event.billing_profile),
         )
         .where(Event.slug == slug, Event.is_deleted == False)
     )
@@ -875,6 +882,11 @@ async def get_event_by_slug(
         "location": location_response,
         "sponsors": sponsors_list,
         "fish_scoring": fish_scoring_list,
+        "billing_profile": {
+            "id": event.billing_profile.id,
+            "legal_name": event.billing_profile.legal_name,
+            "organizer_type": event.billing_profile.organizer_type,
+        } if event.billing_profile else None,
     }
 
     return response

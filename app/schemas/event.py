@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.event import EventStatus
+from app.schemas.billing import BillingProfileBrief
 from app.schemas.currency import CurrencyResponse
 
 
@@ -437,6 +438,9 @@ class EventResponse(BaseModel):
     # Organizer's club info (populated from Club where owner_id = created_by_id)
     organizer_club_name: Optional[str] = None
     organizer_club_logo_url: Optional[str] = None
+
+    # Billing profile for this event (for invoicing)
+    billing_profile: Optional[BillingProfileBrief] = None
 
     # Sponsors
     sponsors: List[SponsorBriefResponse] = []

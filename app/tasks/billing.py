@@ -113,13 +113,59 @@ async def _async_generate_invoice(event_id: int) -> dict:
                 "invoice_number": existing.invoice_number,
             }
 
-        # 3. Get billing profile for organizer
-        profile_query = select(OrganizerBillingProfile).where(
-            OrganizerBillingProfile.user_id == event.created_by_id,
-            OrganizerBillingProfile.is_active == True,
-        )
-        profile_result = await db.execute(profile_query)
-        billing_profile = profile_result.scalar_one_or_none()
+        # 3. Get billing profile - use event.billing_profile_id if set, otherwise fallback
+        billing_profile = None
+
+        # First: Try to use the event's assigned billing profile
+        if event.billing_profile_id:
+            profile_query = select(OrganizerBillingProfile).where(
+                OrganizerBillingProfile.id == event.billing_profile_id,
+                OrganizerBillingProfile.is_active == True,
+            )
+            profile_result = await db.execute(profile_query)
+            billing_profile = profile_result.scalar_one_or_none()
+
+            if billing_profile:
+                logger.info(
+                    f"Using event's assigned billing profile {billing_profile.id} "
+                    f"for event {event_id}"
+                )
+
+        # Fallback: Look up organizer's primary profile
+        if not billing_profile:
+            profile_query = select(OrganizerBillingProfile).where(
+                OrganizerBillingProfile.user_id == event.created_by_id,
+                OrganizerBillingProfile.is_active == True,
+                OrganizerBillingProfile.is_primary == True,
+            )
+            profile_result = await db.execute(profile_query)
+            billing_profile = profile_result.scalar_one_or_none()
+
+            if billing_profile:
+                logger.info(
+                    f"Using organizer's primary billing profile {billing_profile.id} "
+                    f"for event {event_id} (event had no assigned profile)"
+                )
+
+        # Fallback: Use oldest profile by created_at
+        if not billing_profile:
+            profile_query = (
+                select(OrganizerBillingProfile)
+                .where(
+                    OrganizerBillingProfile.user_id == event.created_by_id,
+                    OrganizerBillingProfile.is_active == True,
+                )
+                .order_by(OrganizerBillingProfile.created_at.asc())
+                .limit(1)
+            )
+            profile_result = await db.execute(profile_query)
+            billing_profile = profile_result.scalar_one_or_none()
+
+            if billing_profile:
+                logger.info(
+                    f"Using organizer's oldest billing profile {billing_profile.id} "
+                    f"for event {event_id} (no primary profile found)"
+                )
 
         if not billing_profile:
             logger.warning(f"No billing profile found for organizer {event.created_by_id}")
