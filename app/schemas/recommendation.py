@@ -93,3 +93,33 @@ class DismissResponse(BaseModel):
     """Response for dismiss endpoint."""
 
     status: str = "dismissed"
+
+
+# ---- Completed Event Insights ----
+
+
+class CompletedEventSummary(BaseModel):
+    """Minimal event info for completed event insights."""
+
+    id: int
+    name: str
+    slug: str
+    start_date: datetime
+    end_date: datetime
+    event_type_name: Optional[str] = None
+
+
+class CompletedEventInsight(BaseModel):
+    """ML match insight for a completed event."""
+
+    event: CompletedEventSummary
+    match_score: int = Field(description="Match percentage (0-100)")
+    match_label: str = Field(description="Human-readable match level")
+    factors: list[str] = Field(description="Why you were a good match")
+
+
+class CompletedEventInsightsResponse(BaseModel):
+    """Response for completed event insights endpoint."""
+
+    insights: list[CompletedEventInsight]
+    total: int = Field(description="Total completed events analyzed")

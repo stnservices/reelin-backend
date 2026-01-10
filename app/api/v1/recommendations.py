@@ -11,6 +11,9 @@ from app.models.user import UserAccount
 from app.schemas.recommendation import (
     AnglerRecommendation,
     AnglerRecommendationsResponse,
+    CompletedEventInsight,
+    CompletedEventInsightsResponse,
+    CompletedEventSummary,
     DismissRequest,
     DismissResponse,
     EventRecommendation,
@@ -112,6 +115,52 @@ async def get_event_recommendations(
         recommendations=recommendations,
         is_pro=is_pro,
         total_available=len(recommendations),
+    )
+
+
+@router.get("/my-events/insights", response_model=CompletedEventInsightsResponse)
+async def get_my_event_insights(
+    limit: int = Query(20, ge=1, le=50, description="Max events to analyze"),
+    current_user: UserAccount = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get ML match insights for your completed events.
+
+    Shows how well you matched each event you participated in:
+    - **match_score**: Your match percentage (0-100)
+    - **match_label**: Human-readable level (Very High, High, etc.)
+    - **factors**: Why you were a good match for this event
+
+    This helps you understand which types of events suit your profile.
+    """
+    service = RecommendationsService(db)
+    insights_data = await service.get_completed_event_insights(
+        user=current_user,
+        limit=limit,
+    )
+
+    # Convert to response format
+    insights = [
+        CompletedEventInsight(
+            event=CompletedEventSummary(
+                id=item["event"]["id"],
+                name=item["event"]["name"],
+                slug=item["event"]["slug"],
+                start_date=item["event"]["start_date"],
+                end_date=item["event"]["end_date"],
+                event_type_name=item["event"]["event_type_name"],
+            ),
+            match_score=item["match_score"],
+            match_label=item["match_label"],
+            factors=item["factors"],
+        )
+        for item in insights_data
+    ]
+
+    return CompletedEventInsightsResponse(
+        insights=insights,
+        total=len(insights),
     )
 
 

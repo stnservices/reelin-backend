@@ -696,3 +696,70 @@ class RecommendationsService:
         )
         self.db.add(dismissal)
         await self.db.commit()
+
+    # ---- Completed Event Insights ----
+
+    async def get_completed_event_insights(
+        self,
+        user: UserAccount,
+        limit: int = 20,
+    ) -> list[dict]:
+        """
+        Get ML match insights for user's completed events.
+        Shows how well the user matched each event they participated in.
+        """
+        from app.models.enrollment import EventEnrollment, EnrollmentStatus
+
+        # Get user stats and event type history
+        user_stats = await self.get_user_stats(user.id)
+        user_event_types = await self.get_user_participated_event_types(user.id)
+
+        # Get user's completed events (approved enrollments only)
+        stmt = (
+            select(Event)
+            .join(EventEnrollment, EventEnrollment.event_id == Event.id)
+            .options(joinedload(Event.event_type))
+            .where(
+                EventEnrollment.user_id == user.id,
+                EventEnrollment.status == EnrollmentStatus.APPROVED.value,
+                Event.status == "completed",
+                Event.is_deleted == False,
+            )
+            .order_by(Event.end_date.desc())
+            .limit(limit)
+        )
+        result = await self.db.execute(stmt)
+        events = result.unique().scalars().all()
+
+        insights = []
+        for event in events:
+            # Get enrollment count for this event
+            enrollment_count = await self.get_event_enrollment_count(event.id)
+
+            # Get friends who were enrolled
+            friends_count = len(
+                await self.get_following_enrolled_in_event(user.id, event.id)
+            )
+
+            # Get ML score and insights
+            ml_score, ml_insights = await self.get_ml_event_score(
+                user, event, user_stats, user_event_types,
+                enrollment_count, friends_count
+            )
+
+            if ml_score is not None:
+                insights.append({
+                    "event": {
+                        "id": event.id,
+                        "name": event.name,
+                        "slug": event.slug,
+                        "start_date": event.start_date,
+                        "end_date": event.end_date,
+                        "event_type_name": event.event_type.name if event.event_type else None,
+                    },
+                    "match_score": round(ml_score * 100),  # 0-100 percentage
+                    "match_label": ml_insights["confidence_label"],
+                    "factors": ml_insights["factors"],
+                })
+
+        return insights
