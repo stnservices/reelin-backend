@@ -32,6 +32,16 @@ router = APIRouter(prefix="/recommendations", tags=["recommendations"])
 CACHE_TTL = 300
 
 
+def _redact_email(email: str) -> str:
+    """Redact email for privacy: show first 2 chars + ***@domain."""
+    if not email or "@" not in email:
+        return "***"
+    local, domain = email.split("@", 1)
+    if len(local) <= 2:
+        return f"{local[0]}***@{domain}"
+    return f"{local[:2]}***@{domain}"
+
+
 def _event_to_summary(event) -> EventSummary:
     """Convert Event model to EventSummary schema."""
     return EventSummary(
@@ -374,7 +384,7 @@ async def get_ml_debug_for_user(
     return {
         "user": {
             "id": user_info.id,
-            "email": user_info.email,
+            "email": _redact_email(user_info.email),
             "name": user_info.full_name,
         },
         "stats": {

@@ -403,7 +403,7 @@ class RecommendationsService:
             .where(
                 Event.status == "published",
                 Event.start_date > now,
-                Event.is_deleted == False,
+                Event.is_deleted.is_(False),
             )
             .order_by(Event.start_date)
             .limit(100)
@@ -639,9 +639,9 @@ class RecommendationsService:
             .join(UserProfile, UserProfile.user_id == UserAccount.id)
             .where(
                 UserAccount.id != user.id,
-                UserAccount.is_active == True,
-                UserProfile.is_profile_public == True,
-                UserProfile.is_deleted == False,
+                UserAccount.is_active.is_(True),
+                UserProfile.is_profile_public.is_(True),
+                UserProfile.is_deleted.is_(False),
                 # Users who have at least one catch
                 UserAccount.id.in_(
                     select(distinct(Catch.user_id))
@@ -728,7 +728,7 @@ class RecommendationsService:
                 EventEnrollment.user_id == user.id,
                 EventEnrollment.status == EnrollmentStatus.APPROVED.value,
                 Event.status == "completed",
-                Event.is_deleted == False,
+                Event.is_deleted.is_(False),
             )
             .order_by(Event.end_date.desc())
             .limit(limit)
