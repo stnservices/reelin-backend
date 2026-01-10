@@ -55,6 +55,7 @@ class PlanInfo(BaseModel):
     currency: str
     interval: str
     description: Optional[str] = None
+    trial_days: Optional[int] = None
 
 
 class ProStatusResponse(BaseModel):
@@ -96,9 +97,10 @@ async def get_plans(
     """
     from app.models.pro import ProSettings
 
-    # Fetch prices from admin settings
-    monthly_price = 4.99  # Default
-    yearly_price = 39.99  # Default
+    # Fetch prices and trial from admin settings
+    monthly_price = 2.99  # Default
+    yearly_price = 19.99  # Default
+    trial_days = 7  # Default
 
     try:
         monthly_query = select(ProSettings).where(ProSettings.key == "monthly_price_eur")
@@ -112,11 +114,16 @@ async def get_plans(
         yearly_setting = yearly_result.scalar_one_or_none()
         if yearly_setting:
             yearly_price = float(yearly_setting.value)
+
+        trial_query = select(ProSettings).where(ProSettings.key == "trial_duration_days")
+        trial_result = await db.execute(trial_query)
+        trial_setting = trial_result.scalar_one_or_none()
+        if trial_setting:
+            trial_days = int(trial_setting.value)
     except Exception:
         pass  # Use defaults on error
 
     # Calculate savings
-    yearly_monthly_equivalent = yearly_price / 12
     monthly_yearly_cost = monthly_price * 12
     savings = monthly_yearly_cost - yearly_price
 
@@ -128,6 +135,7 @@ async def get_plans(
             currency="EUR",
             interval="month",
             description=None,
+            trial_days=trial_days if trial_days > 0 else None,
         ),
         PlanInfo(
             id="yearly",
@@ -136,6 +144,7 @@ async def get_plans(
             currency="EUR",
             interval="year",
             description=f"Save €{savings:.2f}/year" if savings > 0 else None,
+            trial_days=trial_days if trial_days > 0 else None,
         ),
     ]
 
@@ -256,14 +265,44 @@ async def create_checkout(
             )
 
     try:
+        # Fetch price and trial days from admin settings
+        from app.models.pro import ProSettings
+
+        # Default values
+        monthly_price = 2.99
+        yearly_price = 19.99
+        trial_days = 7
+
+        try:
+            # Fetch all settings in one query
+            settings_query = select(ProSettings).where(
+                ProSettings.key.in_(["monthly_price_eur", "yearly_price_eur", "trial_duration_days"])
+            )
+            settings_result = await db.execute(settings_query)
+            settings_list = settings_result.scalars().all()
+
+            for setting in settings_list:
+                if setting.key == "monthly_price_eur":
+                    monthly_price = float(setting.value)
+                elif setting.key == "yearly_price_eur":
+                    yearly_price = float(setting.value)
+                elif setting.key == "trial_duration_days":
+                    trial_days = int(setting.value)
+        except Exception:
+            pass  # Use defaults
+
+        # Get price based on plan type
+        price_eur = monthly_price if request.plan_type == "monthly" else yearly_price
 
         url, session_id = await stripe_subscription_service.create_checkout_session(
             user_id=current_user.id,
             email=current_user.email,
             plan_type=request.plan_type,
+            price_eur=price_eur,
             customer_id=customer_id,
             success_url=request.success_url,
             cancel_url=request.cancel_url,
+            trial_days=trial_days,
         )
 
         return CheckoutResponse(url=url, session_id=session_id)
