@@ -41,7 +41,6 @@ def team_to_response(team: Team) -> dict:
         "created_at": team.created_at,
         "updated_at": team.updated_at,
         "created_by_id": team.created_by_id,
-        "created_by_email": team.created_by.email if team.created_by else None,
         "created_by_name": f"{team.created_by.profile.first_name} {team.created_by.profile.last_name}" if team.created_by and team.created_by.profile else None,
         "member_count": sum(1 for m in team.members if m.is_active),
     }
@@ -57,7 +56,6 @@ def member_to_response(member: TeamMember) -> dict:
         "is_active": member.is_active,
         "added_at": member.added_at,
         "user_id": member.enrollment.user_id if member.enrollment else None,
-        "user_email": member.enrollment.user.email if member.enrollment and member.enrollment.user else None,
         "user_first_name": member.enrollment.user.profile.first_name if member.enrollment and member.enrollment.user and member.enrollment.user.profile else None,
         "user_last_name": member.enrollment.user.profile.last_name if member.enrollment and member.enrollment.user and member.enrollment.user.profile else None,
     }

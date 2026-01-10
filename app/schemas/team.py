@@ -24,7 +24,6 @@ class TeamMemberResponse(BaseModel):
     added_at: datetime
     # Nested user info from enrollment
     user_id: Optional[int] = None
-    user_email: Optional[str] = None
     user_first_name: Optional[str] = None
     user_last_name: Optional[str] = None
 
@@ -65,7 +64,6 @@ class TeamResponse(BaseModel):
     updated_at: datetime
     created_by_id: int
     # Creator info
-    created_by_email: Optional[str] = None
     created_by_name: Optional[str] = None
     # Member count
     member_count: int = 0
