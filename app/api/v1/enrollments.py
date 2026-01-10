@@ -2,12 +2,24 @@
 
 import random
 from datetime import datetime, timezone, timedelta
+from enum import Enum
 from math import ceil
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 # Time window for post-event actions (disqualification, revalidation)
 POST_EVENT_ACTION_HOURS = 72
+
+
+# Structured error codes for enrollment operations (Story 14.2)
+class EnrollmentErrorCode(str, Enum):
+    USER_NOT_FOUND = "USER_NOT_FOUND"
+    ALREADY_ENROLLED = "ALREADY_ENROLLED"
+    USER_BANNED = "USER_BANNED"
+    EVENT_FULL = "EVENT_FULL"
+    EVENT_NOT_FOUND = "EVENT_NOT_FOUND"
+    NOT_AUTHORIZED = "NOT_AUTHORIZED"
+    INVALID_EVENT_STATUS = "INVALID_EVENT_STATUS"
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -561,7 +573,10 @@ async def admin_enroll_user(
     event = event_result.scalar_one_or_none()
 
     if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
+        raise HTTPException(
+            status_code=404,
+            detail={"code": EnrollmentErrorCode.EVENT_NOT_FOUND, "message": "Event not found"}
+        )
 
     # Check authorization - must be event owner or admin
     user_roles = set(current_user.profile.roles or []) if current_user.profile else set()
@@ -571,21 +586,21 @@ async def admin_enroll_user(
     if not is_admin and not is_event_owner:
         raise HTTPException(
             status_code=403,
-            detail="Not authorized to admin-enroll users for this event"
+            detail={"code": EnrollmentErrorCode.NOT_AUTHORIZED, "message": "Not authorized to admin-enroll users for this event"}
         )
 
     # Validate event status
     if event.status in [EventStatus.COMPLETED.value, EventStatus.CANCELLED.value]:
         raise HTTPException(
             status_code=400,
-            detail="Cannot enroll users in completed or cancelled events"
+            detail={"code": EnrollmentErrorCode.INVALID_EVENT_STATUS, "message": "Cannot enroll users in completed or cancelled events"}
         )
 
     # Team event restriction: only DRAFT or PUBLISHED (not ONGOING)
     if event.is_team_event and event.status == EventStatus.ONGOING.value:
         raise HTTPException(
             status_code=400,
-            detail="Cannot admin-enroll users in ongoing team events. Enroll before event starts."
+            detail={"code": EnrollmentErrorCode.INVALID_EVENT_STATUS, "message": "Cannot admin-enroll users in ongoing team events. Enroll before event starts."}
         )
 
     # Find user by email (case-insensitive)
@@ -601,7 +616,7 @@ async def admin_enroll_user(
     if not target_user:
         raise HTTPException(
             status_code=404,
-            detail=f"User with email '{request.user_email}' not found"
+            detail={"code": EnrollmentErrorCode.USER_NOT_FOUND, "message": f"User with email '{request.user_email}' not found"}
         )
 
     # Check if already enrolled
@@ -613,7 +628,7 @@ async def admin_enroll_user(
     if existing_result.scalar_one_or_none():
         raise HTTPException(
             status_code=400,
-            detail="User is already enrolled in this event"
+            detail={"code": EnrollmentErrorCode.ALREADY_ENROLLED, "message": "User is already enrolled in this event"}
         )
 
     # Check if user is banned from this event
@@ -625,7 +640,7 @@ async def admin_enroll_user(
     if ban_result.scalar_one_or_none():
         raise HTTPException(
             status_code=400,
-            detail="User is banned from this event"
+            detail={"code": EnrollmentErrorCode.USER_BANNED, "message": "User is banned from this event"}
         )
 
     # Check capacity (if max_participants set)
@@ -643,7 +658,7 @@ async def admin_enroll_user(
         if current_count >= event.max_participants:
             raise HTTPException(
                 status_code=400,
-                detail="Event has reached maximum capacity"
+                detail={"code": EnrollmentErrorCode.EVENT_FULL, "message": "Event has reached maximum capacity"}
             )
 
     # Create enrollment
