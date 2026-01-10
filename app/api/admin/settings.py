@@ -827,7 +827,10 @@ async def update_sponsor(
         is_global = update_data.pop("is_global")
         if is_global:
             sponsor.owner_id = None  # Make it global
-        # Note: to make it non-global, admin would need to assign to a specific user
+        else:
+            # Make it non-global: assign to current admin user if currently global
+            if sponsor.owner_id is None:
+                sponsor.owner_id = current_user.id
 
     for field, value in update_data.items():
         setattr(sponsor, field, value)
