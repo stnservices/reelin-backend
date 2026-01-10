@@ -1493,6 +1493,95 @@ async def get_my_current_match(
     )
 
 
+@router.get("/events/{event_id}/my-matches", response_model=TAMatchListResponse)
+async def get_my_matches(
+    event_id: int,
+    request: Request,
+    current_user: UserAccount = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Get all matches for the current user in a TA event (Match History / Istoric Meciuri).
+
+    Returns all matches where the user is a competitor, including completed matches.
+    This is used for the "Match History" view in the mobile app.
+    """
+    event = await get_ta_event(event_id, db, request)
+
+    # Find all matches where user is competitor A or B
+    match_query = (
+        select(TAMatch)
+        .options(
+            selectinload(TAMatch.competitor_a).selectinload(UserAccount.profile),
+            selectinload(TAMatch.competitor_b).selectinload(UserAccount.profile),
+        )
+        .where(
+            TAMatch.event_id == event_id,
+            (TAMatch.competitor_a_id == current_user.id) | (TAMatch.competitor_b_id == current_user.id),
+        )
+        .order_by(TAMatch.round_number, TAMatch.match_number)
+    )
+
+    result = await db.execute(match_query)
+    matches = result.scalars().all()
+
+    # Build response with user info
+    items = []
+    by_leg: dict[int, list] = {}
+
+    for match in matches:
+        # Get player names from loaded relationships
+        player_a_name = None
+        player_a_avatar = None
+        if match.competitor_a and match.competitor_a.profile:
+            player_a_name = match.competitor_a.profile.full_name
+            player_a_avatar = match.competitor_a.effective_avatar_url
+
+        player_b_name = None
+        player_b_avatar = None
+        if match.competitor_b and match.competitor_b.profile:
+            player_b_name = match.competitor_b.profile.full_name
+            player_b_avatar = match.competitor_b.effective_avatar_url
+
+        item = TAMatchResponse(
+            id=match.id,
+            event_id=match.event_id,
+            phase=TATournamentPhaseAPI(match.phase) if match.phase else TATournamentPhaseAPI.QUALIFIER,
+            leg_number=match.round_number,  # Map to leg_number for API
+            match_number=match.match_number,
+            player_a_id=match.competitor_a_id,
+            player_b_id=match.competitor_b_id,
+            seat_a=match.seat_a,
+            seat_b=match.seat_b,
+            player_a_catches=match.competitor_a_catches,
+            player_b_catches=match.competitor_b_catches,
+            player_a_points=match.competitor_a_points,
+            player_b_points=match.competitor_b_points,
+            player_a_outcome=TAMatchOutcome(match.competitor_a_outcome_code) if match.competitor_a_outcome_code else None,
+            player_b_outcome=TAMatchOutcome(match.competitor_b_outcome_code) if match.competitor_b_outcome_code else None,
+            status=match.status,
+            started_at=match.started_at,
+            completed_at=match.completed_at,
+            created_at=match.created_at,
+            player_a_name=player_a_name,
+            player_b_name=player_b_name,
+            player_a_avatar=player_a_avatar,
+            player_b_avatar=player_b_avatar,
+        )
+        items.append(item)
+
+        leg_num = match.round_number
+        if leg_num not in by_leg:
+            by_leg[leg_num] = []
+        by_leg[leg_num].append(item)
+
+    return {
+        "items": items,
+        "total": len(items),
+        "by_leg": by_leg,
+    }
+
+
 # =============================================================================
 # Lineup Endpoints
 # =============================================================================
