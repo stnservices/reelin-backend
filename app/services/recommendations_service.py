@@ -327,7 +327,12 @@ class RecommendationsService:
                 reasons.append(f"You've done {type_name} before")
 
         # 3. Species match (max 20 points)
-        event_species = set(event.target_species_ids or [])
+        # Get species from fish_scoring relationship if available
+        event_species = set()
+        if hasattr(event, 'fish_scoring') and event.fish_scoring:
+            for fs in event.fish_scoring:
+                if fs.fish_id:
+                    event_species.add(fs.fish_id)
         overlap = user_species & event_species
         if overlap:
             score += min(20, len(overlap) * 7)
@@ -520,8 +525,8 @@ class RecommendationsService:
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none() is not None
 
-    async def get_user_stats(self, user_id: int) -> dict:
-        """Get basic user stats for comparison."""
+    async def get_user_catch_count(self, user_id: int) -> dict:
+        """Get basic user catch count for comparison."""
         catch_count = await self.db.execute(
             select(func.count()).where(Catch.user_id == user_id)
         )
@@ -600,8 +605,8 @@ class RecommendationsService:
             reasons.append("Nearby angler")
 
         # 5. Similar experience level (max 10 points)
-        candidate_stats = await self.get_user_stats(candidate.id)
-        if abs(user_stats["catches"] - candidate_stats["catches"]) < 20:
+        candidate_stats = await self.get_user_catch_count(candidate.id)
+        if abs(user_stats.get("catches", 0) - candidate_stats["catches"]) < 20:
             score += 10
             reasons.append("Similar experience level")
 
@@ -614,9 +619,9 @@ class RecommendationsService:
         limit: int = 10,
     ) -> list[dict]:
         """Get personalized angler recommendations for user."""
-        # Get user's species history and stats
+        # Get user's species history and catch count
         user_species = await self.get_user_caught_species(user.id)
-        user_stats = await self.get_user_stats(user.id)
+        user_stats = await self.get_user_catch_count(user.id)
 
         # Get dismissed anglers
         dismissed = await self.get_dismissed_items(user.id, "angler")

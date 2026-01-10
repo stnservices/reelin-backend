@@ -5,7 +5,6 @@ import time
 import logging
 from datetime import datetime, timezone
 from typing import Optional
-from functools import lru_cache
 
 import joblib
 import numpy as np

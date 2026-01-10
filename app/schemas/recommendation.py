@@ -30,7 +30,7 @@ class EventSummary(BaseModel):
 class MLInsights(BaseModel):
     """ML model insights for a recommendation."""
 
-    confidence: float = Field(description="ML confidence score (0-1)")
+    confidence: float = Field(ge=0.0, le=1.0, description="ML confidence score (0-1)")
     confidence_label: str = Field(description="Human-readable confidence level")
     factors: list[str] = Field(description="Key factors influencing the prediction")
 
