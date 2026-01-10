@@ -71,9 +71,25 @@ def generate_slug(name: str, event_type: str, date: datetime) -> str:
 @router.get("/types", response_model=list[EventTypeResponse])
 async def list_event_types(
     db: AsyncSession = Depends(get_db),
+    with_events_only: bool = Query(True, description="Only return types that have at least one published/ongoing event"),
 ) -> list[EventType]:
-    """List all active event types."""
-    query = select(EventType).where(EventType.is_active == True).order_by(EventType.name)
+    """List active event types. By default only returns types with existing events."""
+    if with_events_only:
+        # Only return event types that have at least one published or ongoing event
+        subquery = (
+            select(Event.event_type_id)
+            .where(Event.status.in_([EventStatus.PUBLISHED, EventStatus.ONGOING, EventStatus.COMPLETED]))
+            .where(Event.is_deleted == False)
+            .distinct()
+        )
+        query = (
+            select(EventType)
+            .where(EventType.is_active == True)
+            .where(EventType.id.in_(subquery))
+            .order_by(EventType.name)
+        )
+    else:
+        query = select(EventType).where(EventType.is_active == True).order_by(EventType.name)
     result = await db.execute(query)
     return result.scalars().all()
 
