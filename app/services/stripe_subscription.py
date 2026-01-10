@@ -113,7 +113,7 @@ class StripeSubscriptionService:
             logger.info("Stripe product and prices initialized")
 
         except StripeError as e:
-            logger.error(f"Failed to initialize Stripe products/prices: {e}")
+            logger.exception(f"Failed to initialize Stripe products/prices: {e}")
             raise
 
     async def get_or_create_customer(
@@ -172,7 +172,7 @@ class StripeSubscriptionService:
             logger.info(f"Created Stripe customer {customer.id} for user {user_id}")
             return customer.id
         except StripeError as e:
-            logger.error(f"Failed to create Stripe customer: {e}")
+            logger.exception(f"Failed to create Stripe customer: {e}")
             raise
 
     async def create_checkout_session(
@@ -243,7 +243,7 @@ class StripeSubscriptionService:
             return session.url, session.id
 
         except StripeError as e:
-            logger.error(f"Failed to create checkout session: {e}")
+            logger.exception(f"Failed to create checkout session: {e}")
             raise
 
     async def create_portal_session(
@@ -275,7 +275,7 @@ class StripeSubscriptionService:
             return session.url
 
         except StripeError as e:
-            logger.error(f"Failed to create portal session: {e}")
+            logger.exception(f"Failed to create portal session: {e}")
             raise
 
     async def cancel_subscription(
@@ -315,7 +315,7 @@ class StripeSubscriptionService:
             }
 
         except StripeError as e:
-            logger.error(f"Failed to cancel subscription: {e}")
+            logger.exception(f"Failed to cancel subscription: {e}")
             raise
 
     async def resume_subscription(self, subscription_id: str) -> dict:
@@ -344,7 +344,7 @@ class StripeSubscriptionService:
             }
 
         except StripeError as e:
-            logger.error(f"Failed to resume subscription: {e}")
+            logger.exception(f"Failed to resume subscription: {e}")
             raise
 
     async def get_subscription(self, subscription_id: str) -> Optional[dict]:
@@ -383,7 +383,7 @@ class StripeSubscriptionService:
         except stripe.error.InvalidRequestError:
             return None
         except StripeError as e:
-            logger.error(f"Failed to get subscription: {e}")
+            logger.exception(f"Failed to get subscription: {e}")
             return None
 
     async def has_active_subscription(self, customer_id: str) -> bool:
@@ -410,7 +410,7 @@ class StripeSubscriptionService:
             return len(subscriptions.data) > 0
 
         except StripeError as e:
-            logger.error(f"Failed to check active subscriptions: {e}")
+            logger.exception(f"Failed to check active subscriptions: {e}")
             # Return False to allow checkout attempt (Stripe will prevent duplicates)
             return False
 
