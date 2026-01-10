@@ -3,7 +3,7 @@
 from math import ceil
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status, Body
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status, Body
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +27,7 @@ from app.schemas.user import (
 )
 from app.schemas.common import MessageResponse
 from app.core.permissions import AdminOnly, OrganizerOrAdmin
+from app.core.rate_limit import limiter, USER_SEARCH_RATE_LIMIT
 from app.core.security import get_password_hash
 from app.services.account_deletion import account_deletion_service, AccountDeletionError
 
@@ -374,6 +375,13 @@ class UserSearchResponse(BaseModel):
     avatar_url: Optional[str] = None
 
 
+class UserSearchMultipleResponse(BaseModel):
+    """Response for multi-user search by name or email (Story 14.2)."""
+
+    users: list[UserSearchResponse]
+    total: int
+
+
 @router.get("/search", response_model=UserSearchResponse)
 async def search_user_by_email(
     email: str = Query(..., description="Email address to search for"),
@@ -412,6 +420,71 @@ async def search_user_by_email(
         email=user.email,
         display_name=display_name,
         avatar_url=user.profile.profile_picture_url if user.profile else None,
+    )
+
+
+@router.get("/search-multiple", response_model=UserSearchMultipleResponse)
+@limiter.limit(USER_SEARCH_RATE_LIMIT)
+async def search_users_multiple(
+    request: Request,
+    q: str = Query(..., min_length=2, description="Search query (name or email, min 2 characters)"),
+    limit: int = Query(20, le=50, description="Maximum results to return"),
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(OrganizerOrAdmin),
+):
+    """
+    Search users by name or email (partial match).
+    Only organizers and admins can use this endpoint.
+    Used for admin-enrolling users into events (Story 14.2).
+
+    - Searches across email AND display_name fields (case-insensitive)
+    - Supports partial matching (ILIKE)
+    - Returns list of matching users (max 20 by default)
+    - Returns empty array if no matches (not 404)
+    """
+    from sqlalchemy import or_
+
+    search_term = q.lower()
+
+    # Build query with ILIKE partial matching on email and profile names
+    query = (
+        select(UserAccount)
+        .options(selectinload(UserAccount.profile))
+        .where(UserAccount.is_active == True)  # noqa: E712
+        .where(
+            or_(
+                func.lower(UserAccount.email).contains(search_term),
+                func.lower(UserProfile.first_name).contains(search_term),
+                func.lower(UserProfile.last_name).contains(search_term),
+            )
+        )
+        .outerjoin(UserProfile, UserAccount.id == UserProfile.user_id)
+        .limit(limit)
+    )
+
+    result = await db.execute(query)
+    users = result.scalars().unique().all()
+
+    # Build response
+    user_responses = []
+    for user in users:
+        display_name = user.email
+        if user.profile:
+            if user.profile.first_name or user.profile.last_name:
+                display_name = f"{user.profile.first_name or ''} {user.profile.last_name or ''}".strip()
+
+        user_responses.append(
+            UserSearchResponse(
+                id=user.id,
+                email=user.email,
+                display_name=display_name,
+                avatar_url=user.profile.profile_picture_url if user.profile else None,
+            )
+        )
+
+    return UserSearchMultipleResponse(
+        users=user_responses,
+        total=len(user_responses),
     )
 
 

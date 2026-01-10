@@ -20,3 +20,4 @@ limiter = Limiter(
 # connecting from same WiFi network (shared IP) at fishing ponds
 AUTH_RATE_LIMIT = "100/minute"  # 100 requests per minute for auth endpoints
 FORGOT_PASSWORD_RATE_LIMIT = "3/minute"  # 3 requests per minute for password reset
+USER_SEARCH_RATE_LIMIT = "10/minute"  # 10 requests per minute for user search (Story 14.2)
