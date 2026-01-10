@@ -1,0 +1,13 @@
+user_event_count
+user_catch_count
+user_species_count
+user_max_catch_cm
+user_wins
+user_podiums
+user_age_at_event
+event_type_id
+event_day_of_week
+event_month
+event_enrollment_count
+has_done_event_type
+friends_enrolled_count

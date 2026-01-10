@@ -27,6 +27,14 @@ class EventSummary(BaseModel):
     event_type_name: Optional[str] = None
 
 
+class MLInsights(BaseModel):
+    """ML model insights for a recommendation."""
+
+    confidence: float = Field(description="ML confidence score (0-1)")
+    confidence_label: str = Field(description="Human-readable confidence level")
+    factors: list[str] = Field(description="Key factors influencing the prediction")
+
+
 class EventRecommendation(BaseModel):
     """A single event recommendation with scoring info."""
 
@@ -35,6 +43,9 @@ class EventRecommendation(BaseModel):
     reasons: list[str] = Field(description="Why this event is recommended")
     friends_enrolled: Optional[list[UserSummary]] = Field(
         None, description="Friends joining this event (Pro only)"
+    )
+    ml_insights: Optional[MLInsights] = Field(
+        None, description="ML-based insights (when ML is active)"
     )
 
 

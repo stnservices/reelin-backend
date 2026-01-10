@@ -1,5 +1,6 @@
 """Recommendations service for personalized event and angler suggestions."""
 
+import logging
 import math
 from datetime import datetime, timezone
 from typing import Optional
@@ -15,7 +16,10 @@ from app.models.fish import Fish
 from app.models.follow import UserFollow
 from app.models.location import FishingSpot
 from app.models.recommendation import RecommendationDismissal
+from app.models.statistics import UserEventTypeStats
 from app.models.user import UserAccount, UserProfile
+
+logger = logging.getLogger(__name__)
 
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -44,6 +48,158 @@ class RecommendationsService:
 
     def __init__(self, db: AsyncSession):
         self.db = db
+        self._ml_service = None
+
+    @property
+    def ml_service(self):
+        """Lazy load ML service to avoid circular imports."""
+        if self._ml_service is None:
+            from app.services.ml_service import MLService
+            self._ml_service = MLService(self.db)
+        return self._ml_service
+
+    async def get_user_stats(self, user_id: int) -> dict:
+        """Get user overall stats from user_event_type_stats."""
+        stmt = select(UserEventTypeStats).where(
+            UserEventTypeStats.user_id == user_id,
+            UserEventTypeStats.event_type_id.is_(None),  # Overall stats
+        )
+        result = await self.db.execute(stmt)
+        stats = result.scalar_one_or_none()
+
+        if stats:
+            return {
+                "total_events": stats.total_events,
+                "total_catches": stats.total_catches,
+                "unique_species_count": stats.unique_species_count,
+                "largest_catch_cm": float(stats.largest_catch_cm or 0),
+                "total_wins": stats.total_wins,
+                "podium_finishes": stats.podium_finishes,
+            }
+        return {
+            "total_events": 0,
+            "total_catches": 0,
+            "unique_species_count": 0,
+            "largest_catch_cm": 0,
+            "total_wins": 0,
+            "podium_finishes": 0,
+        }
+
+    def _get_ml_insights(
+        self,
+        ml_score: float,
+        user_stats: dict,
+        user_event_types: set[int],
+        event_type_id: int,
+        enrollment_count: int,
+    ) -> dict:
+        """Generate ML insights and human-readable factors."""
+        # Confidence label
+        if ml_score >= 0.9:
+            confidence_label = "Very High"
+        elif ml_score >= 0.7:
+            confidence_label = "High"
+        elif ml_score >= 0.5:
+            confidence_label = "Moderate"
+        elif ml_score >= 0.3:
+            confidence_label = "Low"
+        else:
+            confidence_label = "Very Low"
+
+        # Generate factor explanations
+        factors = []
+
+        # Experience factors
+        total_events = user_stats.get("total_events", 0)
+        total_catches = user_stats.get("total_catches", 0)
+        total_wins = user_stats.get("total_wins", 0)
+
+        if total_events >= 10:
+            factors.append("Experienced competitor")
+        elif total_events >= 5:
+            factors.append("Active participant")
+        elif total_events >= 1:
+            factors.append("Getting started")
+
+        if total_catches >= 50:
+            factors.append("Prolific angler")
+        elif total_catches >= 20:
+            factors.append("Skilled catcher")
+
+        if total_wins >= 3:
+            factors.append("Multiple event winner")
+        elif total_wins >= 1:
+            factors.append("Previous winner")
+
+        # Event type match
+        if event_type_id in user_event_types:
+            factors.append("Matches your event history")
+
+        # Popularity
+        if enrollment_count >= 30:
+            factors.append("Highly popular event")
+        elif enrollment_count >= 15:
+            factors.append("Growing interest")
+
+        # Ensure we have at least one factor
+        if not factors:
+            if ml_score >= 0.7:
+                factors.append("Based on your profile")
+            else:
+                factors.append("New opportunity")
+
+        return {
+            "confidence": ml_score,
+            "confidence_label": confidence_label,
+            "factors": factors[:4],  # Max 4 factors
+        }
+
+    async def get_ml_event_score(
+        self,
+        user: UserAccount,
+        event: Event,
+        user_stats: dict,
+        user_event_types: set[int],
+        enrollment_count: int,
+        friends_count: int,
+    ) -> tuple[Optional[float], Optional[dict]]:
+        """
+        Get ML model prediction for event enrollment probability.
+        Returns (score, insights) tuple. Both None if ML model is not available.
+        """
+        try:
+            features = await self.ml_service.build_event_features(
+                user_stats=user_stats,
+                user_created_at=user.created_at,
+                event_data={
+                    "start_date": event.start_date,
+                    "event_type_id": event.event_type_id,
+                    "day_of_week": event.start_date.weekday() if event.start_date else 0,
+                    "month": event.start_date.month if event.start_date else 1,
+                    "enrollment_count": enrollment_count,
+                    "friends_enrolled": friends_count,
+                },
+            )
+            features["has_done_event_type"] = 1 if event.event_type_id in user_event_types else 0
+
+            score = await self.ml_service.predict_event_enrollment(
+                user_id=user.id,
+                event_id=event.id,
+                features=features,
+                log_prediction=True,
+            )
+
+            if score is not None:
+                insights = self._get_ml_insights(
+                    score, user_stats, user_event_types,
+                    event.event_type_id, enrollment_count
+                )
+                return score, insights
+
+            return None, None
+        except Exception as e:
+            logger.warning(f"ML prediction failed: {e}")
+            return None, None
 
     async def get_user_participated_event_types(self, user_id: int) -> set[int]:
         """Get event type IDs the user has participated in."""
@@ -211,6 +367,7 @@ class RecommendationsService:
         user: UserAccount,
         is_pro: bool,
         limit: int = 10,
+        use_ml: bool = True,
     ) -> list[dict]:
         """Get personalized event recommendations for user."""
         # Get user location from profile
@@ -226,6 +383,9 @@ class RecommendationsService:
         # Get user's event type and species history
         user_event_types = await self.get_user_participated_event_types(user.id)
         user_species = await self.get_user_caught_species(user.id)
+
+        # Get user stats for ML
+        user_stats = await self.get_user_stats(user.id) if use_ml else {}
 
         # Get dismissed events
         dismissed = await self.get_dismissed_items(user.id, "event")
@@ -258,10 +418,31 @@ class RecommendationsService:
                 user_event_types, user_species, is_pro
             )
 
+            # Add ML-enhanced scoring if available
+            ml_score = None
+            ml_insights = None
+            if use_ml:
+                enrollment_count = await self.get_event_enrollment_count(event.id)
+                friends_count = len(friends) if friends else 0
+                ml_score, ml_insights = await self.get_ml_event_score(
+                    user, event, user_stats, user_event_types,
+                    enrollment_count, friends_count
+                )
+                if ml_score is not None:
+                    # Combine: 60% rule-based + 40% ML (scaled to 0-100)
+                    score = score * 0.6 + (ml_score * 100) * 0.4
+                    # Add ML-based reasons from insights
+                    if ml_insights and ml_insights.get("factors"):
+                        for factor in ml_insights["factors"][:2]:
+                            if factor not in reasons:
+                                reasons.append(factor)
+
             if score > 0:
                 scored_events.append({
                     "event": event,
                     "score": score,
+                    "ml_score": ml_score,
+                    "ml_insights": ml_insights,
                     "reasons": reasons,
                     "friends_enrolled": friends if is_pro else None,
                 })

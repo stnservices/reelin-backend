@@ -1,10 +1,12 @@
 """Recommendations API endpoints for personalized suggestions."""
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.dependencies import get_current_user
+from app.core.permissions import AdminOnly
 from app.models.user import UserAccount
 from app.schemas.recommendation import (
     AnglerRecommendation,
@@ -14,6 +16,7 @@ from app.schemas.recommendation import (
     EventRecommendation,
     EventRecommendationsResponse,
     EventSummary,
+    MLInsights,
     UserSummary,
 )
 from app.services.recommendations_service import RecommendationsService
@@ -94,6 +97,7 @@ async def get_event_recommendations(
             friends_enrolled=[
                 UserSummary(**f) for f in (item["friends_enrolled"] or [])
             ] if item.get("friends_enrolled") else None,
+            ml_insights=MLInsights(**item["ml_insights"]) if item.get("ml_insights") else None,
         )
         for item in scored_events
     ]
@@ -206,3 +210,146 @@ async def dismiss_recommendation(
     await redis_cache.delete(cache_key)
 
     return DismissResponse(status="dismissed")
+
+
+@router.get("/debug/ml")
+async def get_ml_debug_info(
+    current_user: UserAccount = Depends(AdminOnly),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Admin endpoint to view ML model debug information.
+
+    Returns:
+    - Active model metadata
+    - Recent predictions
+    - Feature importance
+    """
+    # Get active model info
+    model_info = await db.execute(text("""
+        SELECT id, name, model_type, file_path, trained_at,
+               training_samples, positive_rate, roc_auc, cv_roc_auc,
+               feature_columns, feature_importance, notes
+        FROM ml_models
+        WHERE is_active = true AND model_type = 'event_recommendations'
+        ORDER BY created_at DESC
+        LIMIT 1
+    """))
+    model = model_info.first()
+
+    # Get recent predictions
+    predictions_query = await db.execute(text("""
+        SELECT user_id, entity_id, entity_type, prediction_score, prediction_ms, created_at
+        FROM ml_prediction_logs
+        WHERE entity_type = 'event'
+        ORDER BY created_at DESC
+        LIMIT 20
+    """))
+    predictions = predictions_query.all()
+
+    return {
+        "model": {
+            "id": model.id if model else None,
+            "name": model.name if model else None,
+            "trained_at": model.trained_at.isoformat() if model and model.trained_at else None,
+            "training_samples": model.training_samples if model else None,
+            "positive_rate": float(model.positive_rate) if model and model.positive_rate else None,
+            "roc_auc": float(model.roc_auc) if model and model.roc_auc else None,
+            "cv_roc_auc": float(model.cv_roc_auc) if model and model.cv_roc_auc else None,
+            "feature_columns": model.feature_columns if model else None,
+            "feature_importance": model.feature_importance if model else None,
+            "notes": model.notes if model else None,
+        } if model else None,
+        "recent_predictions": [
+            {
+                "user_id": p.user_id,
+                "event_id": p.entity_id,
+                "prediction_score": float(p.prediction_score) if p.prediction_score else None,
+                "prediction_ms": float(p.prediction_ms) if p.prediction_ms else None,
+                "confidence_label": (
+                    "Very High" if p.prediction_score and p.prediction_score >= 0.9 else
+                    "High" if p.prediction_score and p.prediction_score >= 0.7 else
+                    "Moderate" if p.prediction_score and p.prediction_score >= 0.5 else
+                    "Low" if p.prediction_score and p.prediction_score >= 0.3 else
+                    "Very Low"
+                ),
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+            }
+            for p in predictions
+        ],
+    }
+
+
+@router.get("/debug/ml/user/{user_id}")
+async def get_ml_debug_for_user(
+    user_id: int,
+    current_user: UserAccount = Depends(AdminOnly),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Admin endpoint to view ML predictions for a specific user.
+
+    Shows all recent predictions made for this user with full feature details.
+    """
+    # Get user info
+    user_query = await db.execute(text("""
+        SELECT ua.id, ua.email, up.full_name
+        FROM user_accounts ua
+        JOIN user_profiles up ON up.user_id = ua.id
+        WHERE ua.id = :user_id
+    """), {"user_id": user_id})
+    user_info = user_query.first()
+
+    if not user_info:
+        return {"error": "User not found"}
+
+    # Get user stats
+    stats_query = await db.execute(text("""
+        SELECT total_events, total_catches, unique_species_count,
+               largest_catch_cm, total_wins, podium_finishes
+        FROM user_event_type_stats
+        WHERE user_id = :user_id AND event_type_id IS NULL
+    """), {"user_id": user_id})
+    stats = stats_query.first()
+
+    # Get recent predictions for this user
+    predictions_query = await db.execute(text("""
+        SELECT entity_id, prediction_score, prediction_ms, created_at
+        FROM ml_prediction_logs
+        WHERE user_id = :user_id AND entity_type = 'event'
+        ORDER BY created_at DESC
+        LIMIT 30
+    """), {"user_id": user_id})
+    predictions = predictions_query.all()
+
+    return {
+        "user": {
+            "id": user_info.id,
+            "email": user_info.email,
+            "name": user_info.full_name,
+        },
+        "stats": {
+            "total_events": stats.total_events if stats else 0,
+            "total_catches": stats.total_catches if stats else 0,
+            "unique_species_count": stats.unique_species_count if stats else 0,
+            "largest_catch_cm": float(stats.largest_catch_cm) if stats and stats.largest_catch_cm else 0,
+            "total_wins": stats.total_wins if stats else 0,
+            "podium_finishes": stats.podium_finishes if stats else 0,
+        } if stats else None,
+        "predictions": [
+            {
+                "event_id": p.entity_id,
+                "prediction_score": float(p.prediction_score) if p.prediction_score else None,
+                "prediction_ms": float(p.prediction_ms) if p.prediction_ms else None,
+                "confidence_label": (
+                    "Very High" if p.prediction_score and p.prediction_score >= 0.9 else
+                    "High" if p.prediction_score and p.prediction_score >= 0.7 else
+                    "Moderate" if p.prediction_score and p.prediction_score >= 0.5 else
+                    "Low" if p.prediction_score and p.prediction_score >= 0.3 else
+                    "Very Low"
+                ),
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+            }
+            for p in predictions
+        ],
+    }
