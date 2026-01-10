@@ -113,7 +113,7 @@ async def get_plans(
         if yearly_setting:
             yearly_price = float(yearly_setting.value)
     except Exception:
-        pass  # Use defaults on error
+        logger.warning("Failed to fetch Pro settings from DB, using defaults", exc_info=True)
 
     # Calculate savings
     yearly_monthly_equivalent = yearly_price / 12
