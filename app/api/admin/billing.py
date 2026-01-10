@@ -193,10 +193,10 @@ async def list_billing_profiles(
     Supports search by legal name or email.
     """
     # Base filter conditions
-    base_conditions = [OrganizerBillingProfile.is_active == True]
+    base_conditions = [OrganizerBillingProfile.is_active.is_(True)]
 
     if verified_only:
-        base_conditions.append(OrganizerBillingProfile.is_verified == True)
+        base_conditions.append(OrganizerBillingProfile.is_verified.is_(True))
 
     if search:
         search_term = f"%{search}%"
@@ -266,7 +266,7 @@ async def get_billing_profile(
     # First try to get primary profile
     query = select(OrganizerBillingProfile).where(
         OrganizerBillingProfile.user_id == user_id,
-        OrganizerBillingProfile.is_primary == True,
+        OrganizerBillingProfile.is_primary.is_(True),
     )
     result = await db.execute(query)
     profile = result.scalar_one_or_none()
@@ -367,7 +367,7 @@ async def update_billing_profile(
     # First try to get primary profile
     query = select(OrganizerBillingProfile).where(
         OrganizerBillingProfile.user_id == user_id,
-        OrganizerBillingProfile.is_primary == True,
+        OrganizerBillingProfile.is_primary.is_(True),
     )
     result = await db.execute(query)
     profile = result.scalar_one_or_none()
@@ -429,7 +429,7 @@ async def verify_billing_profile(
     # First try to get primary profile
     query = select(OrganizerBillingProfile).where(
         OrganizerBillingProfile.user_id == user_id,
-        OrganizerBillingProfile.is_primary == True,
+        OrganizerBillingProfile.is_primary.is_(True),
     )
     result = await db.execute(query)
     profile = result.scalar_one_or_none()
@@ -647,7 +647,7 @@ async def set_primary_profile(
         select(OrganizerBillingProfile)
         .where(
             OrganizerBillingProfile.user_id == user_id,
-            OrganizerBillingProfile.is_primary == True,
+            OrganizerBillingProfile.is_primary.is_(True),
         )
     )
     update_result = await db.execute(update_query)
@@ -679,7 +679,7 @@ async def list_pricing_tiers(
     # Get primary billing profile
     profile_query = select(OrganizerBillingProfile).where(
         OrganizerBillingProfile.user_id == user_id,
-        OrganizerBillingProfile.is_primary == True,
+        OrganizerBillingProfile.is_primary.is_(True),
     )
     profile_result = await db.execute(profile_query)
     profile = profile_result.scalar_one_or_none()
@@ -740,7 +740,7 @@ async def create_pricing_tier(
     # Get primary billing profile
     profile_query = select(OrganizerBillingProfile).where(
         OrganizerBillingProfile.user_id == user_id,
-        OrganizerBillingProfile.is_primary == True,
+        OrganizerBillingProfile.is_primary.is_(True),
     )
     profile_result = await db.execute(profile_query)
     profile = profile_result.scalar_one_or_none()
@@ -1248,15 +1248,15 @@ async def get_billing_summary(
 
     # Count profiles
     profiles_query = select(func.count(OrganizerBillingProfile.id)).where(
-        OrganizerBillingProfile.is_active == True
+        OrganizerBillingProfile.is_active.is_(True)
     )
     profiles_result = await db.execute(profiles_query)
     profiles_count = profiles_result.scalar() or 0
 
     # Count verified
     verified_query = select(func.count(OrganizerBillingProfile.id)).where(
-        OrganizerBillingProfile.is_active == True,
-        OrganizerBillingProfile.is_verified == True,
+        OrganizerBillingProfile.is_active.is_(True),
+        OrganizerBillingProfile.is_verified.is_(True),
     )
     verified_result = await db.execute(verified_query)
     verified_profiles = verified_result.scalar() or 0
@@ -1280,7 +1280,7 @@ async def list_event_types(
     current_user: UserAccount = Depends(AdminOnly),
 ):
     """List all event types for pricing tier selection."""
-    query = select(EventType).where(EventType.is_active == True).order_by(EventType.name)
+    query = select(EventType).where(EventType.is_active.is_(True)).order_by(EventType.name)
     result = await db.execute(query)
     event_types = result.scalars().all()
 
@@ -1300,7 +1300,7 @@ async def list_currencies(
     current_user: UserAccount = Depends(AdminOnly),
 ):
     """List all currencies for pricing tier selection."""
-    query = select(Currency).where(Currency.is_active == True).order_by(Currency.code)
+    query = select(Currency).where(Currency.is_active.is_(True)).order_by(Currency.code)
     result = await db.execute(query)
     currencies = result.scalars().all()
 
@@ -1332,7 +1332,7 @@ async def override_event_billing_profile(
     The billing profile must belong to the event's organizer.
     """
     # Get the event
-    event_query = select(Event).where(Event.id == event_id, Event.is_deleted == False)
+    event_query = select(Event).where(Event.id == event_id, Event.is_deleted.is_(False))
     event_result = await db.execute(event_query)
     event = event_result.scalar_one_or_none()
 
@@ -1357,7 +1357,7 @@ async def override_event_billing_profile(
     profile_query = select(OrganizerBillingProfile).where(
         OrganizerBillingProfile.id == billing_profile_id,
         OrganizerBillingProfile.user_id == event.created_by_id,
-        OrganizerBillingProfile.is_active == True,
+        OrganizerBillingProfile.is_active.is_(True),
     )
     profile_result = await db.execute(profile_query)
     billing_profile = profile_result.scalar_one_or_none()

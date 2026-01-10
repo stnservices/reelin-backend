@@ -121,7 +121,7 @@ async def get_plans(
         if trial_setting:
             trial_days = int(trial_setting.value)
     except Exception:
-        pass  # Use defaults on error
+        logger.warning("Failed to fetch Pro settings from DB, using defaults", exc_info=True)
 
     # Calculate savings
     monthly_yearly_cost = monthly_price * 12
