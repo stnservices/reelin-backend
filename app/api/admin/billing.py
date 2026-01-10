@@ -83,8 +83,10 @@ def profile_to_response(profile: OrganizerBillingProfile) -> BillingProfileRespo
     return BillingProfileResponse(
         id=profile.id,
         user_id=profile.user_id,
+        is_primary=profile.is_primary,
         organizer_type=profile.organizer_type,
         legal_name=profile.legal_name,
+        cnp=profile.cnp,
         tax_id=profile.tax_id,
         registration_number=profile.registration_number,
         billing_address_line1=profile.billing_address_line1,
@@ -260,12 +262,25 @@ async def get_billing_profile(
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(AdminOnly),
 ):
-    """Get billing profile for a specific user."""
+    """Get primary billing profile for a specific user (legacy endpoint)."""
+    # First try to get primary profile
     query = select(OrganizerBillingProfile).where(
-        OrganizerBillingProfile.user_id == user_id
+        OrganizerBillingProfile.user_id == user_id,
+        OrganizerBillingProfile.is_primary.is_(True),
     )
     result = await db.execute(query)
     profile = result.scalar_one_or_none()
+
+    # Fallback to oldest profile if no primary is set
+    if not profile:
+        query = (
+            select(OrganizerBillingProfile)
+            .where(OrganizerBillingProfile.user_id == user_id)
+            .order_by(OrganizerBillingProfile.created_at)
+            .limit(1)
+        )
+        result = await db.execute(query)
+        profile = result.scalar_one_or_none()
 
     if not profile:
         raise HTTPException(
@@ -287,7 +302,7 @@ async def create_billing_profile(
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(AdminOnly),
 ):
-    """Create billing profile for an organizer."""
+    """Create billing profile for an organizer (legacy endpoint - creates primary if first)."""
     # Check if user exists and is an organizer
     user_query = (
         select(UserAccount)
@@ -309,16 +324,12 @@ async def create_billing_profile(
             detail="User is not an organizer",
         )
 
-    # Check if profile already exists
-    existing_query = select(OrganizerBillingProfile).where(
+    # Check if any profile already exists (to determine if this should be primary)
+    existing_query = select(func.count(OrganizerBillingProfile.id)).where(
         OrganizerBillingProfile.user_id == user_id
     )
     existing_result = await db.execute(existing_query)
-    if existing_result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Billing profile already exists for this user",
-        )
+    existing_count = existing_result.scalar() or 0
 
     # Validate Romanian tax ID if provided
     profile_dict = profile_data.model_dump()
@@ -332,9 +343,10 @@ async def create_billing_profile(
         # Use cleaned version
         profile_dict["tax_id"] = cleaned_tax_id
 
-    # Create profile
+    # Create profile - first profile is automatically primary
     profile = OrganizerBillingProfile(
         user_id=user_id,
+        is_primary=(existing_count == 0),  # First profile is primary
         **profile_dict,
     )
     db.add(profile)
@@ -351,9 +363,195 @@ async def update_billing_profile(
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(AdminOnly),
 ):
-    """Update billing profile for an organizer."""
+    """Update primary billing profile for an organizer (legacy endpoint)."""
+    # First try to get primary profile
     query = select(OrganizerBillingProfile).where(
+        OrganizerBillingProfile.user_id == user_id,
+        OrganizerBillingProfile.is_primary.is_(True),
+    )
+    result = await db.execute(query)
+    profile = result.scalar_one_or_none()
+
+    # Fallback to oldest profile if no primary is set
+    if not profile:
+        query = (
+            select(OrganizerBillingProfile)
+            .where(OrganizerBillingProfile.user_id == user_id)
+            .order_by(OrganizerBillingProfile.created_at)
+            .limit(1)
+        )
+        result = await db.execute(query)
+        profile = result.scalar_one_or_none()
+
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Billing profile not found",
+        )
+
+    # Update fields
+    update_data = profile_data.model_dump(exclude_unset=True, exclude_none=True)
+
+    # Validate Romanian tax ID if provided
+    tax_id = update_data.get("tax_id")
+    billing_country = update_data.get("billing_country", profile.billing_country)
+    if tax_id and billing_country == "RO":
+        is_valid, cleaned_tax_id = validate_romanian_tax_id(tax_id)
+        if not is_valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid Romanian tax ID format: '{tax_id}'. Expected 2-10 digits, optionally prefixed with 'RO'.",
+            )
+        update_data["tax_id"] = cleaned_tax_id
+
+    for field, value in update_data.items():
+        setattr(profile, field, value)
+
+    # Update Stripe customer if exists
+    if profile.stripe_customer_id:
+        await stripe_billing_service.update_customer(
+            profile.stripe_customer_id, profile
+        )
+
+    await db.commit()
+    await db.refresh(profile)
+
+    return profile_to_response(profile)
+
+
+@router.post("/profiles/user/{user_id}/verify", response_model=MessageResponse)
+async def verify_billing_profile(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+):
+    """Mark primary billing profile as verified (legacy endpoint - by user ID)."""
+    # First try to get primary profile
+    query = select(OrganizerBillingProfile).where(
+        OrganizerBillingProfile.user_id == user_id,
+        OrganizerBillingProfile.is_primary.is_(True),
+    )
+    result = await db.execute(query)
+    profile = result.scalar_one_or_none()
+
+    # Fallback to oldest profile if no primary is set
+    if not profile:
+        query = (
+            select(OrganizerBillingProfile)
+            .where(OrganizerBillingProfile.user_id == user_id)
+            .order_by(OrganizerBillingProfile.created_at)
+            .limit(1)
+        )
+        result = await db.execute(query)
+        profile = result.scalar_one_or_none()
+
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Billing profile not found",
+        )
+
+    profile.is_verified = True
+    await db.commit()
+
+    return MessageResponse(message="Billing profile verified successfully")
+
+
+# ============== Multi-Profile Admin Endpoints ==============
+
+
+@router.get("/organizers/{user_id}/profiles", response_model=list[BillingProfileResponse])
+async def get_organizer_profiles(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+):
+    """Get all billing profiles for a specific organizer."""
+    query = (
+        select(OrganizerBillingProfile)
+        .where(OrganizerBillingProfile.user_id == user_id)
+        .order_by(OrganizerBillingProfile.is_primary.desc(), OrganizerBillingProfile.created_at)
+    )
+    result = await db.execute(query)
+    profiles = result.scalars().all()
+
+    return [profile_to_response(p) for p in profiles]
+
+
+@router.post(
+    "/organizers/{user_id}/profiles",
+    response_model=BillingProfileResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_organizer_profile(
+    user_id: int,
+    profile_data: BillingProfileCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+):
+    """Create a new billing profile for an organizer (multi-profile support)."""
+    # Check if user exists and is an organizer
+    user_query = (
+        select(UserAccount)
+        .options(selectinload(UserAccount.profile))
+        .where(UserAccount.id == user_id)
+    )
+    user_result = await db.execute(user_query)
+    user = user_result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    if not user.profile or not user.profile.is_organizer:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User is not an organizer",
+        )
+
+    # Check if any profile already exists (to determine if this should be primary)
+    existing_query = select(func.count(OrganizerBillingProfile.id)).where(
         OrganizerBillingProfile.user_id == user_id
+    )
+    existing_result = await db.execute(existing_query)
+    existing_count = existing_result.scalar() or 0
+
+    # Validate Romanian tax ID if provided
+    profile_dict = profile_data.model_dump()
+    if profile_dict.get("tax_id") and profile_dict.get("billing_country") == "RO":
+        is_valid, cleaned_tax_id = validate_romanian_tax_id(profile_dict["tax_id"])
+        if not is_valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid Romanian tax ID format: '{profile_dict['tax_id']}'. Expected 2-10 digits, optionally prefixed with 'RO'.",
+            )
+        profile_dict["tax_id"] = cleaned_tax_id
+
+    # Create profile - first profile is automatically primary
+    profile = OrganizerBillingProfile(
+        user_id=user_id,
+        is_primary=(existing_count == 0),
+        **profile_dict,
+    )
+    db.add(profile)
+    await db.commit()
+    await db.refresh(profile)
+
+    return profile_to_response(profile)
+
+
+@router.patch("/profiles/{profile_id}", response_model=BillingProfileResponse)
+async def update_profile_by_id(
+    profile_id: int,
+    profile_data: BillingProfileUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+):
+    """Update a specific billing profile by ID."""
+    query = select(OrganizerBillingProfile).where(
+        OrganizerBillingProfile.id == profile_id
     )
     result = await db.execute(query)
     profile = result.scalar_one_or_none()
@@ -394,15 +592,15 @@ async def update_billing_profile(
     return profile_to_response(profile)
 
 
-@router.post("/profiles/{user_id}/verify", response_model=MessageResponse)
-async def verify_billing_profile(
-    user_id: int,
+@router.post("/profiles/{profile_id}/verify", response_model=MessageResponse)
+async def verify_profile_by_id(
+    profile_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(AdminOnly),
 ):
-    """Mark billing profile as verified."""
+    """Mark a specific billing profile as verified."""
     query = select(OrganizerBillingProfile).where(
-        OrganizerBillingProfile.user_id == user_id
+        OrganizerBillingProfile.id == profile_id
     )
     result = await db.execute(query)
     profile = result.scalar_one_or_none()
@@ -419,6 +617,51 @@ async def verify_billing_profile(
     return MessageResponse(message="Billing profile verified successfully")
 
 
+@router.post(
+    "/organizers/{user_id}/profiles/{profile_id}/set-primary",
+    response_model=BillingProfileResponse,
+)
+async def set_primary_profile(
+    user_id: int,
+    profile_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+):
+    """Set a specific billing profile as the primary profile for an organizer."""
+    # Verify the profile belongs to the user
+    query = select(OrganizerBillingProfile).where(
+        OrganizerBillingProfile.id == profile_id,
+        OrganizerBillingProfile.user_id == user_id,
+    )
+    result = await db.execute(query)
+    profile = result.scalar_one_or_none()
+
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Billing profile not found or does not belong to this user",
+        )
+
+    # Clear is_primary on all other profiles for this user
+    update_query = (
+        select(OrganizerBillingProfile)
+        .where(
+            OrganizerBillingProfile.user_id == user_id,
+            OrganizerBillingProfile.is_primary.is_(True),
+        )
+    )
+    update_result = await db.execute(update_query)
+    for other_profile in update_result.scalars().all():
+        other_profile.is_primary = False
+
+    # Set this profile as primary
+    profile.is_primary = True
+    await db.commit()
+    await db.refresh(profile)
+
+    return profile_to_response(profile)
+
+
 # ============== Pricing Tiers ==============
 
 
@@ -430,15 +673,27 @@ async def list_pricing_tiers(
     current_user: UserAccount = Depends(AdminOnly),
 ):
     """
-    List pricing tiers for an organizer.
+    List pricing tiers for an organizer (uses primary billing profile).
     By default only shows active tiers, use include_history=true for all.
     """
-    # Get billing profile
+    # Get primary billing profile
     profile_query = select(OrganizerBillingProfile).where(
-        OrganizerBillingProfile.user_id == user_id
+        OrganizerBillingProfile.user_id == user_id,
+        OrganizerBillingProfile.is_primary.is_(True),
     )
     profile_result = await db.execute(profile_query)
     profile = profile_result.scalar_one_or_none()
+
+    # Fallback to oldest profile if no primary is set
+    if not profile:
+        profile_query = (
+            select(OrganizerBillingProfile)
+            .where(OrganizerBillingProfile.user_id == user_id)
+            .order_by(OrganizerBillingProfile.created_at)
+            .limit(1)
+        )
+        profile_result = await db.execute(profile_query)
+        profile = profile_result.scalar_one_or_none()
 
     if not profile:
         raise HTTPException(
@@ -481,13 +736,25 @@ async def create_pricing_tier(
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(AdminOnly),
 ):
-    """Create a new pricing tier for an organizer."""
-    # Get billing profile
+    """Create a new pricing tier for an organizer (uses primary billing profile)."""
+    # Get primary billing profile
     profile_query = select(OrganizerBillingProfile).where(
-        OrganizerBillingProfile.user_id == user_id
+        OrganizerBillingProfile.user_id == user_id,
+        OrganizerBillingProfile.is_primary.is_(True),
     )
     profile_result = await db.execute(profile_query)
     profile = profile_result.scalar_one_or_none()
+
+    # Fallback to oldest profile if no primary is set
+    if not profile:
+        profile_query = (
+            select(OrganizerBillingProfile)
+            .where(OrganizerBillingProfile.user_id == user_id)
+            .order_by(OrganizerBillingProfile.created_at)
+            .limit(1)
+        )
+        profile_result = await db.execute(profile_query)
+        profile = profile_result.scalar_one_or_none()
 
     if not profile:
         raise HTTPException(
@@ -594,6 +861,120 @@ async def update_pricing_tier(
     await db.refresh(new_tier, ["event_type"])
 
     return tier_to_response(new_tier)
+
+
+# ============== Per-Profile Pricing Endpoints ==============
+
+
+@router.get(
+    "/billing-profiles/{profile_id}/pricing",
+    response_model=PricingTierListResponse,
+)
+async def get_pricing_by_profile_id(
+    profile_id: int,
+    include_history: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+):
+    """
+    Get pricing tiers for a specific billing profile by profile ID.
+
+    Use this endpoint when an organizer has multiple billing profiles and you
+    need to view/configure pricing for a specific one (not just the primary).
+    """
+    # Verify profile exists
+    profile_query = select(OrganizerBillingProfile).where(
+        OrganizerBillingProfile.id == profile_id
+    )
+    profile_result = await db.execute(profile_query)
+    profile = profile_result.scalar_one_or_none()
+
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Billing profile not found",
+        )
+
+    # Get pricing tiers
+    query = (
+        select(PricingTier)
+        .options(
+            selectinload(PricingTier.event_type),
+            selectinload(PricingTier.currency),
+        )
+        .where(PricingTier.billing_profile_id == profile_id)
+    )
+
+    if not include_history:
+        query = query.where(PricingTier.effective_until.is_(None))
+
+    query = query.order_by(PricingTier.event_type_id, PricingTier.effective_from.desc())
+
+    result = await db.execute(query)
+    tiers = result.scalars().all()
+
+    return PricingTierListResponse(
+        items=[tier_to_response(t) for t in tiers],
+        total=len(tiers),
+    )
+
+
+@router.post(
+    "/billing-profiles/{profile_id}/pricing",
+    response_model=PricingTierResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_pricing_for_profile(
+    profile_id: int,
+    tier_data: PricingTierCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+):
+    """
+    Create a new pricing tier for a specific billing profile.
+
+    Use this endpoint when an organizer has multiple billing profiles and you
+    need to add pricing to a specific one (not just the primary).
+    """
+    # Verify profile exists
+    profile_query = select(OrganizerBillingProfile).where(
+        OrganizerBillingProfile.id == profile_id
+    )
+    profile_result = await db.execute(profile_query)
+    profile = profile_result.scalar_one_or_none()
+
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Billing profile not found",
+        )
+
+    # Check if active tier already exists for this event type on this profile
+    existing_query = select(PricingTier).where(
+        PricingTier.billing_profile_id == profile_id,
+        PricingTier.event_type_id == tier_data.event_type_id,
+        PricingTier.effective_until.is_(None),
+    )
+    existing_result = await db.execute(existing_query)
+    existing = existing_result.scalar_one_or_none()
+
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Active pricing tier already exists for this event type on this profile. Use update endpoint.",
+        )
+
+    # Create tier
+    tier = PricingTier(
+        billing_profile_id=profile_id,
+        created_by_id=current_user.id,
+        **tier_data.model_dump(),
+    )
+    db.add(tier)
+    await db.commit()
+    await db.refresh(tier, ["event_type", "currency"])
+
+    return tier_to_response(tier)
 
 
 # ============== Invoices ==============

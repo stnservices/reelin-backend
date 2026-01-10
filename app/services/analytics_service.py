@@ -71,6 +71,17 @@ class AnalyticsService:
         result = await db.execute(species_stmt)
         total_species = result.scalar() or 0
 
+        # Total and average length
+        length_stmt = (
+            select(func.sum(Catch.length), func.avg(Catch.length))
+            .where(Catch.user_id == user_id)
+            .where(Catch.status == CatchStatus.APPROVED.value)
+        )
+        result = await db.execute(length_stmt)
+        row = result.first()
+        total_length = float(row[0]) if row and row[0] else 0.0
+        avg_length = float(row[1]) if row and row[1] else 0.0
+
         # Last 10 catches
         last_catches_stmt = (
             select(Catch)
@@ -87,8 +98,8 @@ class AnalyticsService:
             "total_catches": total_catches,
             "total_events": total_events,
             "total_species": total_species,
-            "total_length_cm": 0.0,
-            "average_length_cm": 0.0,
+            "total_length_cm": total_length,
+            "average_length_cm": round(avg_length, 1),
             "biggest_catch": None,
             "personal_bests": [],
             "species_counts": [],

@@ -206,14 +206,19 @@ async def _handle_checkout_completed(db: AsyncSession, session, event_id: str):
 
     This is fired when a customer completes the Stripe Checkout for a subscription.
     """
+    logger.info(f"Processing checkout.session.completed: {session.id}, mode={session.mode}")
+
     # Only process subscription checkouts
     if session.mode != "subscription":
+        logger.info(f"Skipping non-subscription checkout: {session.id}")
         return
 
     subscription_id = session.subscription
     customer_id = session.customer
-    user_id_str = session.metadata.get("reelin_user_id")
-    plan_type = session.metadata.get("plan_type", "monthly")
+    user_id_str = session.metadata.get("reelin_user_id") if session.metadata else None
+    plan_type = session.metadata.get("plan_type", "monthly") if session.metadata else "monthly"
+
+    logger.info(f"Checkout metadata: user_id={user_id_str}, plan={plan_type}, sub={subscription_id}")
 
     if not user_id_str:
         logger.warning(f"Checkout completed without reelin_user_id metadata: {session.id}")
