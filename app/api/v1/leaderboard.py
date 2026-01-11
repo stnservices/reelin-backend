@@ -574,6 +574,66 @@ async def _get_individual_leaderboard(
     # Combine ranked entries + disqualified at bottom
     all_entries = user_scores[:limit] + disqualified_entries
 
+    # For completed events, include enrolled users with 0 catches
+    no_catch_entries = []
+    no_catch_count = 0
+    if event.status == "completed":
+        # Get all users who have activity (catches or disqualified)
+        users_with_activity = set(user_catches.keys()) | set(disqualified_catches.keys())
+
+        # Query enrolled users with APPROVED status who have no catches
+        enrolled_query = (
+            select(EventEnrollment)
+            .options(selectinload(EventEnrollment.user).selectinload(UserAccount.profile))
+            .where(
+                EventEnrollment.event_id == event.id,
+                EventEnrollment.status == EnrollmentStatus.APPROVED.value,
+            )
+        )
+        if users_with_activity:
+            enrolled_query = enrolled_query.where(
+                EventEnrollment.user_id.notin_(users_with_activity)
+            )
+
+        enrolled_result = await db.execute(enrolled_query)
+        enrolled_no_catches = enrolled_result.scalars().all()
+
+        if enrolled_no_catches:
+            # All 0-catch participants share the same rank = last_rank + 1
+            last_rank = user_scores[-1]["rank"] if user_scores else 0
+            shared_rank = last_rank + 1
+
+            for enrollment in enrolled_no_catches:
+                user = enrollment.user
+                if not user:
+                    continue
+
+                entry = {
+                    "user_id": user.id,
+                    "user_name": f"{user.profile.first_name} {user.profile.last_name}" if user.profile else f"User {user.id}",
+                    "avatar_url": user.profile.profile_picture_url if user.profile else None,
+                    "total_points": 0,
+                    "total_catches": 0,
+                    "counted_catches": 0,
+                    "species_count": 0,
+                    "species_bonus": 0,
+                    "penalty_points": 0,
+                    "best_catch_length": None,
+                    "best_catch_species": None,
+                    "best_catch_photo_url": None,
+                    "average_catch": 0,
+                    "first_catch_time": None,
+                    "last_upload_time": None,
+                    "rank": shared_rank,
+                    "is_disqualified": False,
+                    "has_no_catches": True,
+                    "is_following": user.id in following_user_ids,
+                }
+                no_catch_entries.append(entry)
+
+            no_catch_count = len(no_catch_entries)
+            all_entries = all_entries + no_catch_entries
+
     return {
         "event_id": event.id,
         "event_name": event.name,
@@ -583,6 +643,7 @@ async def _get_individual_leaderboard(
         "total_participants": len(user_scores),  # Only count ranked participants
         "total_catches": len(all_catches) - sum(len(c) for c in disqualified_catches.values()),  # Exclude DQ catches
         "disqualified_count": len(disqualified_entries),
+        "no_catch_participants_count": no_catch_count,
         "last_updated": last_catch_time.isoformat() if last_catch_time else None,
     }
 
