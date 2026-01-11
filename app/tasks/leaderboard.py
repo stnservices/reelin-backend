@@ -182,7 +182,7 @@ async def _async_recalculate(event_id: int) -> dict:
             )
         else:
             result = await _calculate_individual_leaderboard(
-                event, approved_catches, rejected_catches,
+                db, event, approved_catches, rejected_catches,
                 fish_scoring, bonus_points_config, scoring_code, top_x_overall,
                 disqualified_user_ids, disqualified_info
             )
@@ -263,6 +263,7 @@ async def _async_recalculate(event_id: int) -> dict:
 
 
 async def _calculate_individual_leaderboard(
+    db,
     event: Event,
     approved_catches: list[Catch],
     rejected_catches: list[Catch],
@@ -441,8 +442,70 @@ async def _calculate_individual_leaderboard(
             "disqualification_reason": dq_info.get("reason"),
         }
 
-    # Combine ranked entries + disqualified at bottom
-    all_entries = user_scores + disqualified_entries
+    # For completed events, include enrolled users with 0 catches
+    no_catch_entries = []
+    if event.is_completed:
+        # Get all users who have catches or are disqualified
+        users_with_activity = set(user_catches.keys()) | set(disqualified_catches.keys())
+
+        # Query enrolled users (APPROVED status) who have no catches
+        enrolled_query = (
+            select(EventEnrollment)
+            .options(selectinload(EventEnrollment.user).selectinload(UserAccount.profile))
+            .where(
+                EventEnrollment.event_id == event.id,
+                EventEnrollment.status == EnrollmentStatus.APPROVED.value,
+                EventEnrollment.user_id.notin_(users_with_activity) if users_with_activity else True,
+            )
+        )
+        enrolled_result = await db.execute(enrolled_query)
+        enrolled_no_catches = enrolled_result.scalars().all()
+
+        # Determine the shared rank for all users with 0 catches
+        last_rank = user_scores[-1]["rank"] if user_scores else 0
+        shared_rank = last_rank + 1
+
+        for enrollment in enrolled_no_catches:
+            user = enrollment.user
+            user_id = user.id
+            user_name = f"{user.profile.first_name} {user.profile.last_name}" if user.profile else f"User {user_id}"
+
+            entry = {
+                "user_id": user_id,
+                "user_name": user_name,
+                "avatar_url": user.profile.profile_picture_url if user.profile else None,
+                "total_points": 0,
+                "total_catches": 0,
+                "counted_catches": 0,
+                "species_count": 0,
+                "species_bonus": 0,
+                "best_catch_length": 0,
+                "average_catch": 0.0,
+                "first_catch_time": None,
+                "rank": shared_rank,
+                "is_disqualified": False,
+                "has_no_catches": True,
+            }
+            no_catch_entries.append(entry)
+
+            # Build user details for cache
+            user_details[user_id] = {
+                "user_id": user_id,
+                "user_name": user_name,
+                "is_team_event": False,
+                "total_catches": 0,
+                "scored_catches": 0,
+                "not_scored_catches": 0,
+                "total_points": 0,
+                "bonus_points": 0,
+                "species_count": 0,
+                "catches": [],
+                "rejected_catches": [],
+                "has_no_catches": True,
+            }
+
+    # Combine ranked entries + no-catch entries + disqualified at bottom
+    all_entries = user_scores + no_catch_entries + disqualified_entries
 
     # Build leaderboard response
     last_updated = max(
@@ -459,9 +522,10 @@ async def _calculate_individual_leaderboard(
         "is_team_event": False,
         "scoring_type": scoring_code,
         "entries": all_entries,
-        "total_participants": len(user_scores),  # Only count ranked participants
+        "total_participants": len(user_scores),  # Only count ranked participants with catches
         "total_catches": len(approved_catches) - dq_catch_count,  # Exclude DQ catches
         "disqualified_count": len(disqualified_entries),
+        "no_catch_participants_count": len(no_catch_entries),
         "last_updated": last_updated.isoformat() if last_updated else None,
     }
 
@@ -651,43 +715,7 @@ async def _calculate_team_leaderboard(
             "team_members": list(member_stats.values()),
         }
 
-    # Include teams with no catches
-    for team_id, info in team_info.items():
-        if team_id not in team_catches:
-            dq_members_in_team = [m for m in info["members"] if m.get("is_disqualified")]
-            dq_catches_excluded = disqualified_catch_count.get(team_id, 0)
-            team_scores.append({
-                "team_id": team_id,
-                "team_name": info["name"],
-                "team_logo_url": info["logo_url"],
-                "total_points": 0,
-                "total_catches": 0,
-                "counted_catches": 0,
-                "species_count": 0,
-                "species_bonus": 0,
-                "best_catch_length": 0,
-                "average_catch": 0.0,
-                "first_catch_time": None,
-                "member_count": len(info["members"]),
-                "disqualified_members_count": len(dq_members_in_team),
-                "disqualified_catches_excluded": dq_catches_excluded,
-            })
-            team_details[team_id] = {
-                "team_id": team_id,
-                "team_name": info["name"],
-                "is_team_event": True,
-                "total_catches": 0,
-                "scored_catches": 0,
-                "not_scored_catches": 0,
-                "total_points": 0,
-                "bonus_points": 0,
-                "species_count": 0,
-                "catches": [],
-                "rejected_catches": [],
-                "team_members": [],
-            }
-
-    # Sort with 6-level tiebreaker
+    # Sort teams with catches using 6-level tiebreaker
     team_scores.sort(key=lambda x: (
         -x["total_points"],
         -x["counted_catches"],
@@ -697,7 +725,7 @@ async def _calculate_team_leaderboard(
         x["first_catch_time"] or datetime.max,
     ))
 
-    # Assign ranks with tie handling
+    # Assign ranks with tie handling (only for teams with catches)
     current_rank = 1
     prev_entry = None
     for i, entry in enumerate(team_scores, start=1):
@@ -707,6 +735,53 @@ async def _calculate_team_leaderboard(
             current_rank = i
             entry["rank"] = current_rank
         prev_entry = entry
+
+    # For completed events, include teams with no catches at shared last rank
+    no_catch_teams = []
+    if event.is_completed:
+        last_rank = team_scores[-1]["rank"] if team_scores else 0
+        shared_rank = last_rank + 1
+
+        for team_id, info in team_info.items():
+            if team_id not in team_catches:
+                dq_members_in_team = [m for m in info["members"] if m.get("is_disqualified")]
+                dq_catches_excluded = disqualified_catch_count.get(team_id, 0)
+                no_catch_teams.append({
+                    "team_id": team_id,
+                    "team_name": info["name"],
+                    "team_logo_url": info["logo_url"],
+                    "total_points": 0,
+                    "total_catches": 0,
+                    "counted_catches": 0,
+                    "species_count": 0,
+                    "species_bonus": 0,
+                    "best_catch_length": 0,
+                    "average_catch": 0.0,
+                    "first_catch_time": None,
+                    "member_count": len(info["members"]),
+                    "disqualified_members_count": len(dq_members_in_team),
+                    "disqualified_catches_excluded": dq_catches_excluded,
+                    "rank": shared_rank,
+                    "has_no_catches": True,
+                })
+                team_details[team_id] = {
+                    "team_id": team_id,
+                    "team_name": info["name"],
+                    "is_team_event": True,
+                    "total_catches": 0,
+                    "scored_catches": 0,
+                    "not_scored_catches": 0,
+                    "total_points": 0,
+                    "bonus_points": 0,
+                    "species_count": 0,
+                    "catches": [],
+                    "rejected_catches": [],
+                    "team_members": [],
+                    "has_no_catches": True,
+                }
+
+    # Combine teams with catches + teams with no catches
+    all_team_entries = team_scores + no_catch_teams
 
     # Build leaderboard response
     last_updated = max(
@@ -723,11 +798,12 @@ async def _calculate_team_leaderboard(
         "event_name": event.name,
         "is_team_event": True,
         "scoring_type": scoring_code,
-        "entries": team_scores,
-        "total_teams": len(team_scores),
+        "entries": all_team_entries,
+        "total_teams": len(team_scores),  # Only count teams with catches as active participants
         "total_catches": len(approved_catches) - total_dq_catches,  # Exclude DQ catches
         "disqualified_members_count": total_dq_users,
         "disqualified_catches_excluded": total_dq_catches,
+        "no_catch_teams_count": len(no_catch_teams),
         "last_updated": last_updated.isoformat() if last_updated else None,
     }
 
