@@ -616,7 +616,6 @@ async def export_catches(
         "Length (cm)",
         "Weight (g)",
         "Points",
-        "Fish Rank",
         "Status",
         "Submitted At",
         "Validated At",
@@ -639,7 +638,6 @@ async def export_catches(
             catch.length or "",
             catch.weight or "",
             catch.points or 0,
-            catch.fish_rank or "",
             catch.status,
             catch.submitted_at.strftime("%Y-%m-%d %H:%M:%S") if catch.submitted_at else "",
             catch.validated_at.strftime("%Y-%m-%d %H:%M:%S") if catch.validated_at else "",
@@ -715,9 +713,9 @@ async def export_leaderboard(
         "Bonus Points",
         "Penalty Points",
         "Total Catches",
-        "Total Species",
-        "Biggest Catch (cm)",
-        "Average Catch (cm)",
+        "Species Count",
+        "Best Catch (cm)",
+        "Average Length (cm)",
         "First Catch Time",
     ])
 
@@ -734,10 +732,10 @@ async def export_leaderboard(
             entry.bonus_points or 0,
             entry.penalty_points or 0,
             entry.total_catches or 0,
-            entry.total_species or 0,
-            entry.biggest_catch or "",
-            round(entry.average_catch, 2) if entry.average_catch else "",
-            entry.first_catch_at.strftime("%Y-%m-%d %H:%M:%S") if entry.first_catch_at else "",
+            entry.species_count or 0,
+            entry.best_catch_length or "",
+            round(entry.average_length, 2) if entry.average_length else "",
+            entry.first_catch_time.strftime("%Y-%m-%d %H:%M:%S") if entry.first_catch_time else "",
         ])
 
     # Return as streaming response
