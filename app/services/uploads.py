@@ -436,10 +436,29 @@ async def validate_file_size(file: UploadFile, max_size: int = MAX_FILE_SIZE, fi
     return contents
 
 
-def generate_filename(original_filename: str, category: str = "general", ext: str = ".webp") -> str:
-    """Generate a unique filename with the given extension."""
+def generate_filename(
+    original_filename: str,
+    category: str = "general",
+    ext: str = ".webp",
+    entity_id: Optional[int] = None,
+) -> str:
+    """
+    Generate a unique filename with the given extension.
+
+    Args:
+        original_filename: Original uploaded filename
+        category: Category subdirectory (profiles, clubs, sponsors, etc.)
+        ext: File extension
+        entity_id: Optional entity ID (user_id, club_id, sponsor_id) for path organization
+
+    Returns:
+        Path like "category/entity_id/timestamp_uuid.ext" or "category/timestamp_uuid.ext"
+    """
     timestamp = datetime.utcnow().strftime("%Y%m%d")
     unique_id = uuid.uuid4().hex[:8]
+
+    if entity_id is not None:
+        return f"{category}/{entity_id}/{timestamp}_{unique_id}{ext}"
     return f"{category}/{timestamp}_{unique_id}{ext}"
 
 
@@ -489,16 +508,18 @@ def generate_poster_key(event_id: int, user_id: int, sha256_hash: str) -> str:
 async def save_upload(
     file: UploadFile,
     category: str = "general",
+    entity_id: Optional[int] = None,
 ) -> str:
     """
     Save an uploaded file with automatic resizing and optimization.
 
     Args:
         file: The uploaded file
-        category: Category subdirectory (fish, sponsors, events, clubs, profiles, general)
+        category: Category subdirectory (profiles, sponsors, clubs, events, fish, general)
+        entity_id: Optional entity ID for path organization (user_id, club_id, sponsor_id, etc.)
 
     Returns:
-        The URL path to access the file (e.g., /uploads/clubs/20251218_abc123.webp)
+        The URL path to access the file (e.g., /uploads/clubs/123/20251218_abc123.webp)
     """
     # Validate file
     validate_image_file(file)
@@ -507,8 +528,8 @@ async def save_upload(
     # Process image (resize and convert to WebP)
     processed_contents, ext = ImageProcessor.resize_image(contents, category)
 
-    # Generate unique filename
-    filename = generate_filename(file.filename or "image.jpg", category, ext)
+    # Generate unique filename with optional entity_id
+    filename = generate_filename(file.filename or "image.jpg", category, ext, entity_id)
 
     # Save using storage backend
     storage = get_storage()
@@ -520,6 +541,7 @@ async def save_upload(
 async def save_media_upload(
     file: UploadFile,
     category: str = "general",
+    entity_id: Optional[int] = None,
 ) -> str:
     """
     Save an uploaded media file (image or video).
@@ -529,7 +551,8 @@ async def save_media_upload(
 
     Args:
         file: The uploaded file
-        category: Category subdirectory (fish, catches, events, etc.)
+        category: Category subdirectory (profiles, sponsors, clubs, catches, events, etc.)
+        entity_id: Optional entity ID for path organization (user_id, club_id, sponsor_id, etc.)
 
     Returns:
         The URL path to access the file
@@ -543,7 +566,7 @@ async def save_media_upload(
 
         # Keep original extension for videos
         original_ext = Path(file.filename or "video.mp4").suffix.lower()
-        filename = generate_filename(file.filename or "video.mp4", category, original_ext)
+        filename = generate_filename(file.filename or "video.mp4", category, original_ext, entity_id)
 
         # Save using storage backend
         storage = get_storage()
@@ -557,8 +580,8 @@ async def save_media_upload(
         # Process image (resize and convert to WebP)
         processed_contents, ext = ImageProcessor.resize_image(contents, category)
 
-        # Generate unique filename
-        filename = generate_filename(file.filename or "image.jpg", category, ext)
+        # Generate unique filename with optional entity_id
+        filename = generate_filename(file.filename or "image.jpg", category, ext, entity_id)
 
         # Save using storage backend
         storage = get_storage()

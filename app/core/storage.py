@@ -193,6 +193,24 @@ class StorageService:
             max_size_mb=10,
         )
 
+    async def upload_club_image(self, file: UploadFile, club_id: int) -> str:
+        """Upload a club logo/image."""
+        return await self.upload_file(
+            file=file,
+            folder=f"clubs/{club_id}",
+            allowed_types=["image/jpeg", "image/png", "image/webp"],
+            max_size_mb=5,
+        )
+
+    async def upload_sponsor_image(self, file: UploadFile, sponsor_id: int) -> str:
+        """Upload a sponsor logo/image."""
+        return await self.upload_file(
+            file=file,
+            folder=f"sponsors/{sponsor_id}",
+            allowed_types=["image/jpeg", "image/png", "image/webp"],
+            max_size_mb=5,
+        )
+
 
 # Singleton instance
 storage_service = StorageService()
