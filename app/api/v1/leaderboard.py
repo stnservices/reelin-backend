@@ -98,13 +98,23 @@ class ScoringCalculator:
             # Top X catches globally regardless of species
             all_catches = sorted(catches, key=lambda c: c.length, reverse=True)
             for catch in all_catches[:self.top_x_overall]:
-                total_points += catch.length
+                # Apply under-min scoring rules
+                fish_config = self.fish_scoring.get(catch.fish_id)
+                min_length = fish_config.accountable_min_length if fish_config else 0
+                under_min_pts = fish_config.under_min_length_points if fish_config else 0
+
+                if catch.length >= min_length:
+                    points = catch.length
+                else:
+                    points = under_min_pts
+
+                total_points += points
                 counted_catches += 1
                 fish_id = catch.fish_id
                 if fish_id not in breakdown:
                     breakdown[fish_id] = {"catches_counted": 0, "points": 0}
                 breakdown[fish_id]["catches_counted"] += 1
-                breakdown[fish_id]["points"] += catch.length
+                breakdown[fish_id]["points"] += points
 
         else:
             # Default: top_x_by_species - Top N catches per species (slot-based)
@@ -192,18 +202,27 @@ async def _calculate_catch_details_for_fallback(
             is_scored = i < top_x_overall
             fish_config = fish_scoring.get(catch.fish_id)
             min_length = fish_config.accountable_min_length if fish_config else 0
+            under_min_pts = fish_config.under_min_length_points if fish_config else 0
             is_under_min = catch.length < min_length
+
+            # Calculate points with under-min scoring
+            if is_scored:
+                points = under_min_pts if is_under_min else catch.length
+            else:
+                points = 0
 
             details.append({
                 "catch_id": catch.id,
                 "fish_id": catch.fish_id,
                 "fish_name": catch.fish.name if catch.fish else "Unknown",
                 "length": catch.length,
-                "points": catch.length if is_scored else 0,
+                "points": points,
                 "photo_url": catch.photo_url,
                 "submitted_at": catch.submitted_at.isoformat() if catch.submitted_at else None,
                 "is_scored": is_scored,
                 "is_under_min": is_under_min,
+                "under_min_points": under_min_pts,
+                "min_length": min_length,
                 "rank_in_category": i + 1,
                 "slot_limit": top_x_overall,
                 "reason_not_scored": f"Exceeded slot limit ({i + 1} of {top_x_overall})" if not is_scored else None,
@@ -221,21 +240,30 @@ async def _calculate_catch_details_for_fallback(
             fish_config = fish_scoring.get(fish_id)
             slots = fish_config.accountable_catch_slots if fish_config else 5
             min_length = fish_config.accountable_min_length if fish_config else 0
+            under_min_pts = fish_config.under_min_length_points if fish_config else 0
 
             for i, catch in enumerate(species_catches):
                 is_scored = i < slots
                 is_under_min = catch.length < min_length
+
+                # Calculate points with under-min scoring
+                if is_scored:
+                    points = under_min_pts if is_under_min else catch.length
+                else:
+                    points = 0
 
                 details.append({
                     "catch_id": catch.id,
                     "fish_id": catch.fish_id,
                     "fish_name": catch.fish.name if catch.fish else "Unknown",
                     "length": catch.length,
-                    "points": catch.length if is_scored else 0,
+                    "points": points,
                     "photo_url": catch.photo_url,
                     "submitted_at": catch.submitted_at.isoformat() if catch.submitted_at else None,
                     "is_scored": is_scored,
                     "is_under_min": is_under_min,
+                    "under_min_points": under_min_pts,
+                    "min_length": min_length,
                     "rank_in_category": i + 1,
                     "slot_limit": slots,
                     "reason_not_scored": f"Exceeded slot limit ({i + 1} of {slots})" if not is_scored else None,
