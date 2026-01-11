@@ -3,7 +3,7 @@
 import logging
 import math
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import select, func, and_, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +20,11 @@ from app.models.statistics import UserEventTypeStats
 from app.models.user import UserAccount, UserProfile
 
 logger = logging.getLogger(__name__)
+
+
+def reason(key: str, **kwargs: Any) -> dict:
+    """Create a reason item with translation key and optional arguments."""
+    return {"key": key, "args": kwargs if kwargs else None}
 
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -93,20 +98,20 @@ class RecommendationsService:
         event_type_id: int,
         enrollment_count: int,
     ) -> dict:
-        """Generate ML insights and human-readable factors."""
-        # Confidence label
+        """Generate ML insights and translatable factors."""
+        # Confidence label (translation key)
         if ml_score >= 0.9:
-            confidence_label = "Very High"
+            confidence_label = "confidence_very_high"
         elif ml_score >= 0.7:
-            confidence_label = "High"
+            confidence_label = "confidence_high"
         elif ml_score >= 0.5:
-            confidence_label = "Moderate"
+            confidence_label = "confidence_moderate"
         elif ml_score >= 0.3:
-            confidence_label = "Low"
+            confidence_label = "confidence_low"
         else:
-            confidence_label = "Very Low"
+            confidence_label = "confidence_very_low"
 
-        # Generate factor explanations
+        # Generate factor explanations (as reason items)
         factors = []
 
         # Experience factors
@@ -115,38 +120,38 @@ class RecommendationsService:
         total_wins = user_stats.get("total_wins", 0)
 
         if total_events >= 10:
-            factors.append("Experienced competitor")
+            factors.append(reason("experienced_competitor"))
         elif total_events >= 5:
-            factors.append("Active participant")
+            factors.append(reason("active_participant"))
         elif total_events >= 1:
-            factors.append("Getting started")
+            factors.append(reason("getting_started"))
 
         if total_catches >= 50:
-            factors.append("Prolific angler")
+            factors.append(reason("prolific_angler"))
         elif total_catches >= 20:
-            factors.append("Skilled catcher")
+            factors.append(reason("skilled_catcher"))
 
         if total_wins >= 3:
-            factors.append("Multiple event winner")
+            factors.append(reason("multiple_event_winner"))
         elif total_wins >= 1:
-            factors.append("Previous winner")
+            factors.append(reason("previous_winner"))
 
         # Event type match
         if event_type_id in user_event_types:
-            factors.append("Matches your event history")
+            factors.append(reason("matches_event_history"))
 
         # Popularity
         if enrollment_count >= 30:
-            factors.append("Highly popular event")
+            factors.append(reason("highly_popular_event"))
         elif enrollment_count >= 15:
-            factors.append("Growing interest")
+            factors.append(reason("growing_interest"))
 
         # Ensure we have at least one factor
         if not factors:
             if ml_score >= 0.7:
-                factors.append("Based on your profile")
+                factors.append(reason("based_on_profile"))
             else:
-                factors.append("New opportunity")
+                factors.append(reason("new_opportunity"))
 
         return {
             "confidence": ml_score,
@@ -291,7 +296,7 @@ class RecommendationsService:
         user_event_types: set[int],
         user_species: set[int],
         is_pro: bool,
-    ) -> tuple[float, list[str], list[dict]]:
+    ) -> tuple[float, list[dict], list[dict]]:
         """
         Calculate recommendation score for an event.
         Returns (score, reasons, friends_enrolled) tuple.
@@ -309,13 +314,13 @@ class RecommendationsService:
                 distance_km = haversine_distance(user_lat, user_lng, event_lat, event_lng)
                 if distance_km <= 10:
                     score += 30
-                    reasons.append(f"Near you ({distance_km:.0f}km)")
+                    reasons.append(reason("near_you", distance=int(distance_km)))
                 elif distance_km <= 25:
                     score += 25
-                    reasons.append(f"Near you ({distance_km:.0f}km)")
+                    reasons.append(reason("near_you", distance=int(distance_km)))
                 elif distance_km <= 50:
                     score += 20
-                    reasons.append(f"{distance_km:.0f}km away")
+                    reasons.append(reason("distance_away", distance=int(distance_km)))
                 elif distance_km <= 100:
                     score += 10
 
@@ -324,7 +329,7 @@ class RecommendationsService:
             score += 25
             type_name = await self.get_event_type_name(event.event_type_id)
             if type_name:
-                reasons.append(f"You've done {type_name} before")
+                reasons.append(reason("event_type_match", type_name=type_name))
 
         # 3. Species match (max 20 points)
         # Get species from fish_scoring relationship if available
@@ -343,7 +348,7 @@ class RecommendationsService:
                 if name:
                     species_names.append(name)
             if species_names:
-                reasons.append(f"You've caught {', '.join(species_names)}")
+                reasons.append(reason("species_match", species=", ".join(species_names)))
 
         # 4. Friends joining (max 15 points) - Pro feature
         if is_pro:
@@ -353,15 +358,15 @@ class RecommendationsService:
             if friends_enrolled:
                 score += min(15, len(friends_enrolled) * 5)
                 if len(friends_enrolled) == 1:
-                    reasons.append(f"{friends_enrolled[0]['name']} is joining")
+                    reasons.append(reason("friend_joining", name=friends_enrolled[0]['name']))
                 else:
-                    reasons.append(f"{len(friends_enrolled)} friends joining")
+                    reasons.append(reason("friends_joining", count=len(friends_enrolled)))
 
         # 5. Popularity boost (max 10 points)
         enrollment_count = await self.get_event_enrollment_count(event.id)
         if enrollment_count >= 20:
             score += 10
-            reasons.append("Popular event")
+            reasons.append(reason("popular_event"))
         elif enrollment_count >= 10:
             score += 5
 
@@ -540,7 +545,7 @@ class RecommendationsService:
         user_species: set[int],
         user_stats: dict,
         is_pro: bool,
-    ) -> tuple[float, list[str], list[dict]]:
+    ) -> tuple[float, list[dict], list[dict]]:
         """
         Calculate recommendation score for an angler.
         Returns (score, reasons, mutual_friends) tuple.
@@ -563,9 +568,9 @@ class RecommendationsService:
         if shared_events:
             score += min(30, len(shared_events) * 10)
             if len(shared_events) == 1:
-                reasons.append(f"Met at {shared_events[0]['name']}")
+                reasons.append(reason("met_at_event", event_name=shared_events[0]['name']))
             else:
-                reasons.append(f"Attended {len(shared_events)} same events")
+                reasons.append(reason("shared_events", count=len(shared_events)))
 
         # 2. Mutual follows (max 25 points) - Pro feature shows details
         mutual_friends = await self.get_mutual_follows(user.id, candidate.id)
@@ -573,11 +578,11 @@ class RecommendationsService:
             score += min(25, len(mutual_friends) * 8)
             if is_pro:
                 if len(mutual_friends) == 1:
-                    reasons.append(f"Followed by {mutual_friends[0]['name']}")
+                    reasons.append(reason("followed_by", name=mutual_friends[0]['name']))
                 else:
-                    reasons.append(f"{len(mutual_friends)} mutual friends")
+                    reasons.append(reason("mutual_friends", count=len(mutual_friends)))
             else:
-                reasons.append("Mutual connections")
+                reasons.append(reason("mutual_connections"))
 
         # 3. Similar species caught (max 20 points)
         candidate_species = await self.get_user_caught_species(candidate.id)
@@ -591,7 +596,7 @@ class RecommendationsService:
                 if name:
                     species_names.append(name)
             if species_names:
-                reasons.append(f"Also catches {', '.join(species_names)}")
+                reasons.append(reason("also_catches", species=", ".join(species_names)))
 
         # 4. Location proximity (max 15 points)
         # Compare cities if available
@@ -602,13 +607,13 @@ class RecommendationsService:
             and user.profile.city_id == candidate_profile.city_id
         ):
             score += 15
-            reasons.append("Nearby angler")
+            reasons.append(reason("nearby_angler"))
 
         # 5. Similar experience level (max 10 points)
         candidate_stats = await self.get_user_catch_count(candidate.id)
         if abs(user_stats.get("catches", 0) - candidate_stats["catches"]) < 20:
             score += 10
-            reasons.append("Similar experience level")
+            reasons.append(reason("similar_experience"))
 
         return score, reasons, mutual_friends if is_pro else []
 

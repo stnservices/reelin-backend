@@ -20,6 +20,7 @@ from app.schemas.recommendation import (
     EventRecommendationsResponse,
     EventSummary,
     MLInsights,
+    ReasonItem,
     UserSummary,
 )
 from app.services.recommendations_service import RecommendationsService
@@ -51,7 +52,7 @@ def _event_to_summary(event) -> EventSummary:
         start_date=event.start_date,
         end_date=event.end_date,
         location_name=event.location.name if event.location else event.location_name,
-        cover_image_url=event.cover_image_url,
+        cover_image_url=event.image_url,
         event_type_name=event.event_type.name if event.event_type else None,
     )
 
@@ -106,11 +107,15 @@ async def get_event_recommendations(
         EventRecommendation(
             event=_event_to_summary(item["event"]),
             score=item["score"],
-            reasons=item["reasons"],
+            reasons=[ReasonItem(**r) for r in item["reasons"]],
             friends_enrolled=[
                 UserSummary(**f) for f in (item["friends_enrolled"] or [])
             ] if item.get("friends_enrolled") else None,
-            ml_insights=MLInsights(**item["ml_insights"]) if item.get("ml_insights") else None,
+            ml_insights=MLInsights(
+                confidence=item["ml_insights"]["confidence"],
+                confidence_label=item["ml_insights"]["confidence_label"],
+                factors=[ReasonItem(**f) for f in item["ml_insights"]["factors"]],
+            ) if item.get("ml_insights") else None,
         )
         for item in scored_events
     ]
@@ -224,7 +229,7 @@ async def get_angler_recommendations(
         AnglerRecommendation(
             user=UserSummary(**item["user"]),
             score=item["score"],
-            reasons=item["reasons"],
+            reasons=[ReasonItem(**r) for r in item["reasons"]],
             mutual_friends=[
                 UserSummary(**f) for f in (item["mutual_friends"] or [])
             ] if item.get("mutual_friends") else None,
