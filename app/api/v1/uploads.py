@@ -36,17 +36,29 @@ class UploadResponse(BaseModel):
 async def upload_image(
     file: UploadFile = File(...),
     category: UploadCategory = Query(default=UploadCategory.GENERAL),
+    entity_id: Optional[int] = Query(
+        default=None,
+        description="Entity ID for path organization (club_id, sponsor_id, event_id). For profiles, uses current user ID automatically.",
+    ),
     current_user: UserAccount = Depends(get_current_user),
 ):
     """
     Upload an image file.
 
     - **file**: Image file (JPG, PNG, or WebP, max 5MB)
-    - **category**: Category for organizing uploads (fish, sponsors, events, general)
+    - **category**: Category for organizing uploads (profiles, clubs, sponsors, events, fish, general)
+    - **entity_id**: Optional entity ID for path organization. For profiles category, automatically uses current user ID.
 
     Returns the URL path to access the uploaded file.
+    File paths follow the pattern: {category}/{entity_id}/{timestamp}_{uuid}.webp
     """
-    url = await save_upload(file, category.value)
+    # For profiles, always use current user's ID
+    if category == UploadCategory.PROFILES:
+        resolved_entity_id = current_user.id
+    else:
+        resolved_entity_id = entity_id
+
+    url = await save_upload(file, category.value, resolved_entity_id)
 
     return UploadResponse(
         url=url,
