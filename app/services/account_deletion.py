@@ -6,6 +6,12 @@ allowing users to recover their accounts before permanent anonymization.
 Two-stage deletion process:
 1. Schedule deletion (soft delete) - user can recover within grace period
 2. Permanent anonymization - after grace period expires, data is scrambled
+
+GDPR Article 17 Compliance:
+- Erasure within 30 days (grace period allows recovery)
+- Anonymization is accepted alternative to hard deletion
+- Historical data (catches, enrollments) kept with anonymized reference
+- User-owned content (waypoints, follows) is deleted
 """
 
 import logging
@@ -19,10 +25,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import UserAccount, UserProfile
 from app.models.pro import ProGrant, ProSubscription, ProAuditLog, ProAction, ProSettings
 from app.models.social_account import SocialAccount
-from app.models.notification import UserDeviceToken
+from app.models.notification import UserDeviceToken, Notification, UserNotificationPreferences
 from app.models.event import Event, EventStatus
+from app.models.waypoint import UserWaypoint
+from app.models.follow import UserFollow
+from app.models.recommendation import RecommendationDismissal
+from app.models.club import ClubMembership, Club
+from app.models.organizer_message import OrganizerMessage
+from app.models.admin_message import AdminMessage
+from app.models.minigame import MinigameScore
+from app.models.achievement import UserAchievement, UserAchievementProgress, UserStreakTracker
+from app.models.statistics import UserEventTypeStats
+from app.models.contestation import EventContestation
+from app.models.billing import OrganizerBillingProfile
 
 logger = logging.getLogger(__name__)
+
+# Anonymized display name for deleted users
+FALLEN_ANGLER_NAME = "Fallen Angler"
 
 # Default grace period if setting not found
 DEFAULT_GRACE_PERIOD_DAYS = 30
@@ -80,7 +100,21 @@ class AccountDeletionService:
             event_names = ", ".join([e.name for e in ongoing_events[:3]])
             constraints.append(f"You are the organizer of active events: {event_names}")
 
-        # TODO: Check if user is club owner with members (when clubs feature is complete)
+        # Check if user is club owner with members
+        club_query = select(Club).where(Club.owner_id == user_id)
+        club_result = await db.execute(club_query)
+        owned_clubs = club_result.scalars().all()
+
+        for club in owned_clubs:
+            # Check if club has other members
+            members_query = select(ClubMembership).where(
+                ClubMembership.club_id == club.id,
+                ClubMembership.user_id != user_id,
+                ClubMembership.status == "approved"
+            )
+            members_result = await db.execute(members_query)
+            if members_result.scalars().first():
+                constraints.append(f"You are the owner of club '{club.name}' with active members. Transfer ownership first.")
 
         return constraints
 
@@ -316,10 +350,17 @@ class AccountDeletionService:
         db: AsyncSession
     ) -> dict:
         """
-        Stage 2: Permanently anonymize user data.
+        Stage 2: Permanently anonymize user data (GDPR Article 17 compliant).
 
         This is irreversible and should only be called by the background job
         after the grace period has expired.
+
+        Data handling:
+        - PII (email, name, phone, etc.): Anonymized
+        - User-owned content (waypoints, follows): Deleted
+        - Historical data (catches, enrollments): Kept with "Fallen Angler" reference
+        - Subscriptions: Cancelled
+        - Media files: Avatar deleted, catch photos kept for event records
 
         Args:
             user_id: The user's ID
@@ -336,17 +377,27 @@ class AccountDeletionService:
             logger.warning(f"User {user_id} not found for anonymization")
             return {"message": "User not found"}
 
+        deletion_stats = {
+            "waypoints_deleted": 0,
+            "follows_deleted": 0,
+            "notifications_deleted": 0,
+            "messages_anonymized": 0,
+        }
+
         # Generate anonymized data
         anonymous_uuid = str(uuid.uuid4())[:8]
         anonymized_email = f"deleted_{user_id}_{anonymous_uuid}@deleted.reelin.app"
 
-        # Anonymize user account
+        # ============================================================
+        # 1. ANONYMIZE USER ACCOUNT
+        # ============================================================
+        old_avatar_url = user.avatar_url
         user.email = anonymized_email
         user.password_hash = None  # Clear password
         user.is_active = False
         user.avatar_url = None
 
-        # Cancel Stripe subscription if exists
+        # Cancel Stripe subscription if exists (PRO user check)
         if user.pro_stripe_subscription_id:
             try:
                 from app.services.stripe_subscription import stripe_subscription_service
@@ -362,15 +413,22 @@ class AccountDeletionService:
         user.is_pro = False
         user.pro_expires_at = None
         user.pro_plan_type = None
+        user.pro_stripe_customer_id = None
+        user.pro_stripe_subscription_id = None
+        user.pro_started_at = None
 
-        # Get and anonymize profile
+        # ============================================================
+        # 2. ANONYMIZE USER PROFILE - "Fallen Angler" 🎣
+        # ============================================================
         profile_query = select(UserProfile).where(UserProfile.user_id == user_id)
         profile_result = await db.execute(profile_query)
         profile = profile_result.scalar_one_or_none()
 
+        old_profile_picture_url = None
         if profile:
-            profile.first_name = "Deleted"
-            profile.last_name = "User"
+            old_profile_picture_url = profile.profile_picture_url
+            profile.first_name = FALLEN_ANGLER_NAME
+            profile.last_name = ""
             profile.phone = None
             profile.bio = None
             profile.profile_picture_url = None
@@ -380,8 +438,133 @@ class AccountDeletionService:
             profile.youtube_url = None
             profile.country_id = None
             profile.city_id = None
+            profile.gender = None
+            profile.is_profile_public = False
             profile.is_deleted = True
             profile.deleted_at = datetime.now(timezone.utc)
+
+        # ============================================================
+        # 3. DELETE USER-OWNED CONTENT
+        # ============================================================
+
+        # Delete waypoints (user's private fishing spots)
+        waypoint_result = await db.execute(
+            delete(UserWaypoint).where(UserWaypoint.user_id == user_id)
+        )
+        deletion_stats["waypoints_deleted"] = waypoint_result.rowcount
+
+        # Delete follows (both directions - who user follows and who follows user)
+        follows_deleted = 0
+        result1 = await db.execute(
+            delete(UserFollow).where(UserFollow.follower_id == user_id)
+        )
+        follows_deleted += result1.rowcount
+        result2 = await db.execute(
+            delete(UserFollow).where(UserFollow.following_id == user_id)
+        )
+        follows_deleted += result2.rowcount
+        deletion_stats["follows_deleted"] = follows_deleted
+
+        # Delete notifications
+        notif_result = await db.execute(
+            delete(Notification).where(Notification.user_id == user_id)
+        )
+        deletion_stats["notifications_deleted"] = notif_result.rowcount
+
+        # Delete notification preferences
+        await db.execute(
+            delete(UserNotificationPreferences).where(UserNotificationPreferences.user_id == user_id)
+        )
+
+        # Delete recommendation dismissals
+        await db.execute(
+            delete(RecommendationDismissal).where(RecommendationDismissal.user_id == user_id)
+        )
+
+        # Delete club memberships (but not owned clubs - those are handled by constraints)
+        await db.execute(
+            delete(ClubMembership).where(ClubMembership.user_id == user_id)
+        )
+
+        # Delete minigame scores
+        await db.execute(
+            delete(MinigameScore).where(MinigameScore.user_id == user_id)
+        )
+
+        # Delete achievements and progress
+        await db.execute(
+            delete(UserAchievement).where(UserAchievement.user_id == user_id)
+        )
+        await db.execute(
+            delete(UserAchievementProgress).where(UserAchievementProgress.user_id == user_id)
+        )
+        await db.execute(
+            delete(UserStreakTracker).where(UserStreakTracker.user_id == user_id)
+        )
+
+        # Delete user statistics
+        await db.execute(
+            delete(UserEventTypeStats).where(UserEventTypeStats.user_id == user_id)
+        )
+
+        # ============================================================
+        # 4. ANONYMIZE MESSAGES (keep for support history)
+        # ============================================================
+
+        # Anonymize organizer messages (clear sender snapshot PII)
+        org_msg_result = await db.execute(
+            update(OrganizerMessage)
+            .where(OrganizerMessage.sender_id == user_id)
+            .values(
+                sender_name=FALLEN_ANGLER_NAME,
+                sender_email=anonymized_email,
+                sender_phone=None
+            )
+        )
+        deletion_stats["messages_anonymized"] += org_msg_result.rowcount
+
+        # Anonymize admin messages (clear sender snapshot PII)
+        admin_msg_result = await db.execute(
+            update(AdminMessage)
+            .where(AdminMessage.sender_id == user_id)
+            .values(
+                sender_name=FALLEN_ANGLER_NAME,
+                sender_email=anonymized_email,
+                sender_phone=None
+            )
+        )
+        deletion_stats["messages_anonymized"] += admin_msg_result.rowcount
+
+        # ============================================================
+        # 5. ANONYMIZE CONTESTATIONS (keep for audit trail)
+        # ============================================================
+        await db.execute(
+            update(EventContestation)
+            .where(EventContestation.reporter_user_id == user_id)
+            .values(reporter_user_id=user_id)  # Keep ID but profile shows "Fallen Angler"
+        )
+
+        # ============================================================
+        # 6. ANONYMIZE BILLING PROFILES (keep for tax/legal requirements)
+        # ============================================================
+        await db.execute(
+            update(OrganizerBillingProfile)
+            .where(OrganizerBillingProfile.user_id == user_id)
+            .values(
+                legal_name=f"{FALLEN_ANGLER_NAME} (Deleted)",
+                billing_address=None,
+                billing_city=None,
+                billing_postal_code=None,
+                billing_email=anonymized_email,
+                billing_phone=None,
+                # Keep tax_id/CNP for legal compliance but mark as inactive
+                is_active=False
+            )
+        )
+
+        # ============================================================
+        # 7. REVOKE SUBSCRIPTIONS AND GRANTS
+        # ============================================================
 
         # Revoke all Pro grants
         await db.execute(
@@ -394,26 +577,64 @@ class AccountDeletionService:
             )
         )
 
+        # Mark Pro subscriptions as cancelled
+        await db.execute(
+            update(ProSubscription)
+            .where(ProSubscription.user_id == user_id)
+            .values(
+                status="cancelled",
+                ended_at=datetime.now(timezone.utc)
+            )
+        )
+
+        # ============================================================
+        # 8. DELETE AUTH-RELATED DATA
+        # ============================================================
+
         # Delete OAuth connections
         await db.execute(
             delete(SocialAccount).where(SocialAccount.user_id == user_id)
         )
 
-        # Delete device tokens (should already be done, but just in case)
+        # Delete device tokens (should already be done, but ensure cleanup)
         await db.execute(
             delete(UserDeviceToken).where(UserDeviceToken.user_id == user_id)
         )
 
-        # Log the action (using system user ID 0 or the user's own ID)
+        # ============================================================
+        # 9. DELETE MEDIA FILES FROM STORAGE
+        # ============================================================
+        try:
+            from app.core.storage import storage_service
+
+            # Delete avatar from storage
+            if old_avatar_url:
+                await storage_service.delete_file(old_avatar_url)
+                logger.info(f"Deleted avatar for user {user_id}")
+
+            # Delete profile picture from storage
+            if old_profile_picture_url and old_profile_picture_url != old_avatar_url:
+                await storage_service.delete_file(old_profile_picture_url)
+                logger.info(f"Deleted profile picture for user {user_id}")
+
+        except Exception as e:
+            # Don't fail anonymization if media deletion fails
+            logger.warning(f"Failed to delete media files for user {user_id}: {e}")
+
+        # ============================================================
+        # 10. AUDIT LOG
+        # ============================================================
         audit_log = ProAuditLog(
             admin_id=user_id,  # System action logged under user's ID
             user_id=user_id,
             action="account_permanently_deleted",
             details={
                 "anonymized_email": anonymized_email,
-                "original_deletion_scheduled_at": user.deletion_scheduled_at.isoformat() if user.deletion_scheduled_at else None
+                "display_name": FALLEN_ANGLER_NAME,
+                "original_deletion_scheduled_at": user.deletion_scheduled_at.isoformat() if user.deletion_scheduled_at else None,
+                "deletion_stats": deletion_stats
             },
-            reason="Grace period expired - automatic anonymization"
+            reason="Grace period expired - automatic GDPR anonymization"
         )
         db.add(audit_log)
 
@@ -422,12 +643,19 @@ class AccountDeletionService:
 
         await db.commit()
 
-        logger.info(f"Account permanently anonymized for user {user_id}")
+        logger.info(
+            f"Account permanently anonymized for user {user_id}: "
+            f"{deletion_stats['waypoints_deleted']} waypoints, "
+            f"{deletion_stats['follows_deleted']} follows, "
+            f"{deletion_stats['notifications_deleted']} notifications deleted"
+        )
 
         return {
             "message": "Account permanently anonymized",
             "anonymized_at": datetime.now(timezone.utc),
-            "anonymized_email": anonymized_email
+            "anonymized_email": anonymized_email,
+            "display_name": FALLEN_ANGLER_NAME,
+            "deletion_stats": deletion_stats
         }
 
     async def get_pending_deletion_users(
