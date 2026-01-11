@@ -149,6 +149,14 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
     }
     error_code = status_to_code.get(exc.status_code, ErrorCode.INTERNAL_ERROR)
 
+    # Handle dict details (e.g., account_pending_deletion) - return as-is for structured errors
+    if isinstance(exc.detail, dict):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=exc.detail,
+            headers=CORS_HEADERS,
+        )
+
     return JSONResponse(
         status_code=exc.status_code,
         content=format_error_response(
