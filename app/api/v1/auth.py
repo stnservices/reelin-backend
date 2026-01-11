@@ -394,6 +394,7 @@ async def get_current_user_info(
         is_active=current_user.is_active,
         is_verified=current_user.is_verified,
         is_pro=current_user.is_pro,
+        has_password=current_user.has_password,  # Important for social login users
         created_at=current_user.created_at,
         last_login=current_user.last_login,
         profile=profile_response,
