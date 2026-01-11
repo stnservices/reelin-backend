@@ -202,8 +202,8 @@ async def list_catches(
         enrollment_result = await db.execute(enrollment_query)
         enrollments = enrollment_result.scalars().all()
         for e in enrollments:
-            # Use enrollment id as the "enrollment number"
-            user_enrollment_map[e.user_id] = (e.id, e.draw_number)
+            # Map user to their enrollment_number and draw_number
+            user_enrollment_map[e.user_id] = (e.enrollment_number, e.draw_number)
 
     # Build response items with enrollment info
     items = []
