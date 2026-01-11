@@ -273,8 +273,14 @@ async def delete_my_account(
     After scheduling, user has a grace period (default 30 days) to recover
     their account by logging back in.
     """
-    # Validate confirmation - accept both DELETE (English) and STERGE (Romanian)
-    if request.confirmation.upper() not in ("DELETE", "STERGE"):
+    # Validate confirmation - accept:
+    # - Legacy: DELETE (English) or STERGE (Romanian)
+    # - New: Any 6-character alphanumeric code (validated by client)
+    confirmation = request.confirmation.upper().strip()
+    is_legacy_confirmation = confirmation in ("DELETE", "STERGE")
+    is_code_confirmation = len(confirmation) == 6 and confirmation.isalnum()
+
+    if not (is_legacy_confirmation or is_code_confirmation):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="confirmation_invalid"  # Generic code for frontend to show localized message
