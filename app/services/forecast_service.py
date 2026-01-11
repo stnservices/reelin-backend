@@ -353,16 +353,18 @@ class ForecastService:
         now = datetime.now()
         date_str = now.strftime("%Y%m%d")
 
-        # Check cache
+        # Check cache - always store full response and filter on return
         cache_key = self._cache_key(lat, lng, date_str)
         cached = await self._get_cached(cache_key)
         if cached:
+            # Return a copy to avoid modifying cached data
+            result = dict(cached)
             # Filter Pro features if needed
             if not include_hourly:
-                cached.pop("hourly_forecast", None)
+                result.pop("hourly_forecast", None)
             if days == 1:
-                cached.pop("daily_forecast", None)
-            return cached
+                result.pop("daily_forecast", None)
+            return result
 
         # Fetch data from APIs
         solunar = await self.fetch_solunar(lat, lng, date_str, timezone)
@@ -459,20 +461,24 @@ class ForecastService:
                 "weather_description": weather.get("weather", [{}])[0].get("description", ""),
             })
 
-        # Generate hourly forecast (Pro feature)
-        if include_hourly:
-            response["hourly_forecast"] = self._generate_hourly_forecast(
-                solunar, weather, now
-            )
+        # Always generate hourly forecast for caching (filter on return)
+        response["hourly_forecast"] = self._generate_hourly_forecast(
+            solunar, weather, now
+        )
 
-        # Generate daily forecast (Pro feature, days > 1)
-        if days > 1:
-            response["daily_forecast"] = await self._generate_daily_forecast(
-                lat, lng, days, timezone
-            )
+        # Always generate daily forecast for caching (5 days max)
+        response["daily_forecast"] = await self._generate_daily_forecast(
+            lat, lng, 5, timezone
+        )
 
-        # Cache the full response
+        # Cache the full response with all data
         await self._set_cached(cache_key, response)
+
+        # Filter Pro features if needed before returning
+        if not include_hourly:
+            response.pop("hourly_forecast", None)
+        if days == 1:
+            response.pop("daily_forecast", None)
 
         return response
 

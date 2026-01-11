@@ -3,11 +3,14 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import get_db
 from app.dependencies import get_current_user_optional
 from app.models import UserAccount
 from app.schemas.forecast import ForecastResponse
 from app.services.forecast_service import forecast_service
+from app.api.v1.pro import is_user_pro
 
 router = APIRouter(prefix="/forecast", tags=["Forecast"])
 
@@ -19,6 +22,7 @@ async def get_fishing_forecast(
     days: int = Query(1, ge=1, le=5, description="Forecast days (Pro: up to 5)"),
     timezone: int = Query(2, ge=-12, le=14, description="Timezone offset"),
     current_user: Optional[UserAccount] = Depends(get_current_user_optional),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get fishing forecast for a location.
@@ -37,12 +41,14 @@ async def get_fishing_forecast(
     - Cloud cover (overcast often better)
     - Temperature extremes
     """
-    # Check if user is Pro
-    is_pro = current_user and current_user.is_pro if current_user else False
+    # Check if user is Pro (using proper check that looks at subscriptions/grants)
+    user_is_pro = False
+    if current_user:
+        user_is_pro = await is_user_pro(current_user.id, db)
 
     # Limit features for non-Pro users
-    actual_days = days if is_pro else 1
-    include_hourly = is_pro
+    actual_days = days if user_is_pro else 1
+    include_hourly = user_is_pro
 
     forecast = await forecast_service.get_forecast(
         lat=lat,
@@ -53,7 +59,7 @@ async def get_fishing_forecast(
     )
 
     # Remove minor periods detail for free users (they can see major only)
-    if not is_pro:
+    if not user_is_pro:
         # Keep major periods, clear minor periods for free users
         forecast["minor_periods"] = []
 

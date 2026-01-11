@@ -1,9 +1,18 @@
 """Recommendation schemas for API responses."""
 
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
+
+
+class ReasonItem(BaseModel):
+    """A translatable reason with key and optional parameters."""
+
+    key: str = Field(description="Translation key (e.g., 'near_you', 'event_type_match')")
+    args: Optional[dict[str, Any]] = Field(
+        None, description="Parameters for the translation (e.g., {'distance': 10})"
+    )
 
 
 class UserSummary(BaseModel):
@@ -32,7 +41,7 @@ class MLInsights(BaseModel):
 
     confidence: float = Field(ge=0.0, le=1.0, description="ML confidence score (0-1)")
     confidence_label: str = Field(description="Human-readable confidence level")
-    factors: list[str] = Field(description="Key factors influencing the prediction")
+    factors: list[ReasonItem] = Field(description="Key factors influencing the prediction")
 
 
 class EventRecommendation(BaseModel):
@@ -40,7 +49,7 @@ class EventRecommendation(BaseModel):
 
     event: EventSummary
     score: float = Field(description="Recommendation score (0-100)")
-    reasons: list[str] = Field(description="Why this event is recommended")
+    reasons: list[ReasonItem] = Field(description="Why this event is recommended")
     friends_enrolled: Optional[list[UserSummary]] = Field(
         None, description="Friends joining this event (Pro only)"
     )
@@ -54,7 +63,7 @@ class AnglerRecommendation(BaseModel):
 
     user: UserSummary
     score: float = Field(description="Recommendation score (0-100)")
-    reasons: list[str] = Field(description="Why this angler is recommended")
+    reasons: list[ReasonItem] = Field(description="Why this angler is recommended")
     mutual_friends: Optional[list[UserSummary]] = Field(
         None, description="Mutual connections (Pro only)"
     )
