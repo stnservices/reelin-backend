@@ -206,6 +206,7 @@ class UserCreate(BaseModel):
     password: str = Field(..., min_length=8, max_length=100)
     first_name: str = Field(..., min_length=1, max_length=100)
     last_name: str = Field(..., min_length=1, max_length=100)
+    recaptcha_token: Optional[str] = None
 
     @field_validator("email")
     @classmethod
@@ -233,6 +234,7 @@ class UserLogin(BaseModel):
     email: EmailStr
     password: str
     is_mobile: bool = False  # For longer-lived mobile tokens
+    recaptcha_token: Optional[str] = None
 
     @field_validator("email")
     @classmethod
@@ -482,6 +484,7 @@ class PasswordReset(BaseModel):
     """Schema for password reset request."""
 
     email: EmailStr
+    recaptcha_token: Optional[str] = None
 
     @field_validator("email")
     @classmethod

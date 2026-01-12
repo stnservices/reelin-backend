@@ -82,6 +82,7 @@ class Settings(BaseSettings):
     # reCAPTCHA (Google reCAPTCHA v3)
     recaptcha_secret_key: str = ""
     recaptcha_min_score: float = 0.5  # Minimum score to consider valid (0.0-1.0)
+    recaptcha_required: bool = False  # Phase 1: false (optional), Phase 2: true (required)
 
     # Content Moderation (Profile Picture Safety)
     content_moderation_enabled: bool = True
