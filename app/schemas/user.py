@@ -267,6 +267,7 @@ class UserProfileResponse(BaseModel):
     bio: Optional[str] = None
     gender: Optional[str] = None
     profile_picture_url: Optional[str] = None
+    profile_picture_status: str = "approved"  # pending, approved, rejected
     roles: List[str] = []
     country_id: Optional[int] = None
     city_id: Optional[int] = None

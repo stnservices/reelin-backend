@@ -83,6 +83,15 @@ class Settings(BaseSettings):
     recaptcha_secret_key: str = ""
     recaptcha_min_score: float = 0.5  # Minimum score to consider valid (0.0-1.0)
 
+    # Content Moderation (Profile Picture Safety)
+    content_moderation_enabled: bool = True
+    google_cloud_credentials_path: str = ""  # Path to service account JSON file
+    google_cloud_credentials_json: str = ""  # Or JSON content as string (for Docker secrets)
+    # Azure AI Content Safety (fallback - 5,000 free/month)
+    azure_content_safety_endpoint: str = ""  # e.g., https://your-resource.cognitiveservices.azure.com
+    azure_content_safety_key: str = ""  # API key from Azure portal
+    profile_picture_rate_limit_hours: int = 24  # How often user can change profile picture
+
     # Contact form settings
     contact_admin_email: str = "contact@reelin.ro"
 
