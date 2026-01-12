@@ -2,8 +2,7 @@
 
 import os
 from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Optional, List
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel
@@ -131,17 +130,11 @@ async def upload_ml_model(
 ):
     """
     Upload a new ML model file.
-    Accepts .joblib files for sklearn models and .pt files for PyTorch models.
+    Accepts .joblib files for sklearn models.
     """
-    # Determine valid extension based on model type
-    if model_type == "fish_classifier":
-        if not file.filename.endswith(".pt"):
-            raise HTTPException(400, "Fish classifier models must be .pt files")
-        file_ext = ".pt"
-    else:
-        if not file.filename.endswith(".joblib"):
-            raise HTTPException(400, "Only .joblib files are supported for this model type")
-        file_ext = ".joblib"
+    if not file.filename.endswith(".joblib"):
+        raise HTTPException(400, "Only .joblib files are supported")
+    file_ext = ".joblib"
 
     # Create models directory if it doesn't exist
     models_dir = f"models/{model_type}"
@@ -384,78 +377,3 @@ async def get_model_types_summary(
     return {"active_models": summary}
 
 
-class FishClassifierStatusResponse(BaseModel):
-    """Response schema for fish classifier status."""
-
-    is_available: bool
-    model_path: Optional[str]
-    model_size_mb: Optional[float]
-    device: Optional[str]
-    num_classes: int
-    classes: List[str]
-    model_name: Optional[str]
-    trained_at: Optional[datetime]
-    test_accuracy: Optional[float]
-    top3_accuracy: Optional[float]
-
-
-@router.get("/fish-classifier/status", response_model=FishClassifierStatusResponse)
-async def get_fish_classifier_status(
-    current_user: UserAccount = Depends(AdminOnly),
-):
-    """Get the current status of the fish classifier model."""
-    try:
-        from app.services.fish_classifier_service import fish_classifier_service, PYTORCH_AVAILABLE
-
-        model_path = Path("models/fish_classifier/best_model.pt")
-        model_size_mb = None
-        model_name = None
-        trained_at = None
-        test_accuracy = None
-        top3_accuracy = None
-
-        if model_path.exists():
-            model_size_mb = model_path.stat().st_size / 1024 / 1024
-
-            # Try to load model metadata from checkpoint
-            if PYTORCH_AVAILABLE:
-                import torch
-                try:
-                    checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
-                    model_name = checkpoint.get("model_name")
-                    config = checkpoint.get("config", {})
-                    timestamp = checkpoint.get("timestamp")
-                    if timestamp:
-                        try:
-                            trained_at = datetime.fromisoformat(timestamp)
-                        except (ValueError, TypeError):
-                            pass
-                    test_accuracy = checkpoint.get("best_val_acc")
-                except Exception:
-                    pass
-
-        return FishClassifierStatusResponse(
-            is_available=fish_classifier_service.is_available,
-            model_path=str(model_path) if model_path.exists() else None,
-            model_size_mb=round(model_size_mb, 2) if model_size_mb else None,
-            device=str(fish_classifier_service.device) if fish_classifier_service.device else None,
-            num_classes=len(fish_classifier_service.class_mapping) if fish_classifier_service.class_mapping else 0,
-            classes=list(fish_classifier_service.class_mapping.keys()) if fish_classifier_service.class_mapping else [],
-            model_name=model_name,
-            trained_at=trained_at,
-            test_accuracy=test_accuracy,
-            top3_accuracy=top3_accuracy,
-        )
-    except ImportError:
-        return FishClassifierStatusResponse(
-            is_available=False,
-            model_path=None,
-            model_size_mb=None,
-            device=None,
-            num_classes=0,
-            classes=[],
-            model_name=None,
-            trained_at=None,
-            test_accuracy=None,
-            top3_accuracy=None,
-        )

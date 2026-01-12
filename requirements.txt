@@ -66,15 +66,6 @@ google-cloud-vision==3.7.2
 # Error Monitoring
 sentry-sdk[fastapi]==2.19.2
 
-# Machine Learning
-scikit-learn>=1.6.0
-joblib>=1.4.2
-numpy>=1.24.0
-
-# PyTorch for fish classification (CPU-only for Docker)
-torch>=2.0.0
-torchvision>=0.15.0
-
 # Development
 python-dotenv==1.0.1
 openpyxl>=3.1.0

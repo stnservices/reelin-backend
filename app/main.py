@@ -63,13 +63,6 @@ async def lifespan(app: FastAPI):
     # Start Redis Pub/Sub listener for SSE bridge (Celery -> FastAPI)
     await start_redis_listener()
 
-    # Initialize fish classifier model (if available)
-    try:
-        from app.services.fish_classifier_service import init_fish_classifier
-        init_fish_classifier()
-    except Exception as e:
-        logger.warning(f"Fish classifier initialization skipped: {e}")
-
     yield
 
     # Shutdown
