@@ -558,25 +558,6 @@ async def submit_catch_with_image(
                     "image/jpeg",
                 )
 
-            # Read image bytes for ML analysis BEFORE cleanup
-            # For images: use the processed WebP
-            # For videos: use the poster frame (JPG)
-            ml_image_bytes = None
-            if not metadata.is_video:
-                # Read processed image bytes for ML
-                try:
-                    with open(output_path, 'rb') as f:
-                        ml_image_bytes = f.read()
-                except Exception as e:
-                    logger.warning(f"Failed to read image bytes for ML: {e}")
-            elif poster_path:
-                # Read poster frame bytes for video ML
-                try:
-                    with open(poster_path, 'rb') as f:
-                        ml_image_bytes = f.read()
-                except Exception as e:
-                    logger.warning(f"Failed to read poster bytes for ML: {e}")
-
             # Clean up poster temp file
             try:
                 if poster_path:
@@ -616,9 +597,8 @@ async def submit_catch_with_image(
             await db.refresh(catch)
 
             # Queue AI analysis (non-blocking, runs in background)
-            # Pass image bytes directly to avoid re-downloading from S3
             try:
-                queue_catch_analysis(catch.id, delay_seconds=0, image_bytes=ml_image_bytes)
+                queue_catch_analysis(catch.id, delay_seconds=5)
             except Exception as e:
                 logger.warning(f"Failed to queue AI analysis for catch {catch.id}: {e}")
 
