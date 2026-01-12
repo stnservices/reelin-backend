@@ -44,8 +44,10 @@ from app.schemas.user import (
 from app.schemas.common import MessageResponse
 from app.services.email import get_email_service
 from app.services.account_deletion import account_deletion_service
+from app.api.v1.public import verify_recaptcha
 
 router = APIRouter()
+logger = __import__("logging").getLogger(__name__)
 settings = get_settings()
 
 
@@ -66,6 +68,22 @@ async def register(
     """
     Register a new user account.
     """
+    # Validate reCAPTCHA if required or if token provided
+    if settings.recaptcha_required or user_data.recaptcha_token:
+        if not user_data.recaptcha_token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "RECAPTCHA_MISSING", "message": "reCAPTCHA token required"},
+            )
+        is_valid, score = await verify_recaptcha(user_data.recaptcha_token)
+        if not is_valid:
+            logger.warning(f"reCAPTCHA failed: action=register, email={user_data.email}, score={score}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "RECAPTCHA_FAILED", "message": "Security verification failed", "score": score},
+            )
+        logger.info(f"reCAPTCHA passed: action=register, score={score}")
+
     # Check if email already exists
     existing_query = select(UserAccount).where(UserAccount.email == user_data.email)
     result = await db.execute(existing_query)
@@ -123,6 +141,22 @@ async def login(
     """
     Authenticate user and return JWT tokens.
     """
+    # Validate reCAPTCHA if required or if token provided
+    if settings.recaptcha_required or credentials.recaptcha_token:
+        if not credentials.recaptcha_token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "RECAPTCHA_MISSING", "message": "reCAPTCHA token required"},
+            )
+        is_valid, score = await verify_recaptcha(credentials.recaptcha_token)
+        if not is_valid:
+            logger.warning(f"reCAPTCHA failed: action=login, email={credentials.email}, score={score}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "RECAPTCHA_FAILED", "message": "Security verification failed", "score": score},
+            )
+        logger.info(f"reCAPTCHA passed: action=login, score={score}")
+
     # Find user by email
     query = (
         select(UserAccount)
@@ -527,6 +561,22 @@ async def forgot_password(
     Sends a password reset email with a secure link.
     Note: Always returns success to prevent email enumeration attacks.
     """
+    # Validate reCAPTCHA if required or if token provided
+    if settings.recaptcha_required or data.recaptcha_token:
+        if not data.recaptcha_token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "RECAPTCHA_MISSING", "message": "reCAPTCHA token required"},
+            )
+        is_valid, score = await verify_recaptcha(data.recaptcha_token)
+        if not is_valid:
+            logger.warning(f"reCAPTCHA failed: action=forgot_password, email={data.email}, score={score}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "RECAPTCHA_FAILED", "message": "Security verification failed", "score": score},
+            )
+        logger.info(f"reCAPTCHA passed: action=forgot_password, score={score}")
+
     # Find user by email
     query = (
         select(UserAccount)
