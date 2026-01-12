@@ -202,8 +202,9 @@ class Event(Base):
     allowed_media_type: Mapped[str] = mapped_column(String(20), default="both", nullable=False)  # "image", "video", "both"
     max_video_duration: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # seconds (3, 4, or 5)
 
-    # ML Auto-Validation Settings
-    use_ml_auto_validation: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # AI Analysis Settings
+    use_ai_analysis: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)  # Enable Google Vision analysis
+    use_ml_auto_validation: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)  # Auto-approve if confidence met
     ml_confidence_threshold: Mapped[float] = mapped_column(Float, default=0.85, nullable=False)  # 0.0 to 1.0
 
     # Participation fee (informational - payment handled offline)

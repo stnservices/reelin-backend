@@ -247,8 +247,9 @@ class EventCreate(BaseModel):
     allow_gallery_upload: bool = True
     allowed_media_type: str = Field("both", pattern="^(image|video|both)$")
     max_video_duration: Optional[int] = Field(None, ge=1)
-    # ML Auto-Validation settings
-    use_ml_auto_validation: bool = False
+    # AI Analysis settings
+    use_ai_analysis: bool = False  # Enable Google Vision analysis
+    use_ml_auto_validation: bool = False  # Auto-approve if confidence met
     ml_confidence_threshold: float = Field(0.85, ge=0.0, le=1.0)
     prizes: Optional[List[EventPrizeCreate]] = None
     scoring_rules: Optional[List[EventScoringRuleCreate]] = None
@@ -305,7 +306,8 @@ class EventUpdate(BaseModel):
     allow_gallery_upload: Optional[bool] = None
     allowed_media_type: Optional[str] = Field(None, pattern="^(image|video|both)$")
     max_video_duration: Optional[int] = Field(None, ge=1)
-    # ML Auto-Validation settings
+    # AI Analysis settings
+    use_ai_analysis: Optional[bool] = None
     use_ml_auto_validation: Optional[bool] = None
     ml_confidence_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
     image_url: Optional[str] = None
@@ -432,7 +434,8 @@ class EventResponse(BaseModel):
     allow_gallery_upload: bool = True
     allowed_media_type: str = "both"
     max_video_duration: Optional[int] = None
-    # ML Auto-Validation settings
+    # AI Analysis settings
+    use_ai_analysis: bool = False
     use_ml_auto_validation: bool = False
     ml_confidence_threshold: float = 0.85
     image_url: Optional[str] = None
