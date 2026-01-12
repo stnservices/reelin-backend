@@ -335,11 +335,12 @@ async def submit_catch(
     await db.commit()
     await db.refresh(catch)
 
-    # Queue AI analysis (non-blocking, runs in background)
-    try:
-        queue_catch_analysis(catch.id, delay_seconds=5)
-    except Exception as e:
-        logger.warning(f"Failed to queue AI analysis for catch {catch.id}: {e}")
+    # Queue AI analysis if enabled for this event (non-blocking, runs in background)
+    if event.use_ai_analysis:
+        try:
+            queue_catch_analysis(catch.id, delay_seconds=5)
+        except Exception as e:
+            logger.warning(f"Failed to queue AI analysis for catch {catch.id}: {e}")
 
     # Broadcast to validators that a new catch was submitted
     background_tasks.add_task(
@@ -596,11 +597,12 @@ async def submit_catch_with_image(
             await db.commit()
             await db.refresh(catch)
 
-            # Queue AI analysis (non-blocking, runs in background)
-            try:
-                queue_catch_analysis(catch.id, delay_seconds=5)
-            except Exception as e:
-                logger.warning(f"Failed to queue AI analysis for catch {catch.id}: {e}")
+            # Queue AI analysis if enabled for this event (non-blocking, runs in background)
+            if event.use_ai_analysis:
+                try:
+                    queue_catch_analysis(catch.id, delay_seconds=5)
+                except Exception as e:
+                    logger.warning(f"Failed to queue AI analysis for catch {catch.id}: {e}")
 
             # Broadcast to validators that a new catch was submitted
             if background_tasks:
