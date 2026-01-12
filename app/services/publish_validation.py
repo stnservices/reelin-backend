@@ -145,8 +145,11 @@ class PublishValidationService:
         if not has_name:
             missing_items.append(ValidationKeys.MISSING_NAME)
 
-        # Check location
-        has_location = bool(event.location and event.location.strip())
+        # Check location (either a FishingSpot relationship or location_name string)
+        has_location = bool(
+            event.location is not None
+            or (event.location_name and event.location_name.strip())
+        )
         checks["has_location"] = has_location
         if not has_location:
             missing_items.append(ValidationKeys.MISSING_LOCATION)

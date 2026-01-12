@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -69,6 +69,17 @@ class CatchAiAnalysis(Base):
     # Perceptual hash for image similarity detection
     perceptual_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
+    # Auto-validation fields
+    validation_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # 0.0-1.0 overall confidence
+    validation_recommendation: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # "approve", "reject", "review"
+    ai_insights: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Human-readable insights for validators
+    auto_validated: Mapped[bool] = mapped_column(
+        default=False, server_default="false", nullable=False
+    )
+    auto_validated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Processing info
     status: Mapped[str] = mapped_column(
         String(20),
@@ -119,6 +130,22 @@ class CatchAiAnalysis(Base):
     @property
     def is_failed(self) -> bool:
         return self.status == AiAnalysisStatus.FAILED.value
+
+    @property
+    def can_auto_validate(self) -> bool:
+        """Check if this analysis has high enough confidence for auto-validation."""
+        return (
+            self.is_complete
+            and self.validation_confidence is not None
+            and self.validation_recommendation == "approve"
+        )
+
+    def meets_threshold(self, threshold: float) -> bool:
+        """Check if validation confidence meets the given threshold."""
+        return (
+            self.validation_confidence is not None
+            and self.validation_confidence >= threshold
+        )
 
     def __repr__(self) -> str:
         return f"<CatchAiAnalysis(id={self.id}, catch_id={self.catch_id}, status={self.status})>"
