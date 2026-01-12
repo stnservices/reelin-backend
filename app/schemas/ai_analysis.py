@@ -51,6 +51,13 @@ class AiAnalysisResponse(BaseModel):
     # Summary
     overall_risk: str = "low"  # low, medium, high
 
+    # Validation (for ML auto-validation)
+    validation_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
+    validation_recommendation: Optional[str] = None  # approve, reject, review
+    ai_insights: Optional[str] = None  # Human-readable insights for validators
+    auto_validated: bool = False
+    auto_validated_at: Optional[datetime] = None
+
     # Processing info
     processed_at: Optional[datetime] = None
     processing_time_ms: Optional[int] = None
@@ -140,6 +147,11 @@ def build_ai_analysis_response(analysis) -> Optional[AiAnalysisResponse]:
         anomaly_flags=anomaly_flags,
         metadata_warnings=metadata_warnings,
         overall_risk=analysis.overall_risk,
+        validation_confidence=analysis.validation_confidence,
+        validation_recommendation=analysis.validation_recommendation,
+        ai_insights=analysis.ai_insights,
+        auto_validated=analysis.auto_validated,
+        auto_validated_at=analysis.auto_validated_at,
         processed_at=analysis.processed_at,
         processing_time_ms=analysis.processing_time_ms,
         error_message=analysis.error_message,

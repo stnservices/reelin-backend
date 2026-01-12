@@ -247,6 +247,9 @@ class EventCreate(BaseModel):
     allow_gallery_upload: bool = True
     allowed_media_type: str = Field("both", pattern="^(image|video|both)$")
     max_video_duration: Optional[int] = Field(None, ge=1)
+    # ML Auto-Validation settings
+    use_ml_auto_validation: bool = False
+    ml_confidence_threshold: float = Field(0.85, ge=0.0, le=1.0)
     prizes: Optional[List[EventPrizeCreate]] = None
     scoring_rules: Optional[List[EventScoringRuleCreate]] = None
     fish_scoring: Optional[List[EventFishScoringCreate]] = None  # Fish species config
@@ -302,6 +305,9 @@ class EventUpdate(BaseModel):
     allow_gallery_upload: Optional[bool] = None
     allowed_media_type: Optional[str] = Field(None, pattern="^(image|video|both)$")
     max_video_duration: Optional[int] = Field(None, ge=1)
+    # ML Auto-Validation settings
+    use_ml_auto_validation: Optional[bool] = None
+    ml_confidence_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
     image_url: Optional[str] = None
     status: Optional[EventStatus] = None
 
@@ -426,6 +432,9 @@ class EventResponse(BaseModel):
     allow_gallery_upload: bool = True
     allowed_media_type: str = "both"
     max_video_duration: Optional[int] = None
+    # ML Auto-Validation settings
+    use_ml_auto_validation: bool = False
+    ml_confidence_threshold: float = 0.85
     image_url: Optional[str] = None
     created_at: datetime
     published_at: Optional[datetime] = None

@@ -112,13 +112,14 @@ async def list_catches(
     user_roles = set(current_user.profile.roles or []) if current_user.profile else set()
     is_validator = bool(user_roles.intersection({"administrator", "validator", "organizer"}))
 
-    # Build base query
+    # Build base query - include AI analysis for validators
     query = (
         select(Catch)
         .options(
             selectinload(Catch.user).selectinload(UserAccount.profile),
             selectinload(Catch.fish),
             selectinload(Catch.validated_by),
+            selectinload(Catch.ai_analysis).selectinload(CatchAiAnalysis.detected_species),
         )
         .where(Catch.event_id == event_id)
     )
@@ -205,7 +206,7 @@ async def list_catches(
             # Map user to their enrollment_number and draw_number
             user_enrollment_map[e.user_id] = (e.enrollment_number, e.draw_number)
 
-    # Build response items with enrollment info
+    # Build response items with enrollment info and AI analysis for validators
     items = []
     for c in catches:
         enrollment_info = user_enrollment_map.get(c.user_id, (None, None))
@@ -213,6 +214,7 @@ async def list_catches(
             c,
             enrollment_number=enrollment_info[0],
             draw_number=enrollment_info[1],
+            include_ai_analysis=is_validator,
         ))
 
     return CatchListResponse(
@@ -555,11 +557,32 @@ async def submit_catch_with_image(
                     poster_path,
                     "image/jpeg",
                 )
-                # Clean up poster temp file
+
+            # Read image bytes for ML analysis BEFORE cleanup
+            # For images: use the processed WebP
+            # For videos: use the poster frame (JPG)
+            ml_image_bytes = None
+            if not metadata.is_video:
+                # Read processed image bytes for ML
                 try:
+                    with open(output_path, 'rb') as f:
+                        ml_image_bytes = f.read()
+                except Exception as e:
+                    logger.warning(f"Failed to read image bytes for ML: {e}")
+            elif poster_path:
+                # Read poster frame bytes for video ML
+                try:
+                    with open(poster_path, 'rb') as f:
+                        ml_image_bytes = f.read()
+                except Exception as e:
+                    logger.warning(f"Failed to read poster bytes for ML: {e}")
+
+            # Clean up poster temp file
+            try:
+                if poster_path:
                     os.unlink(poster_path)
-                except:
-                    pass
+            except:
+                pass
 
             # Clean up processed temp file
             try:
@@ -593,8 +616,9 @@ async def submit_catch_with_image(
             await db.refresh(catch)
 
             # Queue AI analysis (non-blocking, runs in background)
+            # Pass image bytes directly to avoid re-downloading from S3
             try:
-                queue_catch_analysis(catch.id, delay_seconds=10)  # Longer delay for uploads
+                queue_catch_analysis(catch.id, delay_seconds=0, image_bytes=ml_image_bytes)
             except Exception as e:
                 logger.warning(f"Failed to queue AI analysis for catch {catch.id}: {e}")
 

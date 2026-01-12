@@ -1687,7 +1687,15 @@ async def add_fish_scoring(
     )
     db.add(fish_scoring)
     await db.commit()
-    await db.refresh(fish_scoring, ["fish"])
+
+    # Re-fetch with proper eager loading to avoid lazy loading issues
+    query = (
+        select(EventFishScoring)
+        .options(selectinload(EventFishScoring.fish))
+        .where(EventFishScoring.id == fish_scoring.id)
+    )
+    result = await db.execute(query)
+    fish_scoring = result.scalar_one()
 
     return fish_scoring
 
@@ -1741,7 +1749,15 @@ async def update_fish_scoring(
         setattr(fish_scoring, field, value)
 
     await db.commit()
-    await db.refresh(fish_scoring, ["fish"])
+
+    # Re-fetch with proper eager loading to avoid lazy loading issues
+    query = (
+        select(EventFishScoring)
+        .options(selectinload(EventFishScoring.fish))
+        .where(EventFishScoring.id == scoring_id)
+    )
+    result = await db.execute(query)
+    fish_scoring = result.scalar_one()
 
     return fish_scoring
 
