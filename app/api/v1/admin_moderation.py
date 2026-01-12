@@ -41,6 +41,11 @@ class ModerationLogResponse(BaseModel):
     error_message: Optional[str] = None
     created_at: datetime
     processed_at: Optional[datetime] = None
+    # Enhanced detection fields
+    detected_labels: Optional[list[str]] = None
+    detected_text: Optional[str] = None
+    offensive_labels_found: Optional[list[str]] = None
+    offensive_text_found: Optional[list[str]] = None
 
 
 class ModerationLogListResponse(BaseModel):
@@ -135,6 +140,10 @@ async def list_moderation_logs(
                 error_message=log.error_message,
                 created_at=log.created_at,
                 processed_at=log.processed_at,
+                detected_labels=log.detected_labels,
+                detected_text=log.detected_text,
+                offensive_labels_found=log.offensive_labels_found,
+                offensive_text_found=log.offensive_text_found,
             )
         )
 
@@ -204,6 +213,10 @@ async def list_rejected_profile_pictures(
                 error_message=log.error_message,
                 created_at=log.created_at,
                 processed_at=log.processed_at,
+                detected_labels=log.detected_labels,
+                detected_text=log.detected_text,
+                offensive_labels_found=log.offensive_labels_found,
+                offensive_text_found=log.offensive_text_found,
             )
         )
 
@@ -274,6 +287,10 @@ async def get_user_moderation_history(
                 error_message=log.error_message,
                 created_at=log.created_at,
                 processed_at=log.processed_at,
+                detected_labels=log.detected_labels,
+                detected_text=log.detected_text,
+                offensive_labels_found=log.offensive_labels_found,
+                offensive_text_found=log.offensive_text_found,
             )
         )
 

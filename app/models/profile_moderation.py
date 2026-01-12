@@ -27,6 +27,8 @@ class RejectionReason(str, Enum):
     ADULT_CONTENT = "adult_content"
     VIOLENT_CONTENT = "violent_content"
     INAPPROPRIATE_CONTENT = "inappropriate_content"
+    OFFENSIVE_GESTURE = "offensive_gesture"
+    OFFENSIVE_TEXT = "offensive_text"
     API_ERROR = "api_error"
 
 
@@ -71,6 +73,12 @@ class ProfilePictureModeration(Base):
     processing_time_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     raw_response: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
+    # Enhanced detection results (labels, OCR text)
+    detected_labels: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    detected_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    offensive_labels_found: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    offensive_text_found: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(

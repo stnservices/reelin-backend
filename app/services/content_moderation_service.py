@@ -2,16 +2,22 @@
 
 Primary: Google Cloud Vision Safe Search API (1,000 free/month)
 Fallback: Azure AI Content Safety (5,000 free/month)
+
+Enhanced detection includes:
+- Safe Search (adult, violence, racy)
+- Label Detection (offensive gestures like middle finger)
+- Text Detection (hate speech, offensive words)
 """
 
 import base64
 import json
 import logging
 import os
+import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Optional
+from typing import Optional, List, Set
 
 import httpx
 import requests
@@ -19,6 +25,65 @@ import requests
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Offensive labels to reject (detected via Label Detection)
+OFFENSIVE_LABELS = {
+    "middle finger",
+    "obscene gesture",
+    "rude gesture",
+    "offensive gesture",
+    "fuck",
+    "flipping off",
+    "the finger",
+    "bird gesture",
+}
+
+# Offensive text patterns to reject (detected via OCR)
+# Case-insensitive matching
+OFFENSIVE_TEXT_PATTERNS = [
+    # English offensive words
+    r"\bracis[tm]\b",  # racism, racist
+    r"\bnigger\b",
+    r"\bnigga\b",
+    r"\bfaggot\b",
+    r"\bretard\b",
+    r"\bkike\b",
+    r"\bspic\b",
+    r"\bchink\b",
+    r"\bgook\b",
+    r"\bwetback\b",
+    r"\bcunt\b",
+    r"\bslut\b",
+    r"\bwhore\b",
+    r"\bnazi\b",
+    r"\bhitler\b",
+    r"\bswastika\b",
+    r"\bkkk\b",
+    r"\bwhite\s*power\b",
+    r"\bheil\b",
+    r"\bsieg\s*heil\b",
+    r"\bfuck\s*(you|off|this)\b",
+    r"\bdie\b",
+    r"\bkill\s*(yourself|jews|blacks|whites)\b",
+    # Romanian offensive words
+    r"\bmuie\b",
+    r"\bmui3\b",  # leet speak variation
+    r"\bpula\b",
+    r"\bpwla\b",  # leet speak variation
+    r"\bsugi\b",
+    r"\bcur\b",
+    r"\bfut\b",
+    r"\blingi\b",
+    r"\bcacat\b",
+    r"\bpizdă\b",
+    r"\bpizda\b",
+    r"\bcurva\b",
+    r"\bcoaie\b",
+    r"\blabă\b",
+    r"\blaba\b",
+    r"\bfutut\b",
+    r"\bsugeti\b",
+]
 
 
 class SafeSearchLikelihood(IntEnum):
@@ -57,6 +122,10 @@ class ModerationResult:
     processing_time_ms: int = 0
     provider: str = "unknown"
     error_message: Optional[str] = None
+    detected_labels: List[str] = field(default_factory=list)
+    detected_text: Optional[str] = None
+    offensive_labels_found: List[str] = field(default_factory=list)
+    offensive_text_found: List[str] = field(default_factory=list)
 
 
 class ContentModerationService:
@@ -105,9 +174,35 @@ class ContentModerationService:
                 logger.error(f"Failed to initialize Vision client: {e}")
         return self._vision_client
 
+    def _check_offensive_labels(self, labels: List[str]) -> List[str]:
+        """Check if any labels match offensive patterns."""
+        offensive_found = []
+        for label in labels:
+            label_lower = label.lower()
+            for offensive in OFFENSIVE_LABELS:
+                if offensive in label_lower:
+                    offensive_found.append(label)
+                    break
+        return offensive_found
+
+    def _check_offensive_text(self, text: str) -> List[str]:
+        """Check if detected text contains offensive content."""
+        offensive_found = []
+        text_lower = text.lower()
+        for pattern in OFFENSIVE_TEXT_PATTERNS:
+            matches = re.findall(pattern, text_lower, re.IGNORECASE)
+            if matches:
+                offensive_found.extend(matches)
+        return list(set(offensive_found))  # Remove duplicates
+
     def _google_vision_moderate_sync(self, image_url: str) -> ModerationResult:
         """
-        Use Google Cloud Vision Safe Search API with service account (synchronous).
+        Use Google Cloud Vision API with service account (synchronous).
+
+        Performs three checks in a single API call:
+        1. Safe Search - adult, violence, racy content
+        2. Label Detection - offensive gestures (middle finger, etc.)
+        3. Text Detection - hate speech, offensive words
         """
         from google.cloud import vision
 
@@ -117,19 +212,38 @@ class ContentModerationService:
         image = vision.Image()
         image.source.image_uri = image_url
 
-        response = client.safe_search_detection(image=image)
+        # Request multiple features in a single API call
+        features = [
+            vision.Feature(type_=vision.Feature.Type.SAFE_SEARCH_DETECTION),
+            vision.Feature(type_=vision.Feature.Type.LABEL_DETECTION, max_results=20),
+            vision.Feature(type_=vision.Feature.Type.TEXT_DETECTION),
+        ]
+
+        request = vision.AnnotateImageRequest(image=image, features=features)
+        response = client.annotate_image(request=request)
 
         if response.error.message:
             raise Exception(response.error.message)
 
+        # 1. Process Safe Search results
         safe_search = response.safe_search_annotation
-
-        # Convert enum values to integers (0-5)
         adult_score = int(safe_search.adult)
         violence_score = int(safe_search.violence)
         racy_score = int(safe_search.racy)
 
-        # Check rejection thresholds
+        # 2. Process Label Detection results
+        detected_labels = [label.description for label in response.label_annotations]
+        offensive_labels = self._check_offensive_labels(detected_labels)
+
+        # 3. Process Text Detection results
+        detected_text = ""
+        offensive_text = []
+        if response.text_annotations:
+            # First annotation contains the full text
+            detected_text = response.text_annotations[0].description
+            offensive_text = self._check_offensive_text(detected_text)
+
+        # Determine rejection reason
         rejection_reason = None
         if adult_score >= REJECTION_THRESHOLDS["adult"]:
             rejection_reason = "adult_content"
@@ -137,10 +251,16 @@ class ContentModerationService:
             rejection_reason = "violent_content"
         elif racy_score >= REJECTION_THRESHOLDS["racy"]:
             rejection_reason = "inappropriate_content"
+        elif offensive_labels:
+            rejection_reason = "offensive_gesture"
+        elif offensive_text:
+            rejection_reason = "offensive_text"
 
         logger.info(
             f"Google Vision result: adult={adult_score}, violence={violence_score}, "
-            f"racy={racy_score}, rejected={rejection_reason is not None}"
+            f"racy={racy_score}, labels={len(detected_labels)}, "
+            f"offensive_labels={offensive_labels}, offensive_text={offensive_text}, "
+            f"rejected={rejection_reason is not None}"
         )
 
         return ModerationResult(
@@ -155,8 +275,14 @@ class ContentModerationService:
                 "racy": racy_score,
                 "spoof": int(safe_search.spoof),
                 "medical": int(safe_search.medical),
+                "labels": detected_labels[:10],  # Store top 10 labels
+                "text_detected": bool(detected_text),
             },
             provider="google_vision",
+            detected_labels=detected_labels,
+            detected_text=detected_text[:500] if detected_text else None,  # Limit text length
+            offensive_labels_found=offensive_labels,
+            offensive_text_found=offensive_text,
         )
 
     def _azure_content_safety_sync(self, image_url: str) -> ModerationResult:

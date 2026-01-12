@@ -79,6 +79,11 @@ def _moderate_profile_picture_sync(user_id: int, image_url: str) -> dict:
             moderation.processing_time_ms = result.processing_time_ms
             moderation.raw_response = result.raw_response
             moderation.processed_at = datetime.now(timezone.utc)
+            # Enhanced detection fields
+            moderation.detected_labels = result.detected_labels if result.detected_labels else None
+            moderation.detected_text = result.detected_text
+            moderation.offensive_labels_found = result.offensive_labels_found if result.offensive_labels_found else None
+            moderation.offensive_text_found = result.offensive_text_found if result.offensive_text_found else None
 
             if result.approved:
                 # Update profile status to approved
