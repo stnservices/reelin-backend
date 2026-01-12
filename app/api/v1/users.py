@@ -165,6 +165,7 @@ async def get_my_profile(
         bio=profile.bio,
         gender=profile.gender,
         profile_picture_url=profile.profile_picture_url,
+        profile_picture_status=profile.profile_picture_status,
         roles=profile.roles or [],
         country_id=profile.country_id,
         city_id=profile.city_id,
@@ -212,8 +213,51 @@ async def update_my_profile(
                 detail="Social links are a PRO feature. Upgrade to PRO to add your social media profiles.",
             )
 
+    # Check if profile picture is being updated
+    old_picture_url = profile.profile_picture_url
+    new_picture_url = update_data.get("profile_picture_url")
+    is_profile_picture_changing = (
+        new_picture_url is not None
+        and new_picture_url != old_picture_url
+        and new_picture_url != ""
+    )
+
+    # Rate limit profile picture changes (1 per day)
+    if is_profile_picture_changing:
+        from datetime import datetime, timezone, timedelta
+        from app.config import get_settings
+        from app.models.profile_moderation import ProfilePictureModeration
+
+        settings = get_settings()
+        rate_limit_hours = settings.profile_picture_rate_limit_hours
+
+        # Check for recent profile picture changes
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=rate_limit_hours)
+        recent_change_query = (
+            select(ProfilePictureModeration)
+            .where(ProfilePictureModeration.user_id == current_user.id)
+            .where(ProfilePictureModeration.created_at > cutoff_time)
+            .limit(1)
+        )
+        recent_result = await db.execute(recent_change_query)
+        if recent_result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"You can only change your profile picture once every {rate_limit_hours} hours.",
+            )
+
     for field, value in update_data.items():
         setattr(profile, field, value)
+
+    # Queue content moderation if profile picture changed
+    if is_profile_picture_changing:
+        from app.config import get_settings
+        from app.tasks.content_moderation import queue_profile_picture_moderation
+
+        settings = get_settings()
+        if settings.content_moderation_enabled:
+            profile.profile_picture_status = "pending"
+            queue_profile_picture_moderation(current_user.id, new_picture_url)
 
     await db.commit()
     await db.refresh(profile, ["country", "city"])
@@ -238,6 +282,7 @@ async def update_my_profile(
         bio=profile.bio,
         gender=profile.gender,
         profile_picture_url=profile.profile_picture_url,
+        profile_picture_status=profile.profile_picture_status,
         roles=profile.roles or [],
         country_id=profile.country_id,
         city_id=profile.city_id,

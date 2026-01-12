@@ -92,6 +92,9 @@ class UserProfile(Base):
     bio: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     gender: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # male, female, other, prefer_not_to_say
     profile_picture_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    profile_picture_status: Mapped[str] = mapped_column(
+        String(20), default="approved", server_default="approved", nullable=False
+    )  # pending, approved, rejected
 
     # Roles stored as JSONB array: ["angler", "organizer", "validator", "administrator", "sponsor"]
     roles: Mapped[List[str]] = mapped_column(JSONB, default=list, nullable=False)

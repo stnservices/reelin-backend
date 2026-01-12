@@ -60,6 +60,9 @@ stripe==11.3.0
 # Push Notifications (Firebase Cloud Messaging)
 firebase-admin==6.5.0
 
+# Google Cloud Vision (Content Moderation)
+google-cloud-vision==3.7.2
+
 # Error Monitoring
 sentry-sdk[fastapi]==2.19.2
 
