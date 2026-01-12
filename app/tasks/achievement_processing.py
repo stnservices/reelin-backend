@@ -12,13 +12,23 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery_app
-from app.database import async_session_maker
+from app.database import create_celery_session_maker
 from app.models.event import Event
 from app.services.achievement_service import achievement_service
 from app.services.statistics_service import statistics_service
 from app.utils.event_formats import get_event_participant_ids
 
 logger = logging.getLogger(__name__)
+
+
+def _run_async(coro):
+    """Run async coroutine in Celery worker with fresh event loop."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 async def _process_format_event_achievements(
@@ -35,7 +45,8 @@ async def _process_format_event_achievements(
     Returns:
         Dict with processing results
     """
-    async with async_session_maker() as db:
+    session_maker = create_celery_session_maker()
+    async with session_maker() as db:
         try:
             # Get event with type for verification
             event_query = (
@@ -143,7 +154,7 @@ def process_format_event_achievements(event_id: int, format_code: str) -> dict:
         Dict with processing results
     """
     try:
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run_async(
             _process_format_event_achievements(event_id, format_code)
         )
         return result

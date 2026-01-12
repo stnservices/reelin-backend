@@ -16,7 +16,7 @@ from sqlalchemy import select, and_
 from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery_app
-from app.database import async_session_maker
+from app.database import create_celery_session_maker
 from app.services.achievement_service import achievement_service
 from app.services.statistics_service import statistics_service
 from app.models.event import Event, EventStatus
@@ -26,13 +26,24 @@ from app.models.achievement import AchievementDefinition
 logger = logging.getLogger(__name__)
 
 
+def _run_async(coro):
+    """Run async coroutine in Celery worker with fresh event loop."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 async def _process_catch_achievements(
     catch_id: int,
     event_id: int,
     user_id: int,
 ) -> List[int]:
     """Process achievements for a validated catch."""
-    async with async_session_maker() as db:
+    session_maker = create_celery_session_maker()
+    async with session_maker() as db:
         try:
             # Get catch details with fish info
             from app.models.fish import Fish
@@ -112,7 +123,8 @@ async def _process_event_completion_achievements(
     initial_rank: Optional[int] = None,
 ) -> List[int]:
     """Process achievements when an event completes."""
-    async with async_session_maker() as db:
+    session_maker = create_celery_session_maker()
+    async with session_maker() as db:
         try:
             # Build context
             context = {
@@ -144,7 +156,8 @@ async def _process_event_completion_achievements(
 
 async def _recalculate_user_stats(user_id: int) -> bool:
     """Recalculate all statistics for a user."""
-    async with async_session_maker() as db:
+    session_maker = create_celery_session_maker()
+    async with session_maker() as db:
         try:
             await statistics_service.recalculate_all_stats(db, user_id)
             await db.commit()
@@ -162,7 +175,8 @@ async def _send_achievement_notification(
 ) -> bool:
     """Send push notification for achievement unlock."""
     try:
-        async with async_session_maker() as db:
+        session_maker = create_celery_session_maker()
+        async with session_maker() as db:
             # Get achievement details
             achievement = await db.get(AchievementDefinition, achievement_id)
             if not achievement:
@@ -213,7 +227,7 @@ def process_achievements_for_catch(catch_id: int, event_id: int, user_id: int):
     Called when a catch status changes to 'approved'.
     """
     try:
-        awarded_ids = asyncio.get_event_loop().run_until_complete(
+        awarded_ids = _run_async(
             _process_catch_achievements(catch_id, event_id, user_id)
         )
 
@@ -241,7 +255,7 @@ def process_achievements_for_event_completion(
     Called for each participant when event status changes to 'completed'.
     """
     try:
-        awarded_ids = asyncio.get_event_loop().run_until_complete(
+        awarded_ids = _run_async(
             _process_event_completion_achievements(event_id, user_id, final_rank, initial_rank)
         )
 
@@ -264,9 +278,7 @@ def recalculate_user_statistics(user_id: int):
     Use for data corrections or after migrations.
     """
     try:
-        success = asyncio.get_event_loop().run_until_complete(
-            _recalculate_user_stats(user_id)
-        )
+        success = _run_async(_recalculate_user_stats(user_id))
         logger.info(f"Recalculated stats for user {user_id}: {'success' if success else 'failed'}")
         return success
 
@@ -283,7 +295,7 @@ def send_achievement_notification(
 ):
     """Send push notification for achievement unlock."""
     try:
-        success = asyncio.get_event_loop().run_until_complete(
+        success = _run_async(
             _send_achievement_notification(user_id, achievement_id, event_id)
         )
         return success
@@ -302,7 +314,8 @@ def batch_recalculate_all_users_statistics():
     from app.models.user import UserAccount
 
     async def _batch_recalculate():
-        async with async_session_maker() as db:
+        session_maker = create_celery_session_maker()
+        async with session_maker() as db:
             result = await db.execute(
                 select(UserAccount.id).where(UserAccount.is_active == True)
             )
@@ -315,7 +328,7 @@ def batch_recalculate_all_users_statistics():
         return len(user_ids)
 
     try:
-        count = asyncio.get_event_loop().run_until_complete(_batch_recalculate())
+        count = _run_async(_batch_recalculate())
         logger.info(f"Queued stats recalculation for {count} users")
         return count
 
