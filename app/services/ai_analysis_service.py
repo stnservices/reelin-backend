@@ -272,9 +272,9 @@ class AiAnalysisService:
                             alt_confidence = max(alt_confidence, score)
                             break
                 if alt_confidence > 0.3:
-                    stmt = select(Fish).where(Fish.name.ilike(f"%{species_name}%"))
+                    stmt = select(Fish).where(Fish.name.ilike(f"%{species_name}%")).limit(1)
                     result = await db.execute(stmt)
-                    alt_fish = result.scalar_one_or_none()
+                    alt_fish = result.scalars().first()
                     alternatives.append({
                         "species_name": species_name,
                         "species_id": alt_fish.id if alt_fish else None,
