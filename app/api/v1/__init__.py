@@ -40,6 +40,9 @@ from app.api.v1.admin_organizer_permissions import router as admin_organizer_per
 from app.api.v1.admin_partners import router as admin_partners_router
 from app.api.v1.admin_statistics import router as admin_statistics_router
 from app.api.v1.admin_moderation import router as admin_moderation_router
+from app.api.v1.admin_hall_of_fame import router as admin_hall_of_fame_router
+from app.api.v1.hall_of_fame import router as hall_of_fame_router
+from app.api.v1.rankings import router as rankings_router
 from app.api.v1.trout_area import router as trout_area_router
 from app.api.v1.ta_public import router as ta_public_router
 from app.api.v1.minigame import router as minigame_router
@@ -85,6 +88,9 @@ router.include_router(admin_organizer_permissions_router, prefix="/admin/organiz
 router.include_router(admin_partners_router, prefix="/admin/partners", tags=["Admin Partners"])
 router.include_router(admin_statistics_router, prefix="/admin/statistics", tags=["Admin Statistics"])
 router.include_router(admin_moderation_router, prefix="/admin/moderation", tags=["Admin Moderation"])
+router.include_router(admin_hall_of_fame_router, prefix="/admin/hall-of-fame", tags=["Admin Hall of Fame"])
+router.include_router(hall_of_fame_router, prefix="/hall-of-fame", tags=["Hall of Fame"])
+router.include_router(rankings_router, prefix="/rankings", tags=["Rankings"])
 router.include_router(trout_area_router, prefix="/ta", tags=["Trout Area (TA)"])
 router.include_router(ta_public_router, tags=["TA Public"])  # Public endpoints, prefix already in router
 router.include_router(minigame_router, prefix="/minigame", tags=["Minigame"])

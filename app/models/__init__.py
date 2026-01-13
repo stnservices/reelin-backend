@@ -51,6 +51,7 @@ from app.models.profile_moderation import ProfilePictureModeration, ModerationSt
 from app.models.ml_model import MLModel, MLPredictionLog
 from app.models.organizer_permissions import OrganizerEventTypeAccess, NationalEventOrganizer
 from app.models.partner import Partner
+from app.models.hall_of_fame import HallOfFameEntry
 
 # Minigame
 from app.models.minigame import MinigameScore
@@ -188,6 +189,8 @@ __all__ = [
     "NationalEventOrganizer",
     # Partner
     "Partner",
+    # Hall of Fame
+    "HallOfFameEntry",
     # Minigame
     "MinigameScore",
     # Trout Area (TA)
