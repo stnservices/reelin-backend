@@ -470,10 +470,8 @@ async def activate_account(
     blacklist_query = select(TokenBlacklist).where(TokenBlacklist.token_jti == token_jti)
     blacklist_result = await db.execute(blacklist_query)
     if blacklist_result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Verification token has already been used",
-        )
+        # Token was used - but account should be activated, return success with flag
+        return {"message": "Account is already activated", "already_activated": True}
 
     # Find the user
     user_query = select(UserAccount).where(UserAccount.id == user_id)
@@ -487,7 +485,7 @@ async def activate_account(
         )
 
     if user.is_verified:
-        return {"message": "Account is already activated"}
+        return {"message": "Account is already activated", "already_activated": True}
 
     # Activate the user
     user.is_verified = True
