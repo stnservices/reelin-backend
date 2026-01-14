@@ -46,6 +46,7 @@ async def get_hall_of_fame(
     for entry in entries:
         response = HallOfFamePublicResponse(
             id=entry.id,
+            user_id=entry.user_id,
             athlete_name=entry.athlete_name,
             display_name=entry.display_name,
             avatar_url=entry.avatar_url,
@@ -104,6 +105,7 @@ async def get_world_champions(
     return [
         HallOfFamePublicResponse(
             id=entry.id,
+            user_id=entry.user_id,
             athlete_name=entry.athlete_name,
             display_name=entry.display_name,
             avatar_url=entry.avatar_url,
@@ -153,6 +155,7 @@ async def get_national_champions(
     return [
         HallOfFamePublicResponse(
             id=entry.id,
+            user_id=entry.user_id,
             athlete_name=entry.athlete_name,
             display_name=entry.display_name,
             avatar_url=entry.avatar_url,

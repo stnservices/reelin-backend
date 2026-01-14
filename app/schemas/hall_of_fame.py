@@ -102,6 +102,7 @@ class HallOfFamePublicResponse(BaseModel):
     """Public response schema for Hall of Fame entry (mobile app)."""
 
     id: int
+    user_id: Optional[int] = None
     athlete_name: str
     display_name: str
     avatar_url: Optional[str] = None
