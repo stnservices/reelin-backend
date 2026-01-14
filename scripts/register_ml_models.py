@@ -58,6 +58,7 @@ MODELS_TO_REGISTER = [
         "scaler_file": "models/species_forecast/species_forecast_scaler.joblib",
         "features_file": "models/species_forecast/species_forecast_features.txt",
         "metadata_file": "models/species_forecast/species_forecast_metadata.json",
+        "metric_field": "accuracy",  # Use accuracy for multi-class classification
         "notes": "Multi-class species prediction based on location and season",
     },
     {
@@ -67,7 +68,9 @@ MODELS_TO_REGISTER = [
         "scaler_file": "models/analytics_predictions/attendance_scaler.joblib",
         "features_file": "models/analytics_predictions/attendance_features.txt",
         "metadata_file": "models/analytics_predictions/analytics_metadata.json",
-        "notes": "Predicts event attendance for planning",
+        "metadata_key": "attendance",  # Nested key in metadata
+        "metric_field": "r2",  # Use R2 as quality metric (will be converted to percentage)
+        "notes": "Predicts event attendance for planning (R² score)",
     },
     {
         "name": "Analytics - Performance",
@@ -76,6 +79,8 @@ MODELS_TO_REGISTER = [
         "scaler_file": "models/analytics_predictions/performance_scaler.joblib",
         "features_file": "models/analytics_predictions/performance_features.txt",
         "metadata_file": "models/analytics_predictions/analytics_metadata.json",
+        "metadata_key": "performance",  # Nested key in metadata
+        "metric_field": "accuracy",  # Use accuracy as quality metric
         "notes": "Predicts user finish bracket (winner/podium/top10/other)",
     },
 ]
@@ -106,6 +111,34 @@ async def register_model(db: AsyncSession, config: dict) -> bool:
         with open(config["metadata_file"]) as f:
             metadata = json.load(f)
 
+    # Handle nested metadata (for analytics models)
+    model_metadata = metadata
+    if config.get("metadata_key") and "models" in metadata:
+        model_metadata = metadata.get("models", {}).get(config["metadata_key"], {})
+
+    # Get the appropriate metric (roc_auc, accuracy, or custom field)
+    metric_field = config.get("metric_field", "roc_auc")
+    roc_auc_value = model_metadata.get(metric_field) or metadata.get("roc_auc")
+    cv_roc_auc_value = metadata.get("cv_roc_auc")
+
+    # Validate metric value
+    def clean_metric(val):
+        if val is None:
+            return None
+        try:
+            val = float(val)
+            if str(val).lower() == 'nan' or val != val:  # NaN check
+                return None
+            # For negative R2 values, treat as 0 (poor model)
+            if val < 0:
+                return 0.0
+            return val
+        except (ValueError, TypeError):
+            return None
+
+    roc_auc_value = clean_metric(roc_auc_value)
+    cv_roc_auc_value = clean_metric(cv_roc_auc_value)
+
     # Check for existing model with same name
     stmt = select(MLModel).where(MLModel.name == config["name"])
     result = await db.execute(stmt)
@@ -118,16 +151,18 @@ async def register_model(db: AsyncSession, config: dict) -> bool:
         except ValueError:
             pass
 
+    num_samples = model_metadata.get("num_samples") or metadata.get("num_samples")
+
     if existing:
         # Update existing model
         existing.file_path = config["model_file"]
         existing.file_size_bytes = file_size
         existing.trained_at = trained_at
-        existing.training_samples = metadata.get("num_samples")
-        existing.roc_auc = metadata.get("roc_auc") if metadata.get("roc_auc") and not str(metadata.get("roc_auc")).lower() == 'nan' else None
-        existing.cv_roc_auc = metadata.get("cv_roc_auc") if metadata.get("cv_roc_auc") and not str(metadata.get("cv_roc_auc")).lower() == 'nan' else None
+        existing.training_samples = num_samples
+        existing.roc_auc = roc_auc_value
+        existing.cv_roc_auc = cv_roc_auc_value
         existing.notes = config.get("notes", "")
-        print(f"  ✓ Updated: {config['name']}")
+        print(f"  ✓ Updated: {config['name']} (metric: {roc_auc_value})")
     else:
         # Create new model
         model = MLModel(
@@ -136,14 +171,14 @@ async def register_model(db: AsyncSession, config: dict) -> bool:
             file_path=config["model_file"],
             file_size_bytes=file_size,
             trained_at=trained_at,
-            training_samples=metadata.get("num_samples"),
-            roc_auc=metadata.get("roc_auc") if metadata.get("roc_auc") and not str(metadata.get("roc_auc")).lower() == 'nan' else None,
-            cv_roc_auc=metadata.get("cv_roc_auc") if metadata.get("cv_roc_auc") and not str(metadata.get("cv_roc_auc")).lower() == 'nan' else None,
+            training_samples=num_samples,
+            roc_auc=roc_auc_value,
+            cv_roc_auc=cv_roc_auc_value,
             notes=config.get("notes", ""),
             is_active=False,  # Don't auto-activate
         )
         db.add(model)
-        print(f"  ✓ Created: {config['name']}")
+        print(f"  ✓ Created: {config['name']} (metric: {roc_auc_value})")
 
     return True
 
