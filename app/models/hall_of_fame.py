@@ -74,15 +74,15 @@ class HallOfFameEntry(Base):
     @property
     def display_name(self) -> str:
         """Return the name to display (user's name or athlete_name)."""
-        if self.user:
-            return f"{self.user.first_name} {self.user.last_name}"
+        if self.user and self.user.profile:
+            return f"{self.user.profile.first_name} {self.user.profile.last_name}"
         return self.athlete_name
 
     @property
     def avatar_url(self) -> Optional[str]:
         """Return the avatar URL (user's avatar or athlete_avatar_url)."""
-        if self.user and self.user.avatar_url:
-            return self.user.avatar_url
+        if self.user and self.user.profile and self.user.profile.profile_picture_url:
+            return self.user.profile.profile_picture_url
         return self.athlete_avatar_url
 
     def __repr__(self) -> str:

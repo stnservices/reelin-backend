@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
 from app.database import get_db
 from app.models.user import UserAccount
@@ -36,8 +36,10 @@ async def get_all_hall_of_fame_entries(
 
     Admin only endpoint.
     """
-    # Base query
-    query = select(HallOfFameEntry).options(joinedload(HallOfFameEntry.user))
+    # Base query - load user with profile for name/avatar
+    query = select(HallOfFameEntry).options(
+        joinedload(HallOfFameEntry.user).selectinload(UserAccount.profile)
+    )
 
     # Apply filters
     if achievement_type:
@@ -98,10 +100,10 @@ async def create_hall_of_fame_entry(
     await db.commit()
     await db.refresh(entry)
 
-    # Reload with user relationship
+    # Reload with user relationship and profile
     result = await db.execute(
         select(HallOfFameEntry)
-        .options(joinedload(HallOfFameEntry.user))
+        .options(joinedload(HallOfFameEntry.user).selectinload(UserAccount.profile))
         .where(HallOfFameEntry.id == entry.id)
     )
     return result.scalar_one()
@@ -120,7 +122,7 @@ async def get_hall_of_fame_entry(
     """
     result = await db.execute(
         select(HallOfFameEntry)
-        .options(joinedload(HallOfFameEntry.user))
+        .options(joinedload(HallOfFameEntry.user).selectinload(UserAccount.profile))
         .where(HallOfFameEntry.id == entry_id)
     )
     entry = result.scalar_one_or_none()
@@ -169,10 +171,10 @@ async def update_hall_of_fame_entry(
 
     await db.commit()
 
-    # Reload with user relationship
+    # Reload with user relationship and profile
     result = await db.execute(
         select(HallOfFameEntry)
-        .options(joinedload(HallOfFameEntry.user))
+        .options(joinedload(HallOfFameEntry.user).selectinload(UserAccount.profile))
         .where(HallOfFameEntry.id == entry.id)
     )
     return result.scalar_one()
