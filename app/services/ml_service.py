@@ -12,6 +12,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ml_model import MLModel, MLPredictionLog
+from app.models.hall_of_fame import HallOfFameEntry
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +212,50 @@ class MLService:
         except Exception as e:
             logger.error(f"Failed to log prediction: {e}")
 
+    async def get_user_hall_of_fame_stats(self, user_id: int) -> dict:
+        """Get Hall of Fame statistics for a user."""
+        stmt = select(HallOfFameEntry).where(HallOfFameEntry.user_id == user_id)
+        result = await self.db.execute(stmt)
+        entries = result.scalars().all()
+
+        # Achievement type to tier mapping
+        ACHIEVEMENT_TIER = {
+            "world_champion": 1,
+            "national_champion": 2,
+            "world_podium": 3,
+            "national_podium": 4,
+        }
+
+        stats = {
+            "hof_entry_count": 0,
+            "hof_world_champion": 0,
+            "hof_national_champion": 0,
+            "hof_world_podium": 0,
+            "hof_national_podium": 0,
+            "hof_best_tier": 5,  # 5 = no hall of fame entries
+        }
+
+        if not entries:
+            return stats
+
+        stats["hof_entry_count"] = len(entries)
+
+        for entry in entries:
+            if entry.achievement_type == "world_champion":
+                stats["hof_world_champion"] += 1
+            elif entry.achievement_type == "national_champion":
+                stats["hof_national_champion"] += 1
+            elif entry.achievement_type == "world_podium":
+                stats["hof_world_podium"] += 1
+            elif entry.achievement_type == "national_podium":
+                stats["hof_national_podium"] += 1
+
+            # Track best tier
+            tier = ACHIEVEMENT_TIER.get(entry.achievement_type, 5)
+            stats["hof_best_tier"] = min(stats["hof_best_tier"], tier)
+
+        return stats
+
     async def build_event_features(
         self,
         user_stats: dict,
@@ -233,6 +278,76 @@ class MLService:
             "user_max_catch_cm": user_stats.get("largest_catch_cm", 0),
             "user_wins": user_stats.get("total_wins", 0),
             "user_podiums": user_stats.get("podium_finishes", 0),
+            "user_age_at_event": user_age_at_event,
+            "event_type_id": event_data.get("event_type_id", 1),
+            "event_day_of_week": event_data.get("day_of_week", 0),
+            "event_month": event_data.get("month", 1),
+            "event_enrollment_count": event_data.get("enrollment_count", 0),
+            "has_done_event_type": 1 if user_stats.get("has_done_event_type") else 0,
+            "friends_enrolled_count": event_data.get("friends_enrolled", 0),
+        }
+
+    async def build_event_features_v2(
+        self,
+        user_id: int,
+        user_stats: dict,
+        user_created_at: datetime,
+        event_data: dict,
+    ) -> dict:
+        """Build enhanced feature dict for v2 event recommendation prediction."""
+        # Get Hall of Fame stats
+        hof_stats = await self.get_user_hall_of_fame_stats(user_id)
+
+        # Calculate user age at event
+        user_age_at_event = 0
+        event_start = event_data.get("start_date")
+        if event_start and user_created_at:
+            if isinstance(event_start, datetime):
+                delta = event_start - user_created_at
+                user_age_at_event = max(0, delta.total_seconds() / 86400)
+
+        # Calculate derived features
+        total_events = user_stats.get("total_events", 0)
+        win_rate = user_stats.get("total_wins", 0) / total_events if total_events > 0 else 0
+        podium_rate = user_stats.get("podium_finishes", 0) / total_events if total_events > 0 else 0
+
+        # Days since last event
+        days_since_last = 365  # default if never participated
+        last_event_date = user_stats.get("last_event_date")
+        if last_event_date and event_start:
+            if isinstance(event_start, datetime) and isinstance(last_event_date, datetime):
+                delta = event_start - last_event_date
+                days_since_last = max(0, delta.total_seconds() / 86400)
+
+        return {
+            # User basic stats
+            "user_event_count": user_stats.get("total_events", 0),
+            "user_catch_count": user_stats.get("total_catches", 0),
+            "user_species_count": user_stats.get("unique_species_count", 0),
+            "user_max_catch_cm": user_stats.get("largest_catch_cm", 0),
+            "user_wins": user_stats.get("total_wins", 0),
+            "user_podiums": user_stats.get("podium_finishes", 0),
+
+            # Hall of Fame features
+            "hof_entry_count": hof_stats["hof_entry_count"],
+            "hof_world_champion": hof_stats["hof_world_champion"],
+            "hof_national_champion": hof_stats["hof_national_champion"],
+            "hof_world_podium": hof_stats["hof_world_podium"],
+            "hof_national_podium": hof_stats["hof_national_podium"],
+            "hof_best_tier": hof_stats["hof_best_tier"],
+
+            # Performance features
+            "win_rate": win_rate,
+            "podium_rate": podium_rate,
+            "avg_catch_length": user_stats.get("average_catch_length", 0),
+            "consecutive_events": user_stats.get("consecutive_events", 0),
+            "max_consecutive_events": user_stats.get("max_consecutive_events", 0),
+
+            # Activity features
+            "events_this_year": user_stats.get("total_events_this_year", 0),
+            "days_since_last_event": days_since_last,
+
+            # Context features
             "user_age_at_event": user_age_at_event,
             "event_type_id": event_data.get("event_type_id", 1),
             "event_day_of_week": event_data.get("day_of_week", 0),
