@@ -80,6 +80,12 @@ class RecommendationsService:
                 "largest_catch_cm": float(stats.largest_catch_cm or 0),
                 "total_wins": stats.total_wins,
                 "podium_finishes": stats.podium_finishes,
+                # Enhanced v2 stats
+                "average_catch_length": float(stats.average_catch_length or 0),
+                "consecutive_events": stats.consecutive_events,
+                "max_consecutive_events": stats.max_consecutive_events,
+                "total_events_this_year": stats.total_events_this_year,
+                "last_event_date": stats.last_event_date,
             }
         return {
             "total_events": 0,
@@ -88,6 +94,12 @@ class RecommendationsService:
             "largest_catch_cm": 0,
             "total_wins": 0,
             "podium_finishes": 0,
+            # Enhanced v2 stats
+            "average_catch_length": 0,
+            "consecutive_events": 0,
+            "max_consecutive_events": 0,
+            "total_events_this_year": 0,
+            "last_event_date": None,
         }
 
     def _get_ml_insights(
@@ -171,20 +183,38 @@ class RecommendationsService:
         """
         Get ML model prediction for event enrollment probability.
         Returns (score, insights) tuple. Both None if ML model is not available.
+
+        Automatically detects v1 vs v2 model based on loaded features.
         """
         try:
-            features = await self.ml_service.build_event_features(
-                user_stats=user_stats,
-                user_created_at=user.created_at,
-                event_data={
-                    "start_date": event.start_date,
-                    "event_type_id": event.event_type_id,
-                    "day_of_week": event.start_date.weekday() if event.start_date else 0,
-                    "month": event.start_date.month if event.start_date else 1,
-                    "enrollment_count": enrollment_count,
-                    "friends_enrolled": friends_count,
-                },
-            )
+            # Check which model version is loaded by looking at features
+            _, _, feature_names, _ = await self.ml_service.load_active_model("event_recommendations")
+
+            # Prepare event data
+            event_data = {
+                "start_date": event.start_date,
+                "event_type_id": event.event_type_id,
+                "day_of_week": event.start_date.weekday() if event.start_date else 0,
+                "month": event.start_date.month if event.start_date else 1,
+                "enrollment_count": enrollment_count,
+                "friends_enrolled": friends_count,
+            }
+
+            # Use v2 features if model has Hall of Fame features
+            if "hof_entry_count" in feature_names:
+                features = await self.ml_service.build_event_features_v2(
+                    user_id=user.id,
+                    user_stats=user_stats,
+                    user_created_at=user.created_at,
+                    event_data=event_data,
+                )
+            else:
+                features = await self.ml_service.build_event_features(
+                    user_stats=user_stats,
+                    user_created_at=user.created_at,
+                    event_data=event_data,
+                )
+
             features["has_done_event_type"] = 1 if event.event_type_id in user_event_types else 0
 
             score = await self.ml_service.predict_event_enrollment(
