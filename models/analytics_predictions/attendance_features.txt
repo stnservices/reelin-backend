@@ -1,10 +1,6 @@
-event_type_id
-day_of_week
-month
-is_weekend
+hist_avg_same_type
+hist_avg_all
 is_national_event
 is_team_event
-hist_avg_attendance
+is_weekend
 hist_event_count
-is_summer
-is_winter
