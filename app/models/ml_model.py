@@ -68,14 +68,36 @@ class MLModel(Base):
 
     @property
     def performance_grade(self) -> str:
-        """Get a human-readable performance grade based on ROC AUC."""
+        """Get a human-readable performance grade based on metric type.
+
+        Different model types use different metrics with different scales:
+        - ROC-AUC (binary classification): 0.5-1.0 range, 0.7+ is good
+        - R² (regression): 0.0-1.0 range, 0.3+ is decent for small data
+        - Accuracy (multi-class): depends on number of classes
+        """
         if not self.roc_auc:
             return "Unknown"
-        if self.roc_auc >= 0.9:
+
+        metric = self.roc_auc
+
+        # Analytics models use different scales
+        if self.model_type in ("analytics_predictions", "analytics_performance"):
+            # R² and multi-class accuracy have lower thresholds
+            # 0.3+ R² or 40%+ accuracy (vs 25% random for 4 classes) is decent
+            if metric >= 0.6:
+                return "Excellent"
+            if metric >= 0.45:
+                return "Good"
+            if metric >= 0.3:
+                return "Fair"
+            return "Poor"
+
+        # Standard ROC-AUC thresholds for binary classification
+        if metric >= 0.9:
             return "Excellent"
-        if self.roc_auc >= 0.8:
+        if metric >= 0.8:
             return "Good"
-        if self.roc_auc >= 0.7:
+        if metric >= 0.7:
             return "Fair"
         return "Poor"
 
