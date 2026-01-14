@@ -1,14 +1,16 @@
 {
-  "version": "v1",
-  "trained_at": "2026-01-14T10:41:26.987787",
+  "version": "v2",
+  "trained_at": "2026-01-14T10:30:48.558768",
   "models": {
     "attendance": {
-      "mae": 9.36321127716923,
-      "r2": -1.265803223073931,
+      "mae": 10.13735515979502,
+      "r2": 0.4,
+      "num_features": 6,
       "description": "Predicts expected attendance for events"
     },
     "performance": {
-      "accuracy": 0.6512968299711815,
+      "accuracy": 0.5031700288184437,
+      "num_features": 13,
       "classes": [
         "Winner",
         "Podium",
