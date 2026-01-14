@@ -235,8 +235,16 @@ def train_model(df: pd.DataFrame, all_species: dict) -> tuple:
 
     # Top-3 accuracy (did the correct species appear in top 3 predictions?)
     if len(unique_species) >= 3:
-        top3_acc = top_k_accuracy_score(y_test, y_pred_proba, k=3)
-        print(f"Top-3 Accuracy: {top3_acc:.4f}")
+        try:
+            top3_acc = top_k_accuracy_score(
+                y_test, y_pred_proba, k=min(3, len(unique_species)),
+                labels=list(range(len(label_encoder.classes_)))
+            )
+            print(f"Top-3 Accuracy: {top3_acc:.4f}")
+        except ValueError:
+            # Fallback if class mismatch
+            top3_acc = accuracy
+            print(f"Top-3 Accuracy: {top3_acc:.4f} (fallback)")
     else:
         top3_acc = accuracy
 

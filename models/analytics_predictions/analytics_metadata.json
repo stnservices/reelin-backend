@@ -1,0 +1,21 @@
+{
+  "version": "v1",
+  "trained_at": "2026-01-14T10:41:26.987787",
+  "models": {
+    "attendance": {
+      "mae": 9.36321127716923,
+      "r2": -1.265803223073931,
+      "description": "Predicts expected attendance for events"
+    },
+    "performance": {
+      "accuracy": 0.6512968299711815,
+      "classes": [
+        "Winner",
+        "Podium",
+        "Top 10",
+        "Other"
+      ],
+      "description": "Predicts user finish position bucket"
+    }
+  }
+}

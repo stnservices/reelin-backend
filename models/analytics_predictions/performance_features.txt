@@ -1,0 +1,6 @@
+user_total_events
+user_wins
+user_podiums
+user_best_rank
+user_avg_catch_length
+user_total_catches

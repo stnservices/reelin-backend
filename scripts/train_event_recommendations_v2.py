@@ -314,10 +314,16 @@ async def build_training_data(db: AsyncSession) -> pd.DataFrame:
 
         # Create negative samples from users who didn't enroll
         # Sample a subset of non-enrolled users for balance
-        non_enrolled_candidates = [
-            uid for uid in user_created_at.keys()
-            if uid not in enrolled_users
-        ]
+        non_enrolled_candidates = []
+        for uid in user_created_at.keys():
+            if uid in enrolled_users:
+                continue
+            user_created = user_created_at[uid]
+            if user_created and user_created.tzinfo is None:
+                user_created = user_created.replace(tzinfo=timezone.utc)
+            # Only include users who existed before the event
+            if user_created and event_start and user_created <= event_start:
+                non_enrolled_candidates.append(uid)
 
         # Sample approximately same number of negatives as positives
         num_negatives = min(len(non_enrolled_candidates), len(enrolled_users))
@@ -330,10 +336,6 @@ async def build_training_data(db: AsyncSession) -> pd.DataFrame:
                 user_created = user_created_at[user_id]
                 if user_created and user_created.tzinfo is None:
                     user_created = user_created.replace(tzinfo=timezone.utc)
-
-                # Skip if user didn't exist yet
-                if user_created and event_start and user_created > event_start:
-                    continue
 
                 # Get user stats
                 user_stats = await get_user_stats(db, user_id)

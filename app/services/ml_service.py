@@ -358,6 +358,214 @@ class MLService:
         }
 
 
+    async def predict_catch_time(
+        self,
+        user_id: int,
+        features: dict,
+    ) -> Optional[list[dict]]:
+        """
+        Predict optimal catch times (hours) for a user.
+        Returns list of hours with probability scores.
+        """
+        model, scaler, feature_names, model_id = await self.load_active_model("catch_time")
+
+        if model is None:
+            return None
+
+        try:
+            # Predict for each hour of the day
+            results = []
+            for hour in range(24):
+                hour_features = features.copy()
+                hour_features["hour"] = hour
+                hour_features["morning"] = 1 if 5 <= hour < 10 else 0
+                hour_features["midday"] = 1 if 10 <= hour < 14 else 0
+                hour_features["afternoon"] = 1 if 14 <= hour < 18 else 0
+                hour_features["evening"] = 1 if 18 <= hour < 22 else 0
+                hour_features["night"] = 1 if hour >= 22 or hour < 5 else 0
+
+                # Build feature vector
+                feature_vector = [hour_features.get(fname, 0) for fname in feature_names]
+                X = np.array([feature_vector])
+
+                if scaler is not None:
+                    X = scaler.transform(X)
+
+                proba = model.predict_proba(X)[0][1]
+                results.append({"hour": hour, "probability": float(proba)})
+
+            # Sort by probability descending
+            results.sort(key=lambda x: x["probability"], reverse=True)
+            return results
+
+        except Exception as e:
+            logger.error(f"Catch time prediction error: {e}")
+            return None
+
+    async def predict_species(
+        self,
+        user_id: int,
+        features: dict,
+        top_k: int = 5,
+    ) -> Optional[list[dict]]:
+        """
+        Predict likely species for a user to catch.
+        Returns top-k species with probability scores.
+        """
+        model, scaler, feature_names, model_id = await self.load_active_model("species_forecast")
+
+        if model is None:
+            return None
+
+        try:
+            # Load label encoder
+            import os
+            encoder_path = None
+            stmt = select(MLModel).where(
+                MLModel.model_type == "species_forecast",
+                MLModel.is_active == True,
+            )
+            result = await self.db.execute(stmt)
+            ml_model = result.scalar_one_or_none()
+
+            if ml_model:
+                encoder_path = ml_model.file_path.replace("_model.joblib", "_encoder.joblib")
+
+            if not encoder_path or not os.path.exists(encoder_path):
+                logger.warning("Species encoder not found")
+                return None
+
+            import joblib
+            label_encoder = joblib.load(encoder_path)
+
+            # Build feature vector
+            feature_vector = [features.get(fname, 0) for fname in feature_names]
+            X = np.array([feature_vector])
+
+            if scaler is not None:
+                X = scaler.transform(X)
+
+            # Get probabilities for all species
+            probas = model.predict_proba(X)[0]
+
+            # Map to species IDs
+            results = []
+            for idx, proba in enumerate(probas):
+                species_id = int(label_encoder.classes_[idx])
+                results.append({
+                    "fish_id": species_id,
+                    "probability": float(proba),
+                })
+
+            # Sort and take top-k
+            results.sort(key=lambda x: x["probability"], reverse=True)
+            return results[:top_k]
+
+        except Exception as e:
+            logger.error(f"Species prediction error: {e}")
+            return None
+
+    async def predict_event_attendance(
+        self,
+        event_features: dict,
+    ) -> Optional[dict]:
+        """
+        Predict expected attendance for an event.
+        Returns predicted attendance count.
+        """
+        model, scaler, feature_names, model_id = await self.load_active_model("analytics_predictions")
+
+        # For analytics, we need to load the specific attendance model
+        if model is None:
+            # Try loading attendance model directly
+            import os
+            attendance_path = "models/analytics_predictions/attendance_model.joblib"
+            scaler_path = "models/analytics_predictions/attendance_scaler.joblib"
+            features_path = "models/analytics_predictions/attendance_features.txt"
+
+            if not os.path.exists(attendance_path):
+                return None
+
+            try:
+                import joblib
+                model = joblib.load(attendance_path)
+                scaler = joblib.load(scaler_path) if os.path.exists(scaler_path) else None
+                with open(features_path) as f:
+                    feature_names = [line.strip() for line in f if line.strip()]
+            except Exception as e:
+                logger.error(f"Failed to load attendance model: {e}")
+                return None
+
+        try:
+            feature_vector = [event_features.get(fname, 0) for fname in feature_names]
+            X = np.array([feature_vector])
+
+            if scaler is not None:
+                X = scaler.transform(X)
+
+            predicted = model.predict(X)[0]
+
+            return {
+                "predicted_attendance": max(0, int(round(predicted))),
+                "confidence": "medium",  # Could be calculated from model
+            }
+
+        except Exception as e:
+            logger.error(f"Attendance prediction error: {e}")
+            return None
+
+    async def predict_user_performance(
+        self,
+        user_features: dict,
+    ) -> Optional[dict]:
+        """
+        Predict user's likely finish bracket in an event.
+        Returns predicted bracket (Winner/Podium/Top10/Other).
+        """
+        import os
+        performance_path = "models/analytics_predictions/performance_model.joblib"
+        scaler_path = "models/analytics_predictions/performance_scaler.joblib"
+        features_path = "models/analytics_predictions/performance_features.txt"
+
+        if not os.path.exists(performance_path):
+            return None
+
+        try:
+            import joblib
+            model = joblib.load(performance_path)
+            scaler = joblib.load(scaler_path) if os.path.exists(scaler_path) else None
+            with open(features_path) as f:
+                feature_names = [line.strip() for line in f if line.strip()]
+
+            feature_vector = [user_features.get(fname, 0) for fname in feature_names]
+            X = np.array([feature_vector])
+
+            if scaler is not None:
+                X = scaler.transform(X)
+
+            # Get prediction and probabilities
+            predicted_class = model.predict(X)[0]
+            probas = model.predict_proba(X)[0]
+
+            brackets = ["winner", "podium", "top_10", "other"]
+            bracket = brackets[predicted_class] if predicted_class < len(brackets) else "other"
+
+            return {
+                "predicted_bracket": bracket,
+                "confidence": float(max(probas)),
+                "probabilities": {
+                    "winner": float(probas[0]) if len(probas) > 0 else 0,
+                    "podium": float(probas[1]) if len(probas) > 1 else 0,
+                    "top_10": float(probas[2]) if len(probas) > 2 else 0,
+                    "other": float(probas[3]) if len(probas) > 3 else 0,
+                },
+            }
+
+        except Exception as e:
+            logger.error(f"Performance prediction error: {e}")
+            return None
+
+
 def get_ml_service(db: AsyncSession) -> MLService:
     """Factory function for ML service."""
     return MLService(db)

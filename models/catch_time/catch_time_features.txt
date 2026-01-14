@@ -1,0 +1,12 @@
+hour
+day_of_week
+month
+fish_id
+has_location
+user_total_catches
+is_user_preferred_hour
+morning
+midday
+afternoon
+evening
+night

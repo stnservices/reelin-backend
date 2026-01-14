@@ -1,0 +1,16 @@
+hour
+day_of_week
+month
+lat_zone
+lng_zone
+has_location
+user_total_catches
+user_unique_species
+user_caught_before
+user_top_species
+is_spring
+is_summer
+is_autumn
+is_winter
+is_morning
+is_evening

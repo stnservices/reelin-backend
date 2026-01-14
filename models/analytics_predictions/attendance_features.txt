@@ -1,0 +1,10 @@
+event_type_id
+day_of_week
+month
+is_weekend
+is_national_event
+is_team_event
+hist_avg_attendance
+hist_event_count
+is_summer
+is_winter
