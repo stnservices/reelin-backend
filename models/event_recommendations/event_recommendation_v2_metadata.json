@@ -1,0 +1,46 @@
+{
+  "version": "v2",
+  "trained_at": "2026-01-14T10:42:24.777756",
+  "num_samples": 1778,
+  "num_features": 26,
+  "roc_auc": 0.9985915492957746,
+  "cv_roc_auc": NaN,
+  "feature_groups": {
+    "user_basic": [
+      "user_event_count",
+      "user_catch_count",
+      "user_species_count",
+      "user_max_catch_cm",
+      "user_wins",
+      "user_podiums"
+    ],
+    "hall_of_fame": [
+      "hof_entry_count",
+      "hof_world_champion",
+      "hof_national_champion",
+      "hof_world_podium",
+      "hof_national_podium",
+      "hof_best_tier"
+    ],
+    "performance": [
+      "win_rate",
+      "podium_rate",
+      "avg_catch_length",
+      "consecutive_events",
+      "max_consecutive_events"
+    ],
+    "activity": [
+      "events_this_year",
+      "days_since_last_event"
+    ],
+    "context": [
+      "user_age_at_event",
+      "event_type_id",
+      "event_day_of_week",
+      "event_month",
+      "event_enrollment_count",
+      "has_done_event_type",
+      "friends_enrolled_count"
+    ]
+  }
+}

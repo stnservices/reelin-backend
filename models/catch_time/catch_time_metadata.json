@@ -1,0 +1,9 @@
+{
+  "version": "v1",
+  "trained_at": "2026-01-14T10:41:13.354424",
+  "num_samples": 21695,
+  "num_features": 12,
+  "roc_auc": 0.9896546774246273,
+  "cv_roc_auc": 0.9863213356582105,
+  "description": "Predicts optimal catch times based on historical patterns"
+}

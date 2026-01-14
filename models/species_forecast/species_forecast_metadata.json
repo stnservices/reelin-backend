@@ -1,0 +1,11 @@
+{
+  "version": "v1",
+  "trained_at": "2026-01-14T10:42:29.069041",
+  "num_samples": 7363,
+  "num_features": 16,
+  "num_species": 8,
+  "accuracy": 0.8078750848608283,
+  "top3_accuracy": 0.991174473862865,
+  "cv_accuracy": 0.797962648556876,
+  "description": "Multi-class species prediction based on location, time, and user history"
+}
