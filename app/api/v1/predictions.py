@@ -5,7 +5,7 @@ from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -98,9 +98,11 @@ async def get_optimal_catch_times(
     user_total_catches = result.scalar() or 0
 
     # Get user's preferred hours (hours where they've caught most)
+    # Convert UTC to Romania timezone before extracting hour
+    local_time = func.timezone('Europe/Bucharest', Catch.catch_time)
     hour_stmt = (
         select(
-            func.extract('hour', Catch.catch_time).label('hour'),
+            func.extract('hour', local_time).label('hour'),
             func.count().label('count')
         )
         .where(
@@ -108,7 +110,7 @@ async def get_optimal_catch_times(
             Catch.status == CatchStatus.APPROVED.value,
             Catch.catch_time.isnot(None),
         )
-        .group_by(func.extract('hour', Catch.catch_time))
+        .group_by(func.extract('hour', local_time))
         .order_by(func.count().desc())
         .limit(3)
     )
