@@ -139,16 +139,18 @@ async def get_event_public_stats(
 
     # Get catches by hour (using submitted_at or catch_time)
     # Extract hour from catch_time if available, otherwise submitted_at
+    # Convert UTC to Romania timezone before extracting hour
+    local_time = func.timezone('Europe/Bucharest', func.coalesce(Catch.catch_time, Catch.submitted_at))
     catches_by_hour_result = await db.execute(
         select(
-            func.extract('hour', func.coalesce(Catch.catch_time, Catch.submitted_at)).label("hour"),
+            func.extract('hour', local_time).label("hour"),
             func.count().label("count"),
         )
         .where(
             Catch.event_id == event_id,
             Catch.status == CatchStatus.APPROVED.value,
         )
-        .group_by(func.extract('hour', func.coalesce(Catch.catch_time, Catch.submitted_at)))
+        .group_by(func.extract('hour', local_time))
         .order_by("hour")
     )
     catches_by_hour = [
