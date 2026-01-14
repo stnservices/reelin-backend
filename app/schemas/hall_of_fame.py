@@ -1,9 +1,9 @@
 """Schemas for Hall of Fame entries."""
 
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class HallOfFameBase(BaseModel):
@@ -52,11 +52,33 @@ class HallOfFameUserInfo(BaseModel):
     """Nested user info for Hall of Fame response."""
 
     id: int
-    first_name: str
-    last_name: str
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
     avatar_url: Optional[str] = None
 
     model_config = {"from_attributes": True}
+
+    @model_validator(mode="before")
+    @classmethod
+    def extract_profile_fields(cls, data: Any) -> Any:
+        """Extract first_name, last_name, avatar_url from user.profile if available."""
+        if data is None:
+            return data
+
+        # If it's already a dict, return as-is
+        if isinstance(data, dict):
+            return data
+
+        # If it's a UserAccount model, extract profile info
+        result = {"id": getattr(data, "id", None)}
+
+        profile = getattr(data, "profile", None)
+        if profile:
+            result["first_name"] = getattr(profile, "first_name", None)
+            result["last_name"] = getattr(profile, "last_name", None)
+            result["avatar_url"] = getattr(profile, "profile_picture_url", None)
+
+        return result
 
 
 class HallOfFameResponse(HallOfFameBase):
