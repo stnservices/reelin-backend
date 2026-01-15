@@ -1,0 +1,217 @@
+name: reelin
+region: fra
+features:
+  - buildpack-stack=ubuntu-22
+
+services:
+  - name: reelin-backend
+    github:
+      repo: stnservices/reelin-backend
+      branch: main
+      deploy_on_push: true
+    source_dir: /
+    environment_slug: python
+    build_command: pip install -r requirements.txt
+    run_command: uvicorn app.main:app --host 0.0.0.0 --port 8080
+    http_port: 8080
+    instance_size_slug: apps-d-1vcpu-4gb
+    instance_count: 1
+    envs:
+      - key: SECRET_KEY
+        value: reelin-prod-secret-key-2024-change-this-asap
+        scope: RUN_AND_BUILD_TIME
+      - key: DEBUG
+        value: "false"
+        scope: RUN_AND_BUILD_TIME
+      - key: CORS_ORIGINS
+        value: https://reelin.ro,https://www.reelin.ro
+        scope: RUN_AND_BUILD_TIME
+      - key: FRONTEND_URL
+        value: https://www.reelin.ro
+        scope: RUN_AND_BUILD_TIME
+      - key: EMAIL_HOST
+        value: email-smtp.eu-central-1.amazonaws.com
+        scope: RUN_AND_BUILD_TIME
+      - key: EMAIL_PORT
+        value: "587"
+        scope: RUN_AND_BUILD_TIME
+      - key: EMAIL_USE_TLS
+        value: "true"
+        scope: RUN_AND_BUILD_TIME
+      - key: EMAIL_HOST_USER
+        value: AKIAVL4YGMS5ZZC5H7W3
+        scope: RUN_AND_BUILD_TIME
+      - key: EMAIL_HOST_PASSWORD
+        value: BDpSRXBOyGHITGZq8zo0kMqkcb66RXg8YG53Opo4+aB8
+        scope: RUN_AND_BUILD_TIME
+      - key: DEFAULT_FROM_EMAIL
+        value: ReelIn Notifications <noreply@reelin.ro>
+        scope: RUN_AND_BUILD_TIME
+      - key: GOOGLE_CLIENT_ID
+        value: 340554066660-jsvcmfvn5esh1pl8fuufv2eq4b45513p.apps.googleusercontent.com
+        scope: RUN_AND_BUILD_TIME
+      - key: GOOGLE_CLIENT_SECRET
+        value: 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
+        scope: RUN_AND_BUILD_TIME
+      - key: FACEBOOK_CLIENT_ID
+        value: "168962656041014"
+        scope: RUN_AND_BUILD_TIME
+      - key: FACEBOOK_CLIENT_SECRET
+        value: a4826fcaf0b8daa95f50981acd178cf1
+        scope: RUN_AND_BUILD_TIME
+      - key: STRIPE_SECRET_KEY
+        value: sk_test_51MoTEkCeChlQkHB3fAEiFun5iuRgz2xDRi81Y9X4Q5oTd3S9pnLim0ufm6Rr7pa7hg2P7PMlvBEzm8rohc2vhSkN00YK9tU1Hi
+        scope: RUN_AND_BUILD_TIME
+      - key: STRIPE_WEBHOOK_SECRET
+        value: whsec_b4a10537c52d53d6e89d7fffc1efef6ed1bda480ef3b39f918105491cbf558fb
+        scope: RUN_AND_BUILD_TIME
+      - key: OPENWEATHERMAP_API_KEY
+        value: b1663d8fa0de87982c745dc5953e7cbd
+        scope: RUN_AND_BUILD_TIME
+      - key: RECAPTCHA_SECRET_KEY
+        value: 6LeLfUksAAAAAPWlnE_k91wasHeTgRtBqb8nV6w7
+        scope: RUN_AND_BUILD_TIME
+      - key: DATABASE_URL
+        value: postgresql+asyncpg://doadmin:AVNS_SD-tDwlLMGE79DPC6cw@app-44c7c9ff-da83-4ce3-9ff9-243ba6909f32-do-user-14096196-0.h.db.ondigitalocean.com:25061/reelin-db-pool?ssl=require
+        scope: RUN_AND_BUILD_TIME
+      - key: REDIS_URL
+        value: rediss://default:AVNS_Z4xzXY7G6OLCNNgOX5w@reelin-valkey-do-user-14096196-0.h.db.ondigitalocean.com:25061/0
+        scope: RUN_AND_BUILD_TIME
+      - key: CELERY_BROKER_URL
+        value: rediss://default:AVNS_Z4xzXY7G6OLCNNgOX5w@reelin-valkey-do-user-14096196-0.h.db.ondigitalocean.com:25061/0
+        scope: RUN_AND_BUILD_TIME
+      - key: CELERY_RESULT_BACKEND
+        value: rediss://default:AVNS_Z4xzXY7G6OLCNNgOX5w@reelin-valkey-do-user-14096196-0.h.db.ondigitalocean.com:25061/0
+        scope: RUN_AND_BUILD_TIME
+      - key: FIREBASE_CREDENTIALS
+        value: '{"type": "service_account", "project_id": "streetfishing-401110", "private_key_id": "df14bd57885966e10b958ead07bfe4249e0ac73b", "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCHptWptsRdfUt2\ncbqge3qAZW2QPzk1UTfGPVtkpu6rmdl8wFEl1XUarOmNuQlpVOeP0Q8qUZ1FAB1I\n/fA4RYhiNP/lx2M0DsLExKwXF4WneS0UsOeAKWqJCDTiMBcDxV3wVQz40x9R2L/c\nabjXdPskfzvB0vP5MciY9ct3m8UZObsScuu5UTNCAFdfamrAPkh5XgO8wNj7s6u6\naOgAcTQeYluKttRnFzZhNnnZVo5ncYEHl9LhtlaHPKy0kh7tpL+n0J9no6OFiJXM\nThem4XjIEU2Ya0W0hNl1Ir3qEE135b5V45VuUVzBiGOkM5ACKT9OYTaeb5Cyl9xw\nrrfEp8CVAgMBAAECggEAHnktpYcP3NqxUaXh4XxrvB1M/CsfzGj26RtOhTF1C2qv\n73T6pc+qk3gFrZdEVHvE20uBJyYXePE6IvQc+18vcLRsSi+9CuxH99Egwb1AgqtX\no77L+sATFT6ZNrjL6sZzQHKyy9ENx6K0Ey1S32ABrSTCBVxA/5md8TLCZxfAstYw\nA2RKJhFGilzVrccqKWvyZLGGiBIIXXRB2fPpQ7cEYFFWysphVE5hw+fk/DyHFmMb\nktGSwtQPSdJe5tWQVSx61z9rTZIRVxNh0g4Ydlqn1XZCpIMepfLuOAx2Yv1kIljb\nDI10npf3aMmKobzSUM6ENT/AZ5o6bXsF58e7H+sV8QKBgQC8cx+xcWKOQUy4jPvs\nyxAcrfuk4N2U2oX0r2fYs55kSNc8zK+IsiG4iUVan9JE4cvEQ/gvUaPgGtqZKh46\no+oX0lRICkjPOojTUJ686euhIboxJcxdbsxcIv7X9PvnlzzS3K4z9KmO645/frCf\n+J76TRvRIZ1tOAZZSxcCnmRH7QKBgQC4RsLO2XuTQ6PoyAk9noy5M+puM9ZAh8s2\noFkeie4RBqT3SS852r+1SjuUrkMMlghUepKUMXTetBBWqAN0rT70YdcHgkOKBCEE\nSCFGIAdFXAnIht1qZ9OYVYKqeP3X1jE2JjsxtWREg//meMJO/imQYPxn+gX7P0if\nT4old4h2SQKBgBr1IQCCJsYQw0fXKyaZecmQfeH9JNVpWSZCfUl7kFnqLZgN88JL\nMRWz1U78c9jUsBB4ZKVoOVgSn1ivtLlQv2j+9n2Dsxyp0+7epoaBs+pN59OmA5EO\nC3/WpbwA2JQth07msKjQA/1k5vKIDf4kU6GcrDEDbQC1tfrKChWe0NuVAoGBALgf\n5Aign+wOOtmd/jW2lS98YzJH0z1ZMcBcSY/NC7WxaOW5F1n8a28uRAgUcuRBiQM4\nEfvGytq3GlgruoA7ltrCZAOZsfhWldLca3rRB9LS2uelcdke8vqT/mJtUF34I+XS\nH3VUpGIdbnUPlj8tj8Q2VB1kYdOgcOTVqdgz7oMZAoGAapIl/QIE1+xudgyREu3A\nJ5wXzjZ7tlSzjAU+mP8tc3rNXTbA7KJX74e1pJ/rL3BOrLhAgLn6oFVYEA77jKSt\nVyAgFUOZ2aVtIRfTxEZVxxrzwxUXX2JouAkt05Nd0as4tWyD7sS4fckMmyjHLlbR\nlw0UhN6VJta5XqMnWQbD9PM=\n-----END PRIVATE KEY-----\n", "client_email": "firebase-adminsdk-vi5ul@streetfishing-401110.iam.gserviceaccount.com", "client_id": "112859686097759933303", "auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": "https://oauth2.googleapis.com/token", "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs", "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-vi5ul%40streetfishing-401110.iam.gserviceaccount.com", "universe_domain": "googleapis.com"}'
+        scope: RUN_AND_BUILD_TIME
+
+  - name: reelin-frontend
+    github:
+      repo: stnservices/reelin-frontend
+      branch: main
+      deploy_on_push: true
+    source_dir: /
+    environment_slug: node-js
+    build_command: npm ci && npm run build
+    run_command: node .next/standalone/server.js
+    http_port: 3000
+    instance_size_slug: apps-s-1vcpu-2gb
+    instance_count: 1
+    envs:
+      - key: PORT
+        value: "3000"
+        scope: RUN_AND_BUILD_TIME
+      - key: HOSTNAME
+        value: 0.0.0.0
+        scope: RUN_AND_BUILD_TIME
+      - key: NEXT_PUBLIC_API_URL
+        value: https://www.reelin.ro/api
+        scope: RUN_AND_BUILD_TIME
+      - key: NEXT_PUBLIC_RECAPTCHA_SITE_KEY
+        value: 6LeLfUksAAAAAEofyKK8P1_xfECpE4QsflTiWfAB
+        scope: RUN_AND_BUILD_TIME
+      - key: NEXT_PUBLIC_GA_MEASUREMENT_ID
+        value: G-W6EH0QLXM3
+        scope: RUN_AND_BUILD_TIME
+
+workers:
+  - name: reelin-celery
+    github:
+      repo: stnservices/reelin-backend
+      branch: main
+      deploy_on_push: true
+    source_dir: /
+    environment_slug: python
+    build_command: pip install -r requirements.txt
+    run_command: celery -A app.celery_app:celery_app worker --loglevel=info
+    instance_size_slug: apps-s-1vcpu-2gb
+    instance_count: 1
+    envs:
+      - key: SECRET_KEY
+        value: reelin-prod-secret-key-2024-change-this-asap
+        scope: RUN_AND_BUILD_TIME
+      - key: DEBUG
+        value: "false"
+        scope: RUN_AND_BUILD_TIME
+      - key: CORS_ORIGINS
+        value: https://reelin.ro,https://www.reelin.ro
+        scope: RUN_AND_BUILD_TIME
+      - key: FRONTEND_URL
+        value: https://www.reelin.ro
+        scope: RUN_AND_BUILD_TIME
+      - key: EMAIL_HOST
+        value: email-smtp.eu-central-1.amazonaws.com
+        scope: RUN_AND_BUILD_TIME
+      - key: EMAIL_PORT
+        value: "587"
+        scope: RUN_AND_BUILD_TIME
+      - key: EMAIL_USE_TLS
+        value: "true"
+        scope: RUN_AND_BUILD_TIME
+      - key: EMAIL_HOST_USER
+        value: AKIAVL4YGMS5ZZC5H7W3
+        scope: RUN_AND_BUILD_TIME
+      - key: EMAIL_HOST_PASSWORD
+        value: BDpSRXBOyGHITGZq8zo0kMqkcb66RXg8YG53Opo4+aB8
+        scope: RUN_AND_BUILD_TIME
+      - key: DEFAULT_FROM_EMAIL
+        value: ReelIn Notifications <noreply@reelin.ro>
+        scope: RUN_AND_BUILD_TIME
+      - key: GOOGLE_CLIENT_ID
+        value: 340554066660-jsvcmfvn5esh1pl8fuufv2eq4b45513p.apps.googleusercontent.com
+        scope: RUN_AND_BUILD_TIME
+      - key: GOOGLE_CLIENT_SECRET
+        value: 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
+        scope: RUN_AND_BUILD_TIME
+      - key: FACEBOOK_CLIENT_ID
+        value: "168962656041014"
+        scope: RUN_AND_BUILD_TIME
+      - key: FACEBOOK_CLIENT_SECRET
+        value: a4826fcaf0b8daa95f50981acd178cf1
+        scope: RUN_AND_BUILD_TIME
+      - key: STRIPE_SECRET_KEY
+        value: sk_test_51MoTEkCeChlQkHB3fAEiFun5iuRgz2xDRi81Y9X4Q5oTd3S9pnLim0ufm6Rr7pa7hg2P7PMlvBEzm8rohc2vhSkN00YK9tU1Hi
+        scope: RUN_AND_BUILD_TIME
+      - key: STRIPE_WEBHOOK_SECRET
+        value: whsec_b4a10537c52d53d6e89d7fffc1efef6ed1bda480ef3b39f918105491cbf558fb
+        scope: RUN_AND_BUILD_TIME
+      - key: OPENWEATHERMAP_API_KEY
+        value: b1663d8fa0de87982c745dc5953e7cbd
+        scope: RUN_AND_BUILD_TIME
+      - key: RECAPTCHA_SECRET_KEY
+        value: 6LeLfUksAAAAAPWlnE_k91wasHeTgRtBqb8nV6w7
+        scope: RUN_AND_BUILD_TIME
+      - key: DATABASE_URL
+        value: postgresql+asyncpg://doadmin:AVNS_SD-tDwlLMGE79DPC6cw@app-44c7c9ff-da83-4ce3-9ff9-243ba6909f32-do-user-14096196-0.h.db.ondigitalocean.com:25061/reelin-db-pool?ssl=require
+        scope: RUN_AND_BUILD_TIME
+      - key: REDIS_URL
+        value: rediss://default:AVNS_Z4xzXY7G6OLCNNgOX5w@reelin-valkey-do-user-14096196-0.h.db.ondigitalocean.com:25061/0
+        scope: RUN_AND_BUILD_TIME
+      - key: CELERY_BROKER_URL
+        value: rediss://default:AVNS_Z4xzXY7G6OLCNNgOX5w@reelin-valkey-do-user-14096196-0.h.db.ondigitalocean.com:25061/0
+        scope: RUN_AND_BUILD_TIME
+      - key: CELERY_RESULT_BACKEND
+        value: rediss://default:AVNS_Z4xzXY7G6OLCNNgOX5w@reelin-valkey-do-user-14096196-0.h.db.ondigitalocean.com:25061/0
+        scope: RUN_AND_BUILD_TIME
+      - key: FIREBASE_CREDENTIALS
+        value: '{"type": "service_account", "project_id": "streetfishing-401110", "private_key_id": "df14bd57885966e10b958ead07bfe4249e0ac73b", "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCHptWptsRdfUt2\ncbqge3qAZW2QPzk1UTfGPVtkpu6rmdl8wFEl1XUarOmNuQlpVOeP0Q8qUZ1FAB1I\n/fA4RYhiNP/lx2M0DsLExKwXF4WneS0UsOeAKWqJCDTiMBcDxV3wVQz40x9R2L/c\nabjXdPskfzvB0vP5MciY9ct3m8UZObsScuu5UTNCAFdfamrAPkh5XgO8wNj7s6u6\naOgAcTQeYluKttRnFzZhNnnZVo5ncYEHl9LhtlaHPKy0kh7tpL+n0J9no6OFiJXM\nThem4XjIEU2Ya0W0hNl1Ir3qEE135b5V45VuUVzBiGOkM5ACKT9OYTaeb5Cyl9xw\nrrfEp8CVAgMBAAECggEAHnktpYcP3NqxUaXh4XxrvB1M/CsfzGj26RtOhTF1C2qv\n73T6pc+qk3gFrZdEVHvE20uBJyYXePE6IvQc+18vcLRsSi+9CuxH99Egwb1AgqtX\no77L+sATFT6ZNrjL6sZzQHKyy9ENx6K0Ey1S32ABrSTCBVxA/5md8TLCZxfAstYw\nA2RKJhFGilzVrccqKWvyZLGGiBIIXXRB2fPpQ7cEYFFWysphVE5hw+fk/DyHFmMb\nktGSwtQPSdJe5tWQVSx61z9rTZIRVxNh0g4Ydlqn1XZCpIMepfLuOAx2Yv1kIljb\nDI10npf3aMmKobzSUM6ENT/AZ5o6bXsF58e7H+sV8QKBgQC8cx+xcWKOQUy4jPvs\nyxAcrfuk4N2U2oX0r2fYs55kSNc8zK+IsiG4iUVan9JE4cvEQ/gvUaPgGtqZKh46\no+oX0lRICkjPOojTUJ686euhIboxJcxdbsxcIv7X9PvnlzzS3K4z9KmO645/frCf\n+J76TRvRIZ1tOAZZSxcCnmRH7QKBgQC4RsLO2XuTQ6PoyAk9noy5M+puM9ZAh8s2\noFkeie4RBqT3SS852r+1SjuUrkMMlghUepKUMXTetBBWqAN0rT70YdcHgkOKBCEE\nSCFGIAdFXAnIht1qZ9OYVYKqeP3X1jE2JjsxtWREg//meMJO/imQYPxn+gX7P0if\nT4old4h2SQKBgBr1IQCCJsYQw0fXKyaZecmQfeH9JNVpWSZCfUl7kFnqLZgN88JL\nMRWz1U78c9jUsBB4ZKVoOVgSn1ivtLlQv2j+9n2Dsxyp0+7epoaBs+pN59OmA5EO\nC3/WpbwA2JQth07msKjQA/1k5vKIDf4kU6GcrDEDbQC1tfrKChWe0NuVAoGBALgf\n5Aign+wOOtmd/jW2lS98YzJH0z1ZMcBcSY/NC7WxaOW5F1n8a28uRAgUcuRBiQM4\nEfvGytq3GlgruoA7ltrCZAOZsfhWldLca3rRB9LS2uelcdke8vqT/mJtUF34I+XS\nH3VUpGIdbnUPlj8tj8Q2VB1kYdOgcOTVqdgz7oMZAoGAapIl/QIE1+xudgyREu3A\nJ5wXzjZ7tlSzjAU+mP8tc3rNXTbA7KJX74e1pJ/rL3BOrLhAgLn6oFVYEA77jKSt\nVyAgFUOZ2aVtIRfTxEZVxxrzwxUXX2JouAkt05Nd0as4tWyD7sS4fckMmyjHLlbR\nlw0UhN6VJta5XqMnWQbD9PM=\n-----END PRIVATE KEY-----\n", "client_email": "firebase-adminsdk-vi5ul@streetfishing-401110.iam.gserviceaccount.com", "client_id": "112859686097759933303", "auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": "https://oauth2.googleapis.com/token", "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs", "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-vi5ul%40streetfishing-401110.iam.gserviceaccount.com", "universe_domain": "googleapis.com"}'
+        scope: RUN_AND_BUILD_TIME
+
+ingress:
+  rules:
+    - match:
+        path:
+          prefix: /api
+      component:
+        name: reelin-backend
+    - match:
+        path:
+          prefix: /
+      component:
+        name: reelin-frontend
+
+alerts:
+  - rule: DEPLOYMENT_FAILED
+  - rule: DOMAIN_FAILED

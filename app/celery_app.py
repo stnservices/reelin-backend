@@ -8,9 +8,11 @@ from app.config import get_settings
 settings = get_settings()
 
 # SSL configuration for rediss:// URLs (DigitalOcean Managed Valkey)
-ssl_context = ssl.create_default_context()
-ssl_context.check_hostname = False
-ssl_context.verify_mode = ssl.CERT_NONE
+# Use dict format which is compatible with both broker and backend
+ssl_options = {
+    "ssl_cert_reqs": ssl.CERT_NONE,
+    "ssl_check_hostname": False,
+}
 
 # Create Celery app
 celery_app = Celery(
@@ -18,8 +20,8 @@ celery_app = Celery(
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
     include=["app.tasks.leaderboard", "app.tasks.billing", "app.tasks.notifications", "app.tasks.achievements", "app.tasks.content_moderation", "app.tasks.ai_analysis"],
-    broker_use_ssl=ssl_context if settings.celery_broker_url.startswith("rediss://") else None,
-    redis_backend_use_ssl=ssl_context if settings.celery_result_backend.startswith("rediss://") else None,
+    broker_use_ssl=ssl_options if settings.celery_broker_url.startswith("rediss://") else None,
+    redis_backend_use_ssl=ssl_options if settings.celery_result_backend.startswith("rediss://") else None,
 )
 
 # Celery configuration
