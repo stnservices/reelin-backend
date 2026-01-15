@@ -200,8 +200,10 @@ app.add_middleware(
 app.add_middleware(SessionMiddleware, secret_key=settings.secret_key)
 
 # Include API routers
-app.include_router(api_v1_router, prefix="/api/v1")
-app.include_router(admin_router, prefix="/api/admin")
+# Note: When running behind DO App Platform ingress, the /api prefix is stripped.
+# Routes should be mounted at /v1 and /admin (not /api/v1 and /api/admin).
+app.include_router(api_v1_router, prefix="/v1")
+app.include_router(admin_router, prefix="/admin")
 
 # Mount uploads directory for serving static files
 uploads_dir = Path("uploads")
