@@ -95,7 +95,7 @@ services:
     source_dir: /
     environment_slug: node-js
     build_command: npm ci && npm run build
-    run_command: node .next/standalone/server.js
+    run_command: npm start
     http_port: 3000
     instance_size_slug: apps-s-1vcpu-2gb
     instance_count: 1
@@ -211,6 +211,10 @@ ingress:
           prefix: /
       component:
         name: reelin-frontend
+
+domains:
+  - domain: www.reelin.ro
+    type: PRIMARY
 
 alerts:
   - rule: DEPLOYMENT_FAILED
