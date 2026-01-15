@@ -92,6 +92,23 @@ def get_frontend_success_url() -> str:
     return f"{settings.frontend_url}/auth/callback?success=true"
 
 
+def get_oauth_callback_url(callback_name: str) -> str:
+    """
+    Build OAuth callback URL with the correct public URL.
+
+    When running behind a reverse proxy (like DO App Platform ingress),
+    request.url_for() may not include the /api prefix correctly.
+    This function constructs the callback URL explicitly.
+    """
+    # Map callback names to their paths
+    callback_paths = {
+        "google_callback": "/api/v1/auth/google/callback",
+        "facebook_callback": "/api/v1/auth/facebook/callback",
+    }
+    path = callback_paths.get(callback_name, "")
+    return f"{settings.frontend_url}{path}"
+
+
 def get_cookie_domain() -> str | None:
     """
     Extract cookie domain for cross-subdomain sharing.
@@ -120,7 +137,7 @@ async def google_login(request: Request):
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail="Google OAuth is not configured",
         )
-    redirect_uri = str(request.url_for("google_callback"))
+    redirect_uri = get_oauth_callback_url("google_callback")
     return await oauth.google.authorize_redirect(request, redirect_uri)
 
 
@@ -272,7 +289,7 @@ async def facebook_login(request: Request):
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail="Facebook OAuth is not configured",
         )
-    redirect_uri = str(request.url_for("facebook_callback"))
+    redirect_uri = get_oauth_callback_url("facebook_callback")
     return await oauth.facebook.authorize_redirect(request, redirect_uri)
 
 
