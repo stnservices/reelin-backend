@@ -97,10 +97,10 @@ def get_oauth_callback_url(callback_name: str) -> str:
     Build OAuth callback URL with the correct public URL.
 
     When running behind a reverse proxy (like DO App Platform ingress),
-    request.url_for() may not include the /api prefix correctly.
-    This function constructs the callback URL explicitly.
+    the /api prefix is stripped when forwarding to the backend.
+    This function constructs the callback URL with the public /api prefix.
     """
-    # Map callback names to their paths
+    # Map callback names to their paths (with /api prefix for public URL)
     callback_paths = {
         "google_callback": "/api/v1/auth/google/callback",
         "facebook_callback": "/api/v1/auth/facebook/callback",
