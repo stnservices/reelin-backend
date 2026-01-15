@@ -593,3 +593,94 @@ async def unlink_social_account(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
+
+
+# ============= Facebook Data Deletion Callback =============
+
+import base64
+import hashlib
+import hmac
+import json as json_module
+
+
+@router.post("/facebook/data-deletion")
+async def facebook_data_deletion_callback(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Handle Facebook data deletion callback.
+
+    Facebook sends a signed_request when a user requests deletion of their data.
+    We must verify the signature, process the deletion, and return a confirmation.
+
+    See: https://developers.facebook.com/docs/development/create-an-app/app-dashboard/data-deletion-callback
+    """
+    try:
+        form_data = await request.form()
+        signed_request = form_data.get("signed_request")
+
+        if not signed_request:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Missing signed_request parameter",
+            )
+
+        # Parse and verify the signed request
+        encoded_sig, payload = signed_request.split(".", 1)
+
+        # Decode signature
+        sig = base64.urlsafe_b64decode(encoded_sig + "==")
+
+        # Decode payload
+        data = json_module.loads(base64.urlsafe_b64decode(payload + "=="))
+
+        # Verify signature using app secret
+        expected_sig = hmac.new(
+            settings.facebook_client_secret.encode("utf-8"),
+            payload.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+
+        if not hmac.compare_digest(sig, expected_sig):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid signature",
+            )
+
+        # Get user ID from Facebook
+        facebook_user_id = data.get("user_id")
+
+        if facebook_user_id:
+            # Delete the Facebook social account link for this user
+            from sqlalchemy import select, delete
+            from app.models.social_account import SocialAccount, OAuthProvider
+
+            # Find and delete the social account
+            await db.execute(
+                delete(SocialAccount).where(
+                    SocialAccount.provider == OAuthProvider.FACEBOOK,
+                    SocialAccount.provider_account_id == str(facebook_user_id),
+                )
+            )
+            await db.commit()
+
+        # Generate a confirmation code (use timestamp + user_id hash)
+        import time
+        confirmation_code = hashlib.sha256(
+            f"{facebook_user_id}-{time.time()}".encode()
+        ).hexdigest()[:16]
+
+        # Return the required response format
+        return {
+            "url": f"{settings.frontend_url}/privacy/data-deletion?code={confirmation_code}",
+            "confirmation_code": confirmation_code,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to process deletion request: {str(e)}",
+        )
