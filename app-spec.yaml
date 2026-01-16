@@ -10,10 +10,8 @@ services:
       branch: main
       deploy_on_push: true
     source_dir: /
-    environment_slug: python
-    build_command: pip install -r requirements.txt
-    run_command: uvicorn app.main:app --host 0.0.0.0 --port 8080
-    http_port: 8080
+    dockerfile_path: docker/Dockerfile
+    http_port: 8000
     instance_size_slug: apps-d-1vcpu-4gb
     instance_count: 1
     envs:
@@ -54,10 +52,10 @@ services:
         value: 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
         scope: RUN_AND_BUILD_TIME
       - key: FACEBOOK_CLIENT_ID
-        value: "168962656041014"
+        value: "891402359941624"
         scope: RUN_AND_BUILD_TIME
       - key: FACEBOOK_CLIENT_SECRET
-        value: a4826fcaf0b8daa95f50981acd178cf1
+        value: b2294a62c8dba53f2df7aec9b5516d4f
         scope: RUN_AND_BUILD_TIME
       - key: STRIPE_SECRET_KEY
         value: sk_test_51MoTEkCeChlQkHB3fAEiFun5iuRgz2xDRi81Y9X4Q5oTd3S9pnLim0ufm6Rr7pa7hg2P7PMlvBEzm8rohc2vhSkN00YK9tU1Hi
@@ -94,7 +92,7 @@ services:
       deploy_on_push: true
     source_dir: /
     environment_slug: node-js
-    build_command: npm ci && npm run build
+    build_command: npm ci && npm run build && cp -r .next/static .next/standalone/.next/static && cp -r public .next/standalone/public
     run_command: npm start
     http_port: 3000
     instance_size_slug: apps-s-1vcpu-2gb
@@ -166,10 +164,10 @@ workers:
         value: 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
         scope: RUN_AND_BUILD_TIME
       - key: FACEBOOK_CLIENT_ID
-        value: "168962656041014"
+        value: "891402359941624"
         scope: RUN_AND_BUILD_TIME
       - key: FACEBOOK_CLIENT_SECRET
-        value: a4826fcaf0b8daa95f50981acd178cf1
+        value: b2294a62c8dba53f2df7aec9b5516d4f
         scope: RUN_AND_BUILD_TIME
       - key: STRIPE_SECRET_KEY
         value: sk_test_51MoTEkCeChlQkHB3fAEiFun5iuRgz2xDRi81Y9X4Q5oTd3S9pnLim0ufm6Rr7pa7hg2P7PMlvBEzm8rohc2vhSkN00YK9tU1Hi

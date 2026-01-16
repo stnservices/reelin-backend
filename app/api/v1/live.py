@@ -169,46 +169,75 @@ async def _redis_pubsub_listener():
     """
     logger.info("Starting Redis Pub/Sub listener for SSE bridge")
 
-    try:
-        pubsub = await redis_cache.get_pubsub()
-        # Subscribe to all SSE broadcast channels using pattern
-        await pubsub.psubscribe(f"{redis_cache.SSE_CHANNEL_PREFIX}:event_*")
+    retry_count = 0
+    max_retry_delay = 60  # Max 60 seconds between retries
+    pubsub = None
 
-        async for message in pubsub.listen():
-            if message["type"] == "pmessage":
+    while True:
+        try:
+            # Cleanup any existing pubsub connection
+            if pubsub:
                 try:
-                    # Extract event_id from channel name: sse_broadcast:event_5 -> 5
-                    channel = message["channel"]
-                    event_id_str = channel.split("event_")[-1]
-                    event_id = int(event_id_str)
+                    await pubsub.unsubscribe()
+                    await pubsub.close()
+                except Exception:
+                    pass
 
-                    # Parse the message data
-                    data = json.loads(message["data"])
+            pubsub = await redis_cache.get_pubsub()
+            # Subscribe to all SSE broadcast channels using pattern
+            await pubsub.psubscribe(f"{redis_cache.SSE_CHANNEL_PREFIX}:event_*")
 
-                    # Broadcast to SSE subscribers
-                    subscriber_count = live_scoring_service.get_subscriber_count(event_id)
-                    if subscriber_count > 0:
-                        logger.info(
-                            f"Redis->SSE bridge: Broadcasting {data.get('type')} "
-                            f"to {subscriber_count} subscribers for event {event_id}"
-                        )
-                        await live_scoring_service.broadcast(event_id, data)
-                    else:
-                        logger.debug(
-                            f"Redis->SSE bridge: No subscribers for event {event_id}, "
-                            f"skipping {data.get('type')}"
-                        )
-                except (ValueError, json.JSONDecodeError, KeyError) as e:
-                    logger.error(f"Error processing Redis Pub/Sub message: {e}")
+            # Reset retry count on successful connection
+            retry_count = 0
+            logger.info("Redis Pub/Sub connected and subscribed")
 
-    except asyncio.CancelledError:
-        logger.info("Redis Pub/Sub listener cancelled")
-        raise
-    except Exception as e:
-        logger.error(f"Redis Pub/Sub listener error: {e}")
-        # Try to reconnect after a delay
-        await asyncio.sleep(5)
-        asyncio.create_task(_redis_pubsub_listener())
+            async for message in pubsub.listen():
+                if message["type"] == "pmessage":
+                    try:
+                        # Extract event_id from channel name: sse_broadcast:event_5 -> 5
+                        channel = message["channel"]
+                        event_id_str = channel.split("event_")[-1]
+                        event_id = int(event_id_str)
+
+                        # Parse the message data
+                        data = json.loads(message["data"])
+
+                        # Broadcast to SSE subscribers
+                        subscriber_count = live_scoring_service.get_subscriber_count(event_id)
+                        if subscriber_count > 0:
+                            logger.info(
+                                f"Redis->SSE bridge: Broadcasting {data.get('type')} "
+                                f"to {subscriber_count} subscribers for event {event_id}"
+                            )
+                            await live_scoring_service.broadcast(event_id, data)
+                        else:
+                            logger.debug(
+                                f"Redis->SSE bridge: No subscribers for event {event_id}, "
+                                f"skipping {data.get('type')}"
+                            )
+                    except (ValueError, json.JSONDecodeError, KeyError) as e:
+                        logger.error(f"Error processing Redis Pub/Sub message: {e}")
+
+        except asyncio.CancelledError:
+            logger.info("Redis Pub/Sub listener cancelled")
+            # Cleanup before exiting
+            if pubsub:
+                try:
+                    await pubsub.unsubscribe()
+                    await pubsub.close()
+                except Exception:
+                    pass
+            raise
+
+        except Exception as e:
+            retry_count += 1
+            # Exponential backoff: 2^retry_count seconds, capped at max_retry_delay
+            retry_delay = min(2 ** retry_count, max_retry_delay)
+            logger.error(
+                f"Redis Pub/Sub listener error: {e}. "
+                f"Reconnecting in {retry_delay}s (attempt {retry_count})"
+            )
+            await asyncio.sleep(retry_delay)
 
 
 async def start_redis_listener():
