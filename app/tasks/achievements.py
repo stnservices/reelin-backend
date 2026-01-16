@@ -189,7 +189,7 @@ async def _send_achievement_notification(
                 event_name = event.name if event else None
 
             # Import here to avoid circular dependency
-            from app.tasks.notifications import send_notification_to_user
+            from app.tasks.notifications import send_notification_to_users
 
             title = "Achievement Unlocked!"
             message = f"Congratulations! You earned the '{achievement.name}' badge!"
@@ -197,8 +197,8 @@ async def _send_achievement_notification(
                 message += f" (from {event_name})"
 
             # Queue the push notification
-            send_notification_to_user.delay(
-                user_id=user_id,
+            send_notification_to_users.delay(
+                user_ids=[user_id],
                 title=title,
                 body=message,
                 data={
