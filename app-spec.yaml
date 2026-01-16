@@ -96,6 +96,9 @@ services:
       - key: DO_SPACES_REGION
         value: fra1
         scope: RUN_AND_BUILD_TIME
+      - key: STORAGE_BACKEND
+        value: do_spaces
+        scope: RUN_AND_BUILD_TIME
 
   - name: reelin-frontend
     github:
@@ -221,6 +224,9 @@ workers:
         scope: RUN_AND_BUILD_TIME
       - key: DO_SPACES_REGION
         value: fra1
+        scope: RUN_AND_BUILD_TIME
+      - key: STORAGE_BACKEND
+        value: do_spaces
         scope: RUN_AND_BUILD_TIME
 
 ingress:
