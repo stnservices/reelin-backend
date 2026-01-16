@@ -121,8 +121,7 @@ workers:
       branch: main
       deploy_on_push: true
     source_dir: /
-    environment_slug: python
-    build_command: pip install -r requirements.txt
+    dockerfile_path: docker/Dockerfile
     run_command: celery -A app.celery_app:celery_app worker --loglevel=info
     instance_size_slug: apps-s-1vcpu-2gb
     instance_count: 1
