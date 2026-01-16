@@ -171,6 +171,7 @@ async def _redis_pubsub_listener():
 
     retry_count = 0
     max_retry_delay = 60  # Max 60 seconds between retries
+    keepalive_interval = 120  # Send ping every 2 minutes to prevent idle timeout
     pubsub = None
 
     while True:
@@ -191,9 +192,21 @@ async def _redis_pubsub_listener():
             retry_count = 0
             logger.info("Redis Pub/Sub connected and subscribed")
 
-            async for message in pubsub.listen():
-                if message["type"] == "pmessage":
-                    try:
+            # Use get_message with timeout for keepalive instead of async for
+            while True:
+                try:
+                    # Wait for message with timeout for keepalive
+                    message = await asyncio.wait_for(
+                        pubsub.get_message(ignore_subscribe_messages=True, timeout=keepalive_interval),
+                        timeout=keepalive_interval + 5
+                    )
+
+                    if message is None:
+                        # No message received, send ping to keep connection alive
+                        await pubsub.ping()
+                        continue
+
+                    if message["type"] == "pmessage":
                         # Extract event_id from channel name: sse_broadcast:event_5 -> 5
                         channel = message["channel"]
                         event_id_str = channel.split("event_")[-1]
@@ -215,8 +228,11 @@ async def _redis_pubsub_listener():
                                 f"Redis->SSE bridge: No subscribers for event {event_id}, "
                                 f"skipping {data.get('type')}"
                             )
-                    except (ValueError, json.JSONDecodeError, KeyError) as e:
-                        logger.error(f"Error processing Redis Pub/Sub message: {e}")
+                except (ValueError, json.JSONDecodeError, KeyError) as e:
+                    logger.error(f"Error processing Redis Pub/Sub message: {e}")
+                except asyncio.TimeoutError:
+                    # Timeout waiting for message, send ping to keep connection alive
+                    await pubsub.ping()
 
         except asyncio.CancelledError:
             logger.info("Redis Pub/Sub listener cancelled")
