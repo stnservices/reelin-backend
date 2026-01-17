@@ -1,6 +1,6 @@
 {
-  "version": "v2",
-  "trained_at": "2026-01-14T10:30:48.558768",
+  "version": "v3",
+  "trained_at": "2026-01-17T14:15:28.289563",
   "models": {
     "attendance": {
       "mae": 10.13735515979502,
@@ -9,15 +9,26 @@
       "description": "Predicts expected attendance for events"
     },
     "performance": {
-      "accuracy": 0.5031700288184437,
-      "num_features": 13,
+      "accuracy": 0.5429394812680115,
+      "num_features": 22,
       "classes": [
         "Winner",
         "Podium",
         "Top 10",
         "Other"
       ],
-      "description": "Predicts user finish position bucket"
+      "description": "Predicts user finish position bucket based on user stats AND competition strength",
+      "competition_features": [
+        "enrolled_count",
+        "enrolled_avg_win_rate",
+        "enrolled_max_win_rate",
+        "enrolled_avg_events",
+        "enrolled_hof_count",
+        "enrolled_world_champ_count",
+        "enrolled_national_champ_count",
+        "user_experience_percentile",
+        "user_vs_avg_win_rate"
+      ]
     }
   }
 }
