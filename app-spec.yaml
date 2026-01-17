@@ -58,10 +58,13 @@ services:
         value: b2294a62c8dba53f2df7aec9b5516d4f
         scope: RUN_AND_BUILD_TIME
       - key: STRIPE_SECRET_KEY
-        value: sk_test_51MoTEkCeChlQkHB3fAEiFun5iuRgz2xDRi81Y9X4Q5oTd3S9pnLim0ufm6Rr7pa7hg2P7PMlvBEzm8rohc2vhSkN00YK9tU1Hi
+        value: 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
+        scope: RUN_AND_BUILD_TIME
+      - key: STRIPE_PUBLISHABLE_KEY
+        value: pk_live_51MoTEkCeChlQkHB3IfhfGtbeTjL0G9g6mEglwhHnGH2EMa4q95Fd6IByb4dPXdEPu4IOmpGyWiCrkHXkPwNFzD6E00UOPFlKHr
         scope: RUN_AND_BUILD_TIME
       - key: STRIPE_WEBHOOK_SECRET
-        value: whsec_b4a10537c52d53d6e89d7fffc1efef6ed1bda480ef3b39f918105491cbf558fb
+        value: whsec_K7OxIQCH6Lu4zE1JNCg3AWmFvwGWFqrh
         scope: RUN_AND_BUILD_TIME
       - key: OPENWEATHERMAP_API_KEY
         value: b1663d8fa0de87982c745dc5953e7cbd
@@ -107,8 +110,8 @@ services:
       deploy_on_push: true
     source_dir: /
     environment_slug: node-js
-    build_command: npm ci && npm run build && cp -r .next/static .next/standalone/.next/static && cp -r public .next/standalone/public
-    run_command: npm start
+    build_command: npm install && npm run build && cp -r .next/static .next/standalone/.next/static && cp -r public .next/standalone/public
+    run_command: node .next/standalone/server.js
     http_port: 3000
     instance_size_slug: apps-s-1vcpu-2gb
     instance_count: 1
@@ -184,10 +187,13 @@ workers:
         value: b2294a62c8dba53f2df7aec9b5516d4f
         scope: RUN_AND_BUILD_TIME
       - key: STRIPE_SECRET_KEY
-        value: sk_test_51MoTEkCeChlQkHB3fAEiFun5iuRgz2xDRi81Y9X4Q5oTd3S9pnLim0ufm6Rr7pa7hg2P7PMlvBEzm8rohc2vhSkN00YK9tU1Hi
+        value: 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
+        scope: RUN_AND_BUILD_TIME
+      - key: STRIPE_PUBLISHABLE_KEY
+        value: pk_live_51MoTEkCeChlQkHB3IfhfGtbeTjL0G9g6mEglwhHnGH2EMa4q95Fd6IByb4dPXdEPu4IOmpGyWiCrkHXkPwNFzD6E00UOPFlKHr
         scope: RUN_AND_BUILD_TIME
       - key: STRIPE_WEBHOOK_SECRET
-        value: whsec_b4a10537c52d53d6e89d7fffc1efef6ed1bda480ef3b39f918105491cbf558fb
+        value: whsec_K7OxIQCH6Lu4zE1JNCg3AWmFvwGWFqrh
         scope: RUN_AND_BUILD_TIME
       - key: OPENWEATHERMAP_API_KEY
         value: b1663d8fa0de87982c745dc5953e7cbd
