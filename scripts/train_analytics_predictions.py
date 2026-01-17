@@ -152,8 +152,8 @@ async def build_attendance_data(db: AsyncSession) -> pd.DataFrame:
 
 
 async def build_performance_data(db: AsyncSession) -> pd.DataFrame:
-    """Build training data for user performance prediction with improved features."""
-    print("Building performance training data...")
+    """Build training data for user performance prediction with competition features."""
+    print("Building performance training data with competition features...")
 
     # Get all scoreboards from completed events
     stmt = (
@@ -182,6 +182,37 @@ async def build_performance_data(db: AsyncSession) -> pd.DataFrame:
                 hof_map[entry.user_id] = []
             hof_map[entry.user_id].append(entry)
 
+    # Pre-load enrollments grouped by event for competition features
+    print("Loading enrollments for competition features...")
+    event_enrollments = {}
+    enrollment_stmt = select(EventEnrollment).where(
+        EventEnrollment.status == EnrollmentStatus.APPROVED.value
+    )
+    enrollment_result = await db.execute(enrollment_stmt)
+    for enrollment in enrollment_result.scalars().all():
+        if enrollment.event_id not in event_enrollments:
+            event_enrollments[enrollment.event_id] = []
+        event_enrollments[enrollment.event_id].append(enrollment.user_id)
+
+    print(f"Loaded enrollments for {len(event_enrollments)} events")
+
+    def get_user_win_rate(user_id):
+        """Calculate win rate for a user."""
+        stats = user_stats_map.get(user_id)
+        if not stats or not stats.total_events:
+            return 0
+        return (stats.total_wins or 0) / stats.total_events
+
+    def get_user_experience(user_id):
+        """Get total events for a user."""
+        stats = user_stats_map.get(user_id)
+        return stats.total_events if stats and stats.total_events else 0
+
+    def count_hof_type(user_id, type_substring):
+        """Count HOF entries of a specific type for a user."""
+        entries = hof_map.get(user_id, [])
+        return sum(1 for e in entries if type_substring in (e.achievement_type or '').lower())
+
     samples = []
 
     for sb in scoreboards:
@@ -198,19 +229,58 @@ async def build_performance_data(db: AsyncSession) -> pd.DataFrame:
         else:
             finish_bucket = 3  # Other
 
-        # Calculate Hall of Fame features
+        # Calculate Hall of Fame features for the user
         hof_count = len(hof_entries)
         hof_world = sum(1 for e in hof_entries if 'world' in (e.achievement_type or '').lower())
         hof_national = sum(1 for e in hof_entries if 'national' in (e.achievement_type or '').lower())
         hof_champion = sum(1 for e in hof_entries if 'champion' in (e.achievement_type or '').lower())
 
-        # Calculate win/podium rates
+        # Calculate win/podium rates for the user
         total_events = user_stats.total_events if user_stats and user_stats.total_events else 0
         wins = user_stats.total_wins if user_stats else 0
         podiums = user_stats.podium_finishes if user_stats else 0
 
         win_rate = wins / total_events if total_events > 0 else 0
         podium_rate = podiums / total_events if total_events > 0 else 0
+
+        # ============ NEW: Competition Strength Features ============
+        enrolled_users = event_enrollments.get(sb.event_id, [])
+        # Exclude current user from competition calculations
+        competitors = [u for u in enrolled_users if u != sb.user_id]
+
+        enrolled_count = len(enrolled_users)
+
+        if competitors:
+            # Calculate competitor stats
+            competitor_win_rates = [get_user_win_rate(u) for u in competitors]
+            competitor_experiences = [get_user_experience(u) for u in competitors]
+
+            enrolled_avg_win_rate = np.mean(competitor_win_rates) if competitor_win_rates else 0
+            enrolled_max_win_rate = max(competitor_win_rates) if competitor_win_rates else 0
+            enrolled_avg_events = np.mean(competitor_experiences) if competitor_experiences else 0
+
+            # Count HOF members among competitors
+            enrolled_hof_count = sum(1 for u in competitors if len(hof_map.get(u, [])) > 0)
+            enrolled_world_champ_count = sum(count_hof_type(u, 'world_champion') for u in competitors)
+            enrolled_national_champ_count = sum(count_hof_type(u, 'national_champion') for u in competitors)
+
+            # Calculate user's percentile among enrolled (based on experience)
+            user_exp = total_events
+            users_with_less_exp = sum(1 for exp in competitor_experiences if exp < user_exp)
+            user_experience_percentile = (users_with_less_exp / len(competitors)) * 100 if competitors else 50
+
+            # User vs average competitor
+            user_vs_avg_win_rate = win_rate - enrolled_avg_win_rate
+        else:
+            # No competitors (shouldn't happen in real data, but handle gracefully)
+            enrolled_avg_win_rate = 0
+            enrolled_max_win_rate = 0
+            enrolled_avg_events = 0
+            enrolled_hof_count = 0
+            enrolled_world_champ_count = 0
+            enrolled_national_champ_count = 0
+            user_experience_percentile = 50
+            user_vs_avg_win_rate = 0
 
         sample = {
             "finish_bucket": finish_bucket,
@@ -225,17 +295,31 @@ async def build_performance_data(db: AsyncSession) -> pd.DataFrame:
             "podium_rate": podium_rate,
             # Average performance
             "user_avg_catch_length": float(user_stats.average_catch_length) if user_stats and user_stats.average_catch_length else 0,
-            # Hall of Fame features
+            # Hall of Fame features (user)
             "hof_entry_count": hof_count,
             "hof_world_count": hof_world,
             "hof_national_count": hof_national,
             "hof_champion_count": hof_champion,
             "is_hof_member": 1 if hof_count > 0 else 0,
+            # NEW: Competition strength features
+            "enrolled_count": enrolled_count,
+            "enrolled_avg_win_rate": enrolled_avg_win_rate,
+            "enrolled_max_win_rate": enrolled_max_win_rate,
+            "enrolled_avg_events": enrolled_avg_events,
+            "enrolled_hof_count": enrolled_hof_count,
+            "enrolled_world_champ_count": enrolled_world_champ_count,
+            "enrolled_national_champ_count": enrolled_national_champ_count,
+            "user_experience_percentile": user_experience_percentile,
+            "user_vs_avg_win_rate": user_vs_avg_win_rate,
         }
         samples.append(sample)
 
     df = pd.DataFrame(samples)
     print(f"Built {len(df)} samples for performance prediction")
+    print(f"Competition feature stats:")
+    print(f"  Avg enrolled_count: {df['enrolled_count'].mean():.1f}")
+    print(f"  Avg enrolled_hof_count: {df['enrolled_hof_count'].mean():.2f}")
+    print(f"  Avg enrolled_world_champ_count: {df['enrolled_world_champ_count'].mean():.2f}")
     return df
 
 
@@ -309,12 +393,13 @@ def train_attendance_model(df: pd.DataFrame) -> tuple:
 
 
 def train_performance_model(df: pd.DataFrame) -> tuple:
-    """Train performance prediction model."""
+    """Train performance prediction model with competition features."""
     print("\n" + "="*50)
-    print("Training Performance Prediction Model")
+    print("Training Performance Prediction Model (v3 with competition)")
     print("="*50)
 
     feature_cols = [
+        # User features
         "user_total_events",
         "user_wins",
         "user_podiums",
@@ -328,6 +413,16 @@ def train_performance_model(df: pd.DataFrame) -> tuple:
         "hof_national_count",
         "hof_champion_count",
         "is_hof_member",
+        # Competition features
+        "enrolled_count",
+        "enrolled_avg_win_rate",
+        "enrolled_max_win_rate",
+        "enrolled_avg_events",
+        "enrolled_hof_count",
+        "enrolled_world_champ_count",
+        "enrolled_national_champ_count",
+        "user_experience_percentile",
+        "user_vs_avg_win_rate",
     ]
 
     X = df[feature_cols].values
@@ -407,7 +502,7 @@ def save_models(
     # Save metadata
     import json
     metadata = {
-        "version": "v2",
+        "version": "v3",
         "trained_at": datetime.now().isoformat(),
         "models": {
             "attendance": {
@@ -420,7 +515,12 @@ def save_models(
                 "accuracy": metrics["performance_accuracy"],
                 "num_features": len(performance_features),
                 "classes": ["Winner", "Podium", "Top 10", "Other"],
-                "description": "Predicts user finish position bucket",
+                "description": "Predicts user finish position bucket based on user stats AND competition strength",
+                "competition_features": [
+                    "enrolled_count", "enrolled_avg_win_rate", "enrolled_max_win_rate",
+                    "enrolled_avg_events", "enrolled_hof_count", "enrolled_world_champ_count",
+                    "enrolled_national_champ_count", "user_experience_percentile", "user_vs_avg_win_rate"
+                ],
             },
         },
     }
@@ -441,7 +541,8 @@ def save_models(
 async def main():
     """Main training function."""
     print("="*60)
-    print("Analytics Predictions ML Model Training v2")
+    print("Analytics Predictions ML Model Training v3")
+    print("(with Competition Strength Features)")
     print("="*60)
     print(f"Started at: {datetime.now().isoformat()}")
 

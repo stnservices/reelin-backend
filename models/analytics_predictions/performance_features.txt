@@ -11,3 +11,12 @@ hof_world_count
 hof_national_count
 hof_champion_count
 is_hof_member
+enrolled_count
+enrolled_avg_win_rate
+enrolled_max_win_rate
+enrolled_avg_events
+enrolled_hof_count
+enrolled_world_champ_count
+enrolled_national_champ_count
+user_experience_percentile
+user_vs_avg_win_rate

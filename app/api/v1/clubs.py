@@ -157,13 +157,20 @@ async def get_my_memberships(
 @router.get("", response_model=ClubListResponse)
 async def list_clubs(
     search: str | None = Query(None, min_length=1),
+    organizers_only: bool = Query(False, description="Filter to only clubs whose owners can organize events"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
     """
     List all active clubs (public endpoint).
+
+    Use organizers_only=true to filter to clubs whose owners have the organizer role.
+    This is useful for notification settings where users only want to follow clubs
+    that can create events.
     """
+    from app.models.user import UserProfile
+
     # Build query
     query = (
         select(Club)
@@ -174,6 +181,12 @@ async def list_clubs(
         )
         .where(Club.is_active == True, Club.is_deleted == False)
     )
+
+    # Filter by organizer role if requested
+    if organizers_only:
+        query = query.join(UserAccount, Club.owner_id == UserAccount.id)
+        query = query.join(UserProfile, UserAccount.id == UserProfile.user_id)
+        query = query.where(UserProfile.roles.contains(["organizer"]))
 
     # Search filter
     if search:
@@ -186,6 +199,11 @@ async def list_clubs(
     count_query = select(func.count(Club.id)).where(
         Club.is_active == True, Club.is_deleted == False
     )
+    # Apply same filters to count query
+    if organizers_only:
+        count_query = count_query.join(UserAccount, Club.owner_id == UserAccount.id)
+        count_query = count_query.join(UserProfile, UserAccount.id == UserProfile.user_id)
+        count_query = count_query.where(UserProfile.roles.contains(["organizer"]))
     if search:
         search_term = f"%{search}%"
         count_query = count_query.where(

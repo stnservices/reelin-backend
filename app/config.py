@@ -73,6 +73,7 @@ class Settings(BaseSettings):
 
     # Stripe (for platform billing)
     stripe_secret_key: str = ""
+    stripe_publishable_key: str = ""
     stripe_webhook_secret: str = ""
     stripe_invoice_days_until_due: int = 30
 
