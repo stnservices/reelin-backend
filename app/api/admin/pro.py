@@ -984,6 +984,105 @@ async def refund_payment(
 # Payment History Endpoints
 # ============================================================================
 
+@router.get("/payments")
+async def list_all_payments(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+) -> dict:
+    """List all recent Stripe payments across all users. Admin only."""
+    import stripe
+    from app.config import get_settings
+    app_settings = get_settings()
+
+    if not app_settings.stripe_secret_key:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Stripe not configured",
+        )
+
+    stripe.api_key = app_settings.stripe_secret_key
+
+    try:
+        # Calculate starting_after for pagination
+        # Stripe uses cursor-based pagination, so we need to handle this differently
+        # For simplicity, we'll fetch more and slice
+        limit = min(page_size * page, 100)  # Stripe max is 100
+
+        # Get invoices from Stripe
+        invoices = stripe.Invoice.list(
+            limit=limit,
+            expand=["data.customer"],
+        )
+
+        # Build lookup of user emails by stripe customer ID
+        customer_ids = list(set(
+            inv.customer.id if hasattr(inv.customer, 'id') else inv.customer
+            for inv in invoices.data if inv.customer
+        ))
+
+        # Get users from database
+        users_query = select(UserAccount).options(
+            selectinload(UserAccount.profile)
+        ).where(
+            UserAccount.pro_stripe_customer_id.in_(customer_ids)
+        )
+        users_result = await db.execute(users_query)
+        users = users_result.scalars().all()
+
+        # Create lookup
+        customer_to_user = {
+            u.pro_stripe_customer_id: u for u in users
+        }
+
+        # Paginate the results
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        paginated_invoices = invoices.data[start_idx:end_idx]
+
+        payments = []
+        for invoice in paginated_invoices:
+            customer_id = invoice.customer.id if hasattr(invoice.customer, 'id') else invoice.customer
+            user = customer_to_user.get(customer_id)
+
+            payments.append({
+                "id": invoice.id,
+                "number": invoice.number,
+                "amount": invoice.amount_paid / 100,  # Convert from cents
+                "currency": invoice.currency.upper(),
+                "status": invoice.status,
+                "created": datetime.fromtimestamp(invoice.created, tz=timezone.utc).isoformat(),
+                "paid_at": datetime.fromtimestamp(invoice.status_transitions.paid_at, tz=timezone.utc).isoformat() if invoice.status_transitions.paid_at else None,
+                "invoice_pdf": invoice.invoice_pdf,
+                "hosted_invoice_url": invoice.hosted_invoice_url,
+                "description": invoice.description or "Pro subscription",
+                "payment_intent_id": invoice.payment_intent,
+                "refunded": False,
+                "user_id": user.id if user else None,
+                "user_email": user.email if user else (invoice.customer_email or "Unknown"),
+                "user_name": user.profile.full_name if user and user.profile else (invoice.customer_name or "Unknown"),
+                "stripe_customer_id": customer_id,
+            })
+
+        total = len(invoices.data)
+        total_pages = (total + page_size - 1) // page_size
+
+        return {
+            "items": payments,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "has_more": invoices.has_more,
+        }
+    except stripe.error.StripeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to fetch payments: {str(e)}",
+        )
+
+
 @router.get("/payments/{user_id}")
 async def get_user_payments(
     user_id: int,

@@ -51,6 +51,7 @@ from app.models.profile_moderation import ProfilePictureModeration, ModerationSt
 from app.models.ml_model import MLModel, MLPredictionLog
 from app.models.organizer_permissions import OrganizerEventTypeAccess, NationalEventOrganizer
 from app.models.partner import Partner
+from app.models.news import News
 from app.models.hall_of_fame import HallOfFameEntry
 
 # Minigame
@@ -189,6 +190,8 @@ __all__ = [
     "NationalEventOrganizer",
     # Partner
     "Partner",
+    # News
+    "News",
     # Hall of Fame
     "HallOfFameEntry",
     # Minigame

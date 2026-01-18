@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,8 +14,10 @@ from app.config import get_settings
 from app.database import get_db
 from app.models.admin_message import AdminMessage
 from app.models.event import Event, EventStatus, EventType
+from app.models.news import News
 from app.models.partner import Partner
 from app.schemas.admin_message import AdminMessageSendResponse, PublicContactCreate
+from app.schemas.news import NewsPublicDetailResponse, NewsPublicListResponse, NewsPublicResponse
 from app.schemas.partner import PartnerPublicResponse
 from app.services.email import get_email_service
 
@@ -174,6 +176,109 @@ async def get_public_partners(
 
     result = await db.execute(query)
     return list(result.scalars().all())
+
+
+def _get_author_name_from_news(news: News) -> str:
+    """Get display name for news author."""
+    if news.created_by and news.created_by.profile:
+        name = f"{news.created_by.profile.first_name or ''} {news.created_by.profile.last_name or ''}".strip()
+        if name:
+            return name
+    if news.created_by:
+        return news.created_by.email.split("@")[0]
+    return "Unknown"
+
+
+@router.get("/news", response_model=NewsPublicListResponse)
+async def get_public_news(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(6, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
+) -> NewsPublicListResponse:
+    """
+    Get published news articles for landing page.
+
+    Returns articles ordered by published_at (newest first).
+    No authentication required.
+    """
+    from sqlalchemy.orm import selectinload
+
+    # Base query - only published, not deleted
+    query = (
+        select(News)
+        .options(selectinload(News.created_by))
+        .where(News.is_published == True)  # noqa: E712
+        .where(News.is_deleted == False)  # noqa: E712
+    )
+
+    # Count total
+    count_query = select(func.count()).select_from(query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar() or 0
+
+    # Apply pagination and ordering
+    query = query.order_by(News.published_at.desc())
+    query = query.offset((page - 1) * page_size).limit(page_size)
+
+    result = await db.execute(query)
+    news_list = result.scalars().all()
+
+    return NewsPublicListResponse(
+        items=[
+            NewsPublicResponse(
+                id=n.id,
+                title=n.title,
+                excerpt=n.excerpt,
+                featured_image_url=n.featured_image_url,
+                author_name=_get_author_name_from_news(n),
+                published_at=n.published_at,
+            )
+            for n in news_list
+        ],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get("/news/{news_id}", response_model=NewsPublicDetailResponse)
+async def get_public_news_detail(
+    news_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> NewsPublicDetailResponse:
+    """
+    Get a single published news article with full content.
+
+    No authentication required.
+    """
+    from sqlalchemy.orm import selectinload
+
+    query = (
+        select(News)
+        .options(selectinload(News.created_by))
+        .where(News.id == news_id)
+        .where(News.is_published == True)  # noqa: E712
+        .where(News.is_deleted == False)  # noqa: E712
+    )
+
+    result = await db.execute(query)
+    news = result.scalar_one_or_none()
+
+    if not news:
+        raise HTTPException(
+            status_code=404,
+            detail="News article not found",
+        )
+
+    return NewsPublicDetailResponse(
+        id=news.id,
+        title=news.title,
+        content=news.content,
+        excerpt=news.excerpt,
+        featured_image_url=news.featured_image_url,
+        author_name=_get_author_name_from_news(news),
+        published_at=news.published_at,
+    )
 
 
 async def verify_recaptcha(token: str) -> tuple[bool, float]:

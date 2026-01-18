@@ -22,6 +22,7 @@ class UploadCategory(str, Enum):
     CLUBS = "clubs"
     PROFILES = "profiles"
     GENERAL = "general"
+    NEWS = "news"
 
 
 class UploadResponse(BaseModel):
