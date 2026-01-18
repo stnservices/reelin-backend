@@ -47,6 +47,7 @@ from app.api.v1.trout_area import router as trout_area_router
 from app.api.v1.ta_public import router as ta_public_router
 from app.api.v1.minigame import router as minigame_router
 from app.api.v1.public import router as public_router
+from app.api.v1.news import router as news_router
 from app.api.v1.predictions import router as predictions_router
 
 router = APIRouter()
@@ -96,4 +97,5 @@ router.include_router(trout_area_router, prefix="/ta", tags=["Trout Area (TA)"])
 router.include_router(ta_public_router, tags=["TA Public"])  # Public endpoints, prefix already in router
 router.include_router(minigame_router, prefix="/minigame", tags=["Minigame"])
 router.include_router(public_router, tags=["Public"])  # No prefix, already has /public
+router.include_router(news_router, tags=["News"])  # No prefix, already has /news
 router.include_router(predictions_router, prefix="/predictions", tags=["ML Predictions"])
