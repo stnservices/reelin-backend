@@ -203,7 +203,8 @@ class ForecastService:
             score += 5
 
         # Day rating from solunar (+5 max)
-        day_rating = int(solunar.get("dayRating", 2))
+        # Clamp to 0-4 (Solunar API sometimes returns invalid values)
+        day_rating = min(4, max(0, int(solunar.get("dayRating", 2))))
         if day_rating == 4:
             score += 5
         elif day_rating == 3:
@@ -437,7 +438,8 @@ class ForecastService:
             "moon_set": solunar.get("moonSet", ""),
             "moon_phase": solunar.get("moonPhase", ""),
             "moon_illumination": self._format_illumination(solunar.get("moonIllumination", "")),
-            "day_rating": int(solunar.get("dayRating", 2)),
+            # Clamp day_rating to 0-4 (Solunar API sometimes returns invalid values)
+            "day_rating": min(4, max(0, int(solunar.get("dayRating", 2)))),
             # Major/minor periods
             "major_periods": self._extract_periods(solunar, "major"),
             "minor_periods": self._extract_periods(solunar, "minor"),
@@ -552,7 +554,8 @@ class ForecastService:
 
             # Estimate score (without real-time weather for future days)
             base_score = 50
-            day_rating = int(solunar.get("dayRating", 2))
+            # Clamp day_rating to 0-4 (Solunar API sometimes returns invalid values)
+            day_rating = min(4, max(0, int(solunar.get("dayRating", 2))))
             base_score += day_rating * 5  # +5 to +20 based on day rating
 
             moon_phase = solunar.get("moonPhase", "").lower()
