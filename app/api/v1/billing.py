@@ -531,9 +531,10 @@ async def get_my_pricing(
     Get current pricing rates for the organizer by event type.
     Only shows active (current) pricing tiers.
     """
-    # First get the billing profile
+    # First get the primary billing profile
     profile_query = select(OrganizerBillingProfile).where(
-        OrganizerBillingProfile.user_id == current_user.id
+        OrganizerBillingProfile.user_id == current_user.id,
+        OrganizerBillingProfile.is_primary == True,
     )
     profile_result = await db.execute(profile_query)
     profile = profile_result.scalar_one_or_none()
@@ -579,9 +580,10 @@ async def list_my_invoices(
     List invoices for the current user.
     Supports filtering by status and pagination.
     """
-    # First get the billing profile
+    # First get the primary billing profile
     profile_query = select(OrganizerBillingProfile).where(
-        OrganizerBillingProfile.user_id == current_user.id
+        OrganizerBillingProfile.user_id == current_user.id,
+        OrganizerBillingProfile.is_primary == True,
     )
     profile_result = await db.execute(profile_query)
     profile = profile_result.scalar_one_or_none()
@@ -640,9 +642,10 @@ async def get_my_invoice(
     Get details of a specific invoice.
     Only returns invoices belonging to the current user.
     """
-    # First get the billing profile
+    # First get the primary billing profile
     profile_query = select(OrganizerBillingProfile).where(
-        OrganizerBillingProfile.user_id == current_user.id
+        OrganizerBillingProfile.user_id == current_user.id,
+        OrganizerBillingProfile.is_primary == True,
     )
     profile_result = await db.execute(profile_query)
     profile = profile_result.scalar_one_or_none()
@@ -690,9 +693,10 @@ async def get_my_billing_summary(
     Get billing summary for the current user.
     Shows total invoices, pending/paid amounts, and overdue count.
     """
-    # First get the billing profile
+    # First get the primary billing profile
     profile_query = select(OrganizerBillingProfile).where(
-        OrganizerBillingProfile.user_id == current_user.id
+        OrganizerBillingProfile.user_id == current_user.id,
+        OrganizerBillingProfile.is_primary == True,
     )
     profile_result = await db.execute(profile_query)
     profile = profile_result.scalar_one_or_none()
