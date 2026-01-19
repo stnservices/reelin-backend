@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from sqlalchemy import select, func, and_, distinct
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -735,7 +736,11 @@ class RecommendationsService:
             item_id=item_id,
         )
         self.db.add(dismissal)
-        await self.db.commit()
+        try:
+            await self.db.commit()
+        except IntegrityError:
+            # Already dismissed, ignore
+            await self.db.rollback()
 
     # ---- Completed Event Insights ----
 

@@ -105,7 +105,7 @@ async def list_cities_by_country(
     query = select(City).where(City.country_id == country_id)
     if search:
         query = query.where(City.name.ilike(f"%{search}%"))
-    query = query.order_by(City.name).limit(50)
+    query = query.order_by(City.name).limit(500)
     result = await db.execute(query)
     cities = result.scalars().all()
     return [{"id": c.id, "name": c.name, "country_id": c.country_id} for c in cities]
@@ -123,7 +123,7 @@ async def list_all_cities(
         query = query.where(City.country_id == country_id)
     if search:
         query = query.where(City.name.ilike(f"%{search}%"))
-    query = query.order_by(City.name).limit(50)
+    query = query.order_by(City.name).limit(500)
     result = await db.execute(query)
     cities = result.scalars().all()
     return [
