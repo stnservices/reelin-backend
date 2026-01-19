@@ -73,7 +73,7 @@ services:
         value: 6LeLfUksAAAAAPWlnE_k91wasHeTgRtBqb8nV6w7
         scope: RUN_AND_BUILD_TIME
       - key: DATABASE_URL
-        value: postgresql+asyncpg://doadmin:AVNS_SD-tDwlLMGE79DPC6cw@app-44c7c9ff-da83-4ce3-9ff9-243ba6909f32-do-user-14096196-0.h.db.ondigitalocean.com:25061/reelin-db-pool?ssl=require
+        value: postgresql+asyncpg://doadmin:AVNS_58DPBLZ-InkB_BHuCcO@reelin-db-do-user-14096196-0.e.db.ondigitalocean.com:25061/reelin-db-pool?sslmode=require
         scope: RUN_AND_BUILD_TIME
       - key: REDIS_URL
         value: rediss://default:AVNS_Z4xzXY7G6OLCNNgOX5w@reelin-valkey-do-user-14096196-0.h.db.ondigitalocean.com:25061/0
@@ -202,7 +202,7 @@ workers:
         value: 6LeLfUksAAAAAPWlnE_k91wasHeTgRtBqb8nV6w7
         scope: RUN_AND_BUILD_TIME
       - key: DATABASE_URL
-        value: postgresql+asyncpg://doadmin:AVNS_SD-tDwlLMGE79DPC6cw@app-44c7c9ff-da83-4ce3-9ff9-243ba6909f32-do-user-14096196-0.h.db.ondigitalocean.com:25061/reelin-db-pool?ssl=require
+        value: postgresql+asyncpg://doadmin:AVNS_58DPBLZ-InkB_BHuCcO@reelin-db-do-user-14096196-0.e.db.ondigitalocean.com:25061/reelin-db-pool?sslmode=require
         scope: RUN_AND_BUILD_TIME
       - key: REDIS_URL
         value: rediss://default:AVNS_Z4xzXY7G6OLCNNgOX5w@reelin-valkey-do-user-14096196-0.h.db.ondigitalocean.com:25061/0
