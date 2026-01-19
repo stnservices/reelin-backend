@@ -11,28 +11,8 @@ from app.database import Base
 from app.config import get_settings
 
 # Import all models to ensure they're registered with Base
-from app.models import (
-    UserAccount,
-    UserProfile,
-    TokenBlacklist,
-    Event,
-    EventType,
-    ScoringConfig,
-    EventPrize,
-    EventScoringRule,
-    EventEnrollment,
-    Catch,
-    EventScoreboard,
-    RankingMovement,
-    Club,
-    ClubMembership,
-    Country,
-    City,
-    FishingSpot,
-    Fish,
-    Notification,
-    Sponsor,
-)
+# Using wildcard import to ensure ALL models are loaded
+from app.models import *  # noqa: F401, F403
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
