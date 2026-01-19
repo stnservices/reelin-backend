@@ -487,28 +487,28 @@ async def get_user_ranking_breakdown(
                 e.id as event_id,
                 e.name as event_name,
                 e.start_date::text as event_date,
-                qs.final_rank as rank,
-                qs.total_wins as points,
-                COALESCE(qs.total_catches, 0) as catches,
+                qs.rank as rank,
+                qs.total_victories as points,
+                COALESCE(qs.total_fish_caught, 0) as catches,
                 e.is_national_event as is_national,
                 CASE
-                    WHEN qs.final_rank = 1 THEN 100
-                    WHEN qs.final_rank = 2 THEN 85
-                    WHEN qs.final_rank = 3 THEN 70
-                    WHEN qs.final_rank = 4 THEN 60
-                    WHEN qs.final_rank = 5 THEN 50
-                    WHEN qs.final_rank = 6 THEN 42
-                    WHEN qs.final_rank = 7 THEN 36
-                    WHEN qs.final_rank = 8 THEN 30
-                    WHEN qs.final_rank = 9 THEN 25
-                    WHEN qs.final_rank = 10 THEN 20
-                    WHEN qs.final_rank BETWEEN 11 AND 20 THEN 21 - qs.final_rank + 5
+                    WHEN qs.rank = 1 THEN 100
+                    WHEN qs.rank = 2 THEN 85
+                    WHEN qs.rank = 3 THEN 70
+                    WHEN qs.rank = 4 THEN 60
+                    WHEN qs.rank = 5 THEN 50
+                    WHEN qs.rank = 6 THEN 42
+                    WHEN qs.rank = 7 THEN 36
+                    WHEN qs.rank = 8 THEN 30
+                    WHEN qs.rank = 9 THEN 25
+                    WHEN qs.rank = 10 THEN 20
+                    WHEN qs.rank BETWEEN 11 AND 20 THEN 21 - qs.rank + 5
                     ELSE 5
                 END as position_points,
                 CASE
-                    WHEN qs.final_rank = 1 THEN 25
-                    WHEN qs.final_rank = 2 THEN 15
-                    WHEN qs.final_rank = 3 THEN 10
+                    WHEN qs.rank = 1 THEN 25
+                    WHEN qs.rank = 2 THEN 15
+                    WHEN qs.rank = 3 THEN 10
                     ELSE 0
                 END as podium_bonus
             FROM ta_qualifier_standings qs
@@ -625,10 +625,10 @@ async def get_user_stats_comparison(
     ta_calc_query = text("""
         SELECT
             COUNT(DISTINCT qs.event_id) as total_events,
-            COALESCE(SUM(qs.total_wins), 0) as total_points,
-            COALESCE(SUM(qs.total_catches), 0) as total_catches,
-            COUNT(CASE WHEN qs.final_rank = 1 THEN 1 END) as total_wins,
-            COUNT(CASE WHEN qs.final_rank <= 3 THEN 1 END) as podiums
+            COALESCE(SUM(qs.total_victories), 0) as total_points,
+            COALESCE(SUM(qs.total_fish_caught), 0) as total_catches,
+            COUNT(CASE WHEN qs.rank = 1 THEN 1 END) as total_wins,
+            COUNT(CASE WHEN qs.rank <= 3 THEN 1 END) as podiums
         FROM ta_qualifier_standings qs
         JOIN events e ON e.id = qs.event_id
         JOIN event_types et ON et.id = e.event_type_id
