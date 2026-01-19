@@ -450,8 +450,8 @@ async def get_user_ranking_breakdown(
                 e.name as event_name,
                 e.start_date::text as event_date,
                 es.rank,
-                es.total_score as points,
-                es.validated_catches as catches,
+                es.total_points as points,
+                es.total_catches as catches,
                 e.is_national_event as is_national,
                 CASE
                     WHEN es.rank = 1 THEN 100
@@ -608,11 +608,11 @@ async def get_user_stats_comparison(
     sf_calc_query = text("""
         SELECT
             COUNT(DISTINCT es.event_id) as total_events,
-            COALESCE(SUM(es.total_score), 0) as total_points,
-            COALESCE(SUM(es.validated_catches), 0) as total_catches,
+            COALESCE(SUM(es.total_points), 0) as total_points,
+            COALESCE(SUM(es.total_catches), 0) as total_catches,
             COUNT(CASE WHEN es.rank = 1 THEN 1 END) as total_wins,
             COUNT(CASE WHEN es.rank <= 3 THEN 1 END) as podiums,
-            MAX(es.best_catch) as largest_catch
+            MAX(es.best_catch_length) as largest_catch
         FROM event_scoreboards es
         JOIN events e ON e.id = es.event_id
         JOIN event_types et ON et.id = e.event_type_id
