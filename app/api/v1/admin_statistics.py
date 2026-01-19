@@ -477,7 +477,7 @@ async def get_user_ranking_breakdown(
             JOIN events e ON e.id = es.event_id
             JOIN event_types et ON et.id = e.event_type_id
             WHERE es.user_id = :user_id
-              AND et.code = 'sf'
+              AND et.code = 'street_fishing'
               AND e.status = 'completed'
         """)
     else:
@@ -515,7 +515,7 @@ async def get_user_ranking_breakdown(
             JOIN events e ON e.id = qs.event_id
             JOIN event_types et ON et.id = e.event_type_id
             WHERE qs.user_id = :user_id
-              AND et.code = 'ta'
+              AND et.code = 'trout_area'
               AND e.status = 'completed'
         """)
 
@@ -616,7 +616,7 @@ async def get_user_stats_comparison(
         FROM event_scoreboards es
         JOIN events e ON e.id = es.event_id
         JOIN event_types et ON et.id = e.event_type_id
-        WHERE es.user_id = :user_id AND et.code = 'sf' AND e.status = 'completed'
+        WHERE es.user_id = :user_id AND et.code = 'street_fishing' AND e.status = 'completed'
     """)
     sf_calc_result = await db.execute(sf_calc_query, {"user_id": user_id})
     sf_calc_row = sf_calc_result.fetchone()
@@ -632,7 +632,7 @@ async def get_user_stats_comparison(
         FROM ta_qualifier_standings qs
         JOIN events e ON e.id = qs.event_id
         JOIN event_types et ON et.id = e.event_type_id
-        WHERE qs.user_id = :user_id AND et.code = 'ta' AND e.status = 'completed'
+        WHERE qs.user_id = :user_id AND et.code = 'trout_area' AND e.status = 'completed'
     """)
     ta_calc_result = await db.execute(ta_calc_query, {"user_id": user_id})
     ta_calc_row = ta_calc_result.fetchone()
@@ -677,8 +677,8 @@ async def get_user_stats_comparison(
         )
 
     # Build response
-    sf_comparison = compare_stats("sf", stored_rows.get("sf"), sf_calc_row)
-    ta_comparison = compare_stats("ta", stored_rows.get("ta"), ta_calc_row)
+    sf_comparison = compare_stats("sf", stored_rows.get("street_fishing"), sf_calc_row)
+    ta_comparison = compare_stats("ta", stored_rows.get("trout_area"), ta_calc_row)
 
     # Overall comparison (sum of both)
     overall_stored = stored_rows.get(None)  # event_type_id=NULL is overall
