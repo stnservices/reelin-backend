@@ -595,8 +595,8 @@ async def get_user_stats_comparison(
             uets.total_catches,
             uets.total_events,
             uets.total_wins,
-            uets.podiums,
-            uets.largest_catch
+            uets.podium_finishes as podiums,
+            uets.largest_catch_cm as largest_catch
         FROM user_event_type_stats uets
         LEFT JOIN event_types et ON et.id = uets.event_type_id
         WHERE uets.user_id = :user_id
