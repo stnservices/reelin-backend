@@ -1061,16 +1061,15 @@ async def revalidate_catch(
             detail="Cannot revalidate a pending catch. Use the validate endpoint instead.",
         )
 
-    # Check if any changes are being made (status, fish, length, or weight)
+    # Check if any changes are being made (status, fish, or length)
     has_status_change = catch.status != revalidation_data.new_status.value
     has_fish_change = revalidation_data.new_fish_id and revalidation_data.new_fish_id != catch.fish_id
     has_length_change = revalidation_data.adjusted_length and revalidation_data.adjusted_length != catch.length
-    has_weight_change = revalidation_data.adjusted_weight and revalidation_data.adjusted_weight != catch.weight
 
-    if not has_status_change and not has_fish_change and not has_length_change and not has_weight_change:
+    if not has_status_change and not has_fish_change and not has_length_change:
         raise HTTPException(
             status_code=400,
-            detail="No changes detected. Please modify the status, species, length, or weight.",
+            detail="No changes detected. Please modify the status, species, or length.",
         )
 
     # Validate new fish species if provided
