@@ -1,19 +1,23 @@
 """Admin statistics endpoints for manual recalculation and debugging."""
 
+from datetime import datetime
 from typing import Optional, List, Any
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select, distinct, text
+from sqlalchemy import select, distinct, text, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.user import UserAccount
 from app.models.event import Event
+from app.models.catch import Catch, CatchStatus
 from app.models.enrollment import EventEnrollment
 from app.models.trout_area import TALineup
 from app.models.statistics import UserEventTypeStats
+from app.models.achievement import UserAchievement, AchievementDefinition
 from app.core.permissions import AdminOnly
 from app.services.statistics_service import statistics_service
+from app.services.achievement_service import AchievementService
 
 
 router = APIRouter()
@@ -125,6 +129,66 @@ class StatsRecalculateResponse(BaseModel):
     message: str
     user_id: Optional[int] = None
     users_processed: Optional[int] = None
+
+
+# ============== Achievement Schemas ==============
+
+class AchievementDetail(BaseModel):
+    """Single achievement/badge detail."""
+    achievement_id: int
+    code: str
+    name: str
+    description: str
+    category: str  # 'tiered' or 'special'
+    tier: Optional[str] = None  # 'bronze', 'silver', 'gold', 'platinum'
+    achievement_type: str
+    threshold: Optional[int] = None
+    icon_url: Optional[str] = None
+    badge_color: Optional[str] = None
+    earned_at: datetime
+    event_id: Optional[int] = None
+    event_name: Optional[str] = None
+    fish_species: Optional[str] = None
+
+
+class UserAchievementSummary(BaseModel):
+    """Summary of achievements for a user."""
+    user_id: int
+    user_name: str
+    email: str
+    avatar_url: Optional[str] = None
+    total_achievements: int = 0
+    tiered_count: int = 0
+    special_count: int = 0
+    bronze_count: int = 0
+    silver_count: int = 0
+    gold_count: int = 0
+    platinum_count: int = 0
+
+
+class UserAchievementsResponse(BaseModel):
+    """Response with user achievements details."""
+    user_id: int
+    user_name: str
+    email: str
+    summary: UserAchievementSummary
+    achievements: List[AchievementDetail] = Field(default_factory=list)
+
+
+class AchievementsListResponse(BaseModel):
+    """Response for listing all users with achievements."""
+    users: List[UserAchievementSummary]
+    total: int
+
+
+class AchievementRecalculateResponse(BaseModel):
+    """Response for achievement recalculation."""
+    success: bool
+    message: str
+    user_id: int
+    achievements_before: int
+    achievements_after: int
+    new_achievements: List[str] = Field(default_factory=list)
 
 
 @router.post("/users/{user_id}/recalculate", response_model=StatsRecalculateResponse)
@@ -730,4 +794,304 @@ async def get_user_stats_comparison(
         sf=sf_comparison if sf_comparison.stored.total_events > 0 or sf_comparison.calculated.total_events > 0 else None,
         ta=ta_comparison if ta_comparison.stored.total_events > 0 or ta_comparison.calculated.total_events > 0 else None,
         overall=overall_comparison,
+    )
+
+
+# ============== Achievement Endpoints ==============
+
+
+@router.get("/achievements", response_model=AchievementsListResponse)
+async def get_all_user_achievements(
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+    user_id: Optional[int] = Query(None, description="Filter by user ID"),
+    search: Optional[str] = Query(None, description="Search by name or email"),
+    limit: int = Query(100, ge=1, le=500, description="Max results"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+) -> AchievementsListResponse:
+    """
+    Get all users with their achievement summary.
+
+    Supports filtering by user_id or searching by name/email.
+    Returns summary counts of achievements per user.
+    """
+    # Build base query for user achievement summaries
+    query = text("""
+        SELECT
+            u.id as user_id,
+            p.first_name || ' ' || p.last_name as user_name,
+            u.email,
+            p.profile_picture_url as avatar_url,
+            COUNT(ua.id) as total_achievements,
+            COUNT(ua.id) FILTER (WHERE ad.category = 'tiered') as tiered_count,
+            COUNT(ua.id) FILTER (WHERE ad.category = 'special') as special_count,
+            COUNT(ua.id) FILTER (WHERE ad.tier = 'bronze') as bronze_count,
+            COUNT(ua.id) FILTER (WHERE ad.tier = 'silver') as silver_count,
+            COUNT(ua.id) FILTER (WHERE ad.tier = 'gold') as gold_count,
+            COUNT(ua.id) FILTER (WHERE ad.tier = 'platinum') as platinum_count
+        FROM user_accounts u
+        JOIN user_profiles p ON p.user_id = u.id
+        LEFT JOIN user_achievements ua ON ua.user_id = u.id
+        LEFT JOIN achievement_definitions ad ON ad.id = ua.achievement_id AND ad.is_active = TRUE
+        WHERE 1=1
+    """)
+    params: dict = {}
+
+    # Add user_id filter
+    if user_id:
+        query = text(str(query) + " AND u.id = :user_id")
+        params["user_id"] = user_id
+
+    # Add search filter
+    if search:
+        query = text(str(query) + " AND (LOWER(p.first_name || ' ' || p.last_name) LIKE LOWER(:search) OR LOWER(u.email) LIKE LOWER(:search))")
+        params["search"] = f"%{search}%"
+
+    # Only return users with achievements (unless filtering by user_id)
+    if not user_id:
+        query = text(str(query) + " GROUP BY u.id, p.first_name, p.last_name, u.email, p.profile_picture_url HAVING COUNT(ua.id) > 0")
+    else:
+        query = text(str(query) + " GROUP BY u.id, p.first_name, p.last_name, u.email, p.profile_picture_url")
+
+    # Get total count
+    count_query = text(f"SELECT COUNT(*) FROM ({query}) subq")
+    count_result = await db.execute(count_query, params)
+    total = count_result.scalar() or 0
+
+    # Add ordering and pagination
+    full_query = text(str(query) + " ORDER BY total_achievements DESC, user_name LIMIT :limit OFFSET :offset")
+    params["limit"] = limit
+    params["offset"] = offset
+
+    result = await db.execute(full_query, params)
+    rows = result.fetchall()
+
+    users = [
+        UserAchievementSummary(
+            user_id=row.user_id,
+            user_name=row.user_name or "Unknown",
+            email=row.email or "",
+            avatar_url=row.avatar_url,
+            total_achievements=row.total_achievements or 0,
+            tiered_count=row.tiered_count or 0,
+            special_count=row.special_count or 0,
+            bronze_count=row.bronze_count or 0,
+            silver_count=row.silver_count or 0,
+            gold_count=row.gold_count or 0,
+            platinum_count=row.platinum_count or 0,
+        )
+        for row in rows
+    ]
+
+    return AchievementsListResponse(users=users, total=total)
+
+
+@router.get("/users/{user_id}/achievements", response_model=UserAchievementsResponse)
+async def get_user_achievements(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+    category: Optional[str] = Query(None, pattern="^(tiered|special)$", description="Filter by category"),
+) -> UserAchievementsResponse:
+    """
+    Get detailed achievements for a specific user.
+
+    Returns all achievements with full details including when earned,
+    which event triggered it, and related fish species.
+    """
+    # Get user info
+    user = await db.get(UserAccount, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Get user profile
+    profile_result = await db.execute(
+        text("SELECT first_name, last_name, profile_picture_url FROM user_profiles WHERE user_id = :user_id"),
+        {"user_id": user_id}
+    )
+    profile_row = profile_result.fetchone()
+    user_name = f"{profile_row.first_name} {profile_row.last_name}" if profile_row else "Unknown"
+    avatar_url = profile_row.profile_picture_url if profile_row else None
+
+    # Get achievements with details
+    query = text("""
+        SELECT
+            ad.id as achievement_id,
+            ad.code,
+            ad.name,
+            ad.description,
+            ad.category,
+            ad.tier,
+            ad.achievement_type,
+            ad.threshold,
+            ad.icon_url,
+            ad.badge_color,
+            ua.earned_at,
+            ua.event_id,
+            e.name as event_name,
+            f.name as fish_species
+        FROM user_achievements ua
+        JOIN achievement_definitions ad ON ad.id = ua.achievement_id
+        LEFT JOIN events e ON e.id = ua.event_id
+        LEFT JOIN fish f ON f.id = ad.fish_id
+        WHERE ua.user_id = :user_id AND ad.is_active = TRUE
+    """)
+    params: dict = {"user_id": user_id}
+
+    if category:
+        query = text(str(query) + " AND ad.category = :category")
+        params["category"] = category
+
+    query = text(str(query) + " ORDER BY ua.earned_at DESC, ad.sort_order")
+
+    result = await db.execute(query, params)
+    rows = result.fetchall()
+
+    achievements = [
+        AchievementDetail(
+            achievement_id=row.achievement_id,
+            code=row.code,
+            name=row.name,
+            description=row.description,
+            category=row.category,
+            tier=row.tier,
+            achievement_type=row.achievement_type,
+            threshold=row.threshold,
+            icon_url=row.icon_url,
+            badge_color=row.badge_color,
+            earned_at=row.earned_at,
+            event_id=row.event_id,
+            event_name=row.event_name,
+            fish_species=row.fish_species,
+        )
+        for row in rows
+    ]
+
+    # Calculate summary
+    summary = UserAchievementSummary(
+        user_id=user_id,
+        user_name=user_name,
+        email=user.email,
+        avatar_url=avatar_url,
+        total_achievements=len(achievements),
+        tiered_count=sum(1 for a in achievements if a.category == "tiered"),
+        special_count=sum(1 for a in achievements if a.category == "special"),
+        bronze_count=sum(1 for a in achievements if a.tier == "bronze"),
+        silver_count=sum(1 for a in achievements if a.tier == "silver"),
+        gold_count=sum(1 for a in achievements if a.tier == "gold"),
+        platinum_count=sum(1 for a in achievements if a.tier == "platinum"),
+    )
+
+    return UserAchievementsResponse(
+        user_id=user_id,
+        user_name=user_name,
+        email=user.email,
+        summary=summary,
+        achievements=achievements,
+    )
+
+
+@router.post("/users/{user_id}/recalculate-achievements", response_model=AchievementRecalculateResponse)
+async def recalculate_user_achievements(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+) -> AchievementRecalculateResponse:
+    """
+    Recalculate and award any missing achievements for a user.
+
+    This will:
+    1. Check all tiered achievements based on current stats
+    2. Check special achievements for each completed event
+    3. Award any achievements that were missed
+
+    Useful after data migrations or when achievements weren't properly triggered.
+    """
+    # Verify user exists
+    user = await db.get(UserAccount, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Get current achievement count
+    before_count_result = await db.execute(
+        select(func.count(UserAchievement.id)).where(UserAchievement.user_id == user_id)
+    )
+    achievements_before = before_count_result.scalar() or 0
+
+    # Get user's completed events (non-test)
+    events_query = (
+        select(Event.id, Event.event_type_id)
+        .join(EventEnrollment, EventEnrollment.event_id == Event.id)
+        .where(EventEnrollment.user_id == user_id)
+        .where(EventEnrollment.status == "approved")
+        .where(Event.status == "completed")
+        .where(Event.is_test == False)
+        .order_by(Event.end_date)
+    )
+    events_result = await db.execute(events_query)
+    events = events_result.fetchall()
+
+    new_achievements: List[str] = []
+
+    # Get user's approved catches from non-test events
+    catches_query = (
+        select(Catch.id, Catch.event_id)
+        .join(Event, Event.id == Catch.event_id)
+        .where(Catch.user_id == user_id)
+        .where(Catch.status == CatchStatus.APPROVED.value)
+        .where(Event.is_test == False)
+        .order_by(Catch.submitted_at)
+    )
+    catches_result = await db.execute(catches_query)
+    catches = catches_result.fetchall()
+
+    # Trigger catch_approved for each catch to check special achievements
+    for catch in catches:
+        # Get event's format code
+        event = await db.get(Event, catch.event_id)
+        if event and event.event_type:
+            format_code = "sf" if event.event_type.code == "street_fishing" else "ta"
+            awarded = await AchievementService.check_and_award_achievements(
+                db,
+                user_id=user_id,
+                trigger="catch_approved",
+                event_id=catch.event_id,
+                catch_id=catch.id,
+                format_code=format_code,
+            )
+            for ach in awarded:
+                if ach.code not in new_achievements:
+                    new_achievements.append(ach.code)
+
+    # Trigger event_completed for each completed event
+    for event_row in events:
+        event = await db.get(Event, event_row.id)
+        if event and event.event_type:
+            format_code = "sf" if event.event_type.code == "street_fishing" else "ta"
+            awarded = await AchievementService.check_and_award_achievements(
+                db,
+                user_id=user_id,
+                trigger="event_completed",
+                event_id=event_row.id,
+                format_code=format_code,
+            )
+            for ach in awarded:
+                if ach.code not in new_achievements:
+                    new_achievements.append(ach.code)
+
+    await db.commit()
+
+    # Get final achievement count
+    after_count_result = await db.execute(
+        select(func.count(UserAchievement.id)).where(UserAchievement.user_id == user_id)
+    )
+    achievements_after = after_count_result.scalar() or 0
+
+    return AchievementRecalculateResponse(
+        success=True,
+        message=f"Achievement recalculation complete. {len(new_achievements)} new achievements awarded.",
+        user_id=user_id,
+        achievements_before=achievements_before,
+        achievements_after=achievements_after,
+        new_achievements=new_achievements,
     )
