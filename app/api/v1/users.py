@@ -4,7 +4,7 @@ from math import ceil
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status, Body
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -916,6 +916,18 @@ class AdminUserCreate(BaseModel):
     last_name: str = Field(..., min_length=1, max_length=100)
     roles: list[str] = Field(default=["angler"])
     is_verified: bool = Field(default=True)
+
+    @field_validator("first_name")
+    @classmethod
+    def normalize_first_name(cls, v: str) -> str:
+        """Normalize first name to Title Case."""
+        return v.strip().title()
+
+    @field_validator("last_name")
+    @classmethod
+    def normalize_last_name(cls, v: str) -> str:
+        """Normalize last name to UPPERCASE."""
+        return v.strip().upper()
 
 
 @router.post("", response_model=UserResponse, status_code=201)

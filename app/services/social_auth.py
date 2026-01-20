@@ -9,6 +9,20 @@ from app.models.user import UserAccount, UserProfile
 from app.models.social_account import SocialAccount, OAuthProvider
 
 
+def normalize_first_name(name: Optional[str]) -> Optional[str]:
+    """Normalize first name to Title Case."""
+    if name:
+        return name.strip().title()
+    return name
+
+
+def normalize_last_name(name: Optional[str]) -> Optional[str]:
+    """Normalize last name to UPPERCASE."""
+    if name:
+        return name.strip().upper()
+    return name
+
+
 class SocialAuthService:
     """Service for handling social authentication logic."""
 
@@ -88,8 +102,8 @@ class SocialAuthService:
             # Create user profile with default "angler" role
             profile = UserProfile(
                 user_id=user.id,
-                first_name=first_name or email.split("@")[0],
-                last_name=last_name or "",
+                first_name=normalize_first_name(first_name) or email.split("@")[0].title(),
+                last_name=normalize_last_name(last_name) or "",
                 roles=["angler"],
             )
             db.add(profile)
@@ -104,10 +118,10 @@ class SocialAuthService:
                 email_prefix = email.split("@")[0] if email else ""
                 # Update first name if provided and current is empty or email-derived
                 if first_name and (not user.profile.first_name or user.profile.first_name == email_prefix):
-                    user.profile.first_name = first_name
+                    user.profile.first_name = normalize_first_name(first_name)
                 # Update last name if provided and current is empty
                 if last_name and not user.profile.last_name:
-                    user.profile.last_name = last_name
+                    user.profile.last_name = normalize_last_name(last_name)
 
         # Link social account to user
         new_social_account = SocialAccount(

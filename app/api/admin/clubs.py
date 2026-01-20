@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -51,6 +51,18 @@ class ValidatorPlaceholderCreate(BaseModel):
     first_name: str = Field(..., min_length=1, max_length=100)
     last_name: str = Field(..., min_length=1, max_length=100)
     password: str = Field(default="ChangeMe123!", description="Temporary password")
+
+    @field_validator("first_name")
+    @classmethod
+    def normalize_first_name(cls, v: str) -> str:
+        """Normalize first name to Title Case."""
+        return v.strip().title()
+
+    @field_validator("last_name")
+    @classmethod
+    def normalize_last_name(cls, v: str) -> str:
+        """Normalize last name to UPPERCASE."""
+        return v.strip().upper()
 
 
 @router.post("/clubs", response_model=ClubDetailResponse, status_code=status.HTTP_201_CREATED)
