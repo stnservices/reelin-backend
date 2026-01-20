@@ -215,6 +215,18 @@ class UserCreate(BaseModel):
         email = v.lower().strip()
         return validate_email_domain(email)
 
+    @field_validator("first_name")
+    @classmethod
+    def normalize_first_name(cls, v: str) -> str:
+        """Normalize first name to Title Case."""
+        return v.strip().title()
+
+    @field_validator("last_name")
+    @classmethod
+    def normalize_last_name(cls, v: str) -> str:
+        """Normalize last name to UPPERCASE."""
+        return v.strip().upper()
+
     @field_validator("password")
     @classmethod
     def password_strength(cls, v: str) -> str:
@@ -337,6 +349,22 @@ class UserProfileUpdate(BaseModel):
     # Privacy setting (any user can set)
     is_profile_public: Optional[bool] = None
 
+    @field_validator("first_name")
+    @classmethod
+    def normalize_first_name(cls, v: Optional[str]) -> Optional[str]:
+        """Normalize first name to Title Case."""
+        if v is None:
+            return None
+        return v.strip().title()
+
+    @field_validator("last_name")
+    @classmethod
+    def normalize_last_name(cls, v: Optional[str]) -> Optional[str]:
+        """Normalize last name to UPPERCASE."""
+        if v is None:
+            return None
+        return v.strip().upper()
+
     @field_validator("phone")
     @classmethod
     def validate_phone(cls, v: Optional[str]) -> Optional[str]:
@@ -418,6 +446,22 @@ class AdminUserProfileUpdate(BaseModel):
         if v is None:
             return None
         return v.lower().strip()
+
+    @field_validator("first_name")
+    @classmethod
+    def normalize_first_name(cls, v: Optional[str]) -> Optional[str]:
+        """Normalize first name to Title Case."""
+        if v is None:
+            return None
+        return v.strip().title()
+
+    @field_validator("last_name")
+    @classmethod
+    def normalize_last_name(cls, v: Optional[str]) -> Optional[str]:
+        """Normalize last name to UPPERCASE."""
+        if v is None:
+            return None
+        return v.strip().upper()
 
     @field_validator("phone")
     @classmethod
