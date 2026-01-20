@@ -430,6 +430,7 @@ async def delete_club(
 async def list_club_members(
     club_id: int,
     status_filter: MembershipStatus | None = Query(None, alias="status"),
+    include_all: bool = Query(False, alias="all"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -437,7 +438,9 @@ async def list_club_members(
 ):
     """
     List club members.
-    Only active members can see the full list.
+    By default returns only ACTIVE members.
+    Use ?all=true to include all statuses (active, invited, dismissed).
+    Use ?status=X to filter by specific status.
     """
     # Check club exists
     club_query = select(Club).where(Club.id == club_id, Club.is_deleted == False)
@@ -450,6 +453,15 @@ async def list_club_members(
     # Club members are publicly visible - no membership check needed
     # All authenticated users can see club member lists
 
+    # Determine effective status filter
+    # Priority: explicit status > include_all > default (active only)
+    effective_status = None
+    if status_filter:
+        effective_status = status_filter.value
+    elif not include_all:
+        # Default to active members only
+        effective_status = MembershipStatus.ACTIVE.value
+
     # Build query
     query = (
         select(ClubMembership)
@@ -461,15 +473,15 @@ async def list_club_members(
         .where(ClubMembership.club_id == club_id)
     )
 
-    if status_filter:
-        query = query.where(ClubMembership.status == status_filter.value)
+    if effective_status:
+        query = query.where(ClubMembership.status == effective_status)
 
     # Get total count
     count_query = select(func.count(ClubMembership.id)).where(
         ClubMembership.club_id == club_id
     )
-    if status_filter:
-        count_query = count_query.where(ClubMembership.status == status_filter.value)
+    if effective_status:
+        count_query = count_query.where(ClubMembership.status == effective_status)
     total_result = await db.execute(count_query)
     total = total_result.scalar()
 
