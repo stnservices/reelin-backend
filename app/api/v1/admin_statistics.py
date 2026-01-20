@@ -488,7 +488,7 @@ async def get_user_ranking_breakdown(
                 e.name as event_name,
                 e.start_date::text as event_date,
                 qs.rank as rank,
-                qs.total_victories as points,
+                qs.total_points as points,
                 COALESCE(qs.total_fish_caught, 0) as catches,
                 e.is_national_event as is_national,
                 CASE
@@ -604,35 +604,55 @@ async def get_user_stats_comparison(
     stored_result = await db.execute(stored_stats_query, {"user_id": user_id})
     stored_rows = {row.format_code: row for row in stored_result.fetchall()}
 
-    # Calculate SF stats from event_scoreboards
+    # Calculate SF stats - matches statistics_service._recalculate_stats
+    # Points, wins, podiums from event_scoreboards; catches from catches table
     sf_calc_query = text("""
-        SELECT
-            COUNT(DISTINCT es.event_id) as total_events,
-            COALESCE(SUM(es.total_points), 0) as total_points,
-            COALESCE(SUM(es.total_catches), 0) as total_catches,
-            COUNT(CASE WHEN es.rank = 1 THEN 1 END) as total_wins,
-            COUNT(CASE WHEN es.rank <= 3 THEN 1 END) as podiums,
-            MAX(es.best_catch_length) as largest_catch
-        FROM event_scoreboards es
-        JOIN events e ON e.id = es.event_id
-        JOIN event_types et ON et.id = e.event_type_id
-        WHERE es.user_id = :user_id AND et.code = 'street_fishing' AND e.status = 'completed'
+        WITH scoreboard_stats AS (
+            SELECT
+                COUNT(DISTINCT es.event_id) as total_events,
+                COALESCE(SUM(es.total_points), 0) as total_points,
+                COUNT(CASE WHEN es.rank = 1 THEN 1 END) as total_wins,
+                COUNT(CASE WHEN es.rank <= 3 THEN 1 END) as podiums,
+                MAX(es.best_catch_length) as largest_catch
+            FROM event_scoreboards es
+            JOIN events e ON e.id = es.event_id
+            JOIN event_types et ON et.id = e.event_type_id
+            WHERE es.user_id = :user_id AND et.code = 'street_fishing' AND e.status = 'completed'
+        ),
+        catch_stats AS (
+            SELECT COUNT(c.id) as total_catches
+            FROM catches c
+            JOIN events e ON e.id = c.event_id
+            JOIN event_types et ON et.id = e.event_type_id
+            WHERE c.user_id = :user_id AND et.code = 'street_fishing'
+        )
+        SELECT s.*, c.total_catches FROM scoreboard_stats s, catch_stats c
     """)
     sf_calc_result = await db.execute(sf_calc_query, {"user_id": user_id})
     sf_calc_row = sf_calc_result.fetchone()
 
-    # Calculate TA stats from ta_qualifier_standings
+    # Calculate TA stats - same approach as SF
     ta_calc_query = text("""
-        SELECT
-            COUNT(DISTINCT qs.event_id) as total_events,
-            COALESCE(SUM(qs.total_victories), 0) as total_points,
-            COALESCE(SUM(qs.total_fish_caught), 0) as total_catches,
-            COUNT(CASE WHEN qs.rank = 1 THEN 1 END) as total_wins,
-            COUNT(CASE WHEN qs.rank <= 3 THEN 1 END) as podiums
-        FROM ta_qualifier_standings qs
-        JOIN events e ON e.id = qs.event_id
-        JOIN event_types et ON et.id = e.event_type_id
-        WHERE qs.user_id = :user_id AND et.code = 'trout_area' AND e.status = 'completed'
+        WITH scoreboard_stats AS (
+            SELECT
+                COUNT(DISTINCT es.event_id) as total_events,
+                COALESCE(SUM(es.total_points), 0) as total_points,
+                COUNT(CASE WHEN es.rank = 1 THEN 1 END) as total_wins,
+                COUNT(CASE WHEN es.rank <= 3 THEN 1 END) as podiums,
+                MAX(es.best_catch_length) as largest_catch
+            FROM event_scoreboards es
+            JOIN events e ON e.id = es.event_id
+            JOIN event_types et ON et.id = e.event_type_id
+            WHERE es.user_id = :user_id AND et.code = 'trout_area' AND e.status = 'completed'
+        ),
+        catch_stats AS (
+            SELECT COUNT(c.id) as total_catches
+            FROM catches c
+            JOIN events e ON e.id = c.event_id
+            JOIN event_types et ON et.id = e.event_type_id
+            WHERE c.user_id = :user_id AND et.code = 'trout_area'
+        )
+        SELECT s.*, c.total_catches FROM scoreboard_stats s, catch_stats c
     """)
     ta_calc_result = await db.execute(ta_calc_query, {"user_id": user_id})
     ta_calc_row = ta_calc_result.fetchone()
