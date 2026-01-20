@@ -151,6 +151,7 @@ class StatisticsService:
         event_filter = [
             EventEnrollment.user_id == user_id,
             EventEnrollment.status == "approved",
+            Event.is_test == False,  # Exclude test events from stats
         ]
         if event_type_id is not None:
             event_filter.append(Event.event_type_id == event_type_id)
@@ -178,7 +179,10 @@ class StatisticsService:
         stats.total_events_this_year = result.scalar() or 0
 
         # === Catch statistics ===
-        catch_filter = [Catch.user_id == user_id]
+        catch_filter = [
+            Catch.user_id == user_id,
+            Event.is_test == False,  # Exclude test events
+        ]
         if event_type_id is not None:
             catch_filter.append(Event.event_type_id == event_type_id)
 
@@ -250,7 +254,10 @@ class StatisticsService:
         stats.unique_species_count = result.scalar() or 0
 
         # === Scoreboard statistics ===
-        scoreboard_filter = [EventScoreboard.user_id == user_id]
+        scoreboard_filter = [
+            EventScoreboard.user_id == user_id,
+            Event.is_test == False,  # Exclude test events
+        ]
         if event_type_id is not None:
             scoreboard_filter.append(Event.event_type_id == event_type_id)
 
@@ -470,13 +477,14 @@ class StatisticsService:
         total_catches = catches_result.scalar() or 0
 
         # === Tournament Wins/Podiums from Standings ===
-        # Only count from completed events
+        # Only count from completed events, excluding test events
         tournament_wins_result = await db.execute(
             select(func.count(TAQualifierStanding.id))
             .join(Event, TAQualifierStanding.event_id == Event.id)
             .where(TAQualifierStanding.user_id == user_id)
             .where(TAQualifierStanding.rank == 1)
             .where(Event.status == EventStatus.COMPLETED.value)
+            .where(Event.is_test == False)
         )
         tournament_wins = tournament_wins_result.scalar() or 0
 
@@ -486,6 +494,7 @@ class StatisticsService:
             .where(TAQualifierStanding.user_id == user_id)
             .where(TAQualifierStanding.rank <= 3)
             .where(Event.status == EventStatus.COMPLETED.value)
+            .where(Event.is_test == False)
         )
         tournament_podiums = tournament_podiums_result.scalar() or 0
 

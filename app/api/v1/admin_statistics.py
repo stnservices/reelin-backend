@@ -295,11 +295,11 @@ async def get_admin_rankings(
     Returns all ranked users (not just top 10) with their email and full stats.
     Supports pagination and search by name/email.
     """
-    # Get available years
+    # Get available years (exclude test events)
     years_query = text("""
         SELECT DISTINCT EXTRACT(YEAR FROM start_date)::integer as year
         FROM events
-        WHERE is_national_event = TRUE AND status = 'completed'
+        WHERE is_national_event = TRUE AND status = 'completed' AND is_test = FALSE
         ORDER BY year DESC
     """)
     years_result = await db.execute(years_query)
@@ -441,7 +441,7 @@ async def get_user_ranking_breakdown(
     profile_row = profile_result.fetchone()
     user_name = f"{profile_row.first_name} {profile_row.last_name}" if profile_row else "Unknown"
 
-    # Query events for this user
+    # Query events for this user (exclude test events)
     # For SF, use event_scoreboards table
     if format_code == "sf":
         query = text("""
@@ -479,9 +479,10 @@ async def get_user_ranking_breakdown(
             WHERE es.user_id = :user_id
               AND et.code = 'street_fishing'
               AND e.status = 'completed'
+              AND e.is_test = FALSE
         """)
     else:
-        # For TA, use ta_qualifier_standings for points
+        # For TA, use ta_qualifier_standings for points (exclude test events)
         query = text("""
             SELECT
                 e.id as event_id,
@@ -517,6 +518,7 @@ async def get_user_ranking_breakdown(
             WHERE qs.user_id = :user_id
               AND et.code = 'trout_area'
               AND e.status = 'completed'
+              AND e.is_test = FALSE
         """)
 
     params: dict = {"user_id": user_id}
@@ -606,6 +608,7 @@ async def get_user_stats_comparison(
 
     # Calculate SF stats - matches statistics_service._recalculate_stats
     # Points, wins, podiums from event_scoreboards; catches from catches table
+    # Exclude test events
     sf_calc_query = text("""
         WITH scoreboard_stats AS (
             SELECT
@@ -617,21 +620,21 @@ async def get_user_stats_comparison(
             FROM event_scoreboards es
             JOIN events e ON e.id = es.event_id
             JOIN event_types et ON et.id = e.event_type_id
-            WHERE es.user_id = :user_id AND et.code = 'street_fishing' AND e.status = 'completed'
+            WHERE es.user_id = :user_id AND et.code = 'street_fishing' AND e.status = 'completed' AND e.is_test = FALSE
         ),
         catch_stats AS (
             SELECT COUNT(c.id) as total_catches
             FROM catches c
             JOIN events e ON e.id = c.event_id
             JOIN event_types et ON et.id = e.event_type_id
-            WHERE c.user_id = :user_id AND et.code = 'street_fishing'
+            WHERE c.user_id = :user_id AND et.code = 'street_fishing' AND e.is_test = FALSE
         )
         SELECT s.*, c.total_catches FROM scoreboard_stats s, catch_stats c
     """)
     sf_calc_result = await db.execute(sf_calc_query, {"user_id": user_id})
     sf_calc_row = sf_calc_result.fetchone()
 
-    # Calculate TA stats - same approach as SF
+    # Calculate TA stats - same approach as SF (exclude test events)
     ta_calc_query = text("""
         WITH scoreboard_stats AS (
             SELECT
@@ -643,14 +646,14 @@ async def get_user_stats_comparison(
             FROM event_scoreboards es
             JOIN events e ON e.id = es.event_id
             JOIN event_types et ON et.id = e.event_type_id
-            WHERE es.user_id = :user_id AND et.code = 'trout_area' AND e.status = 'completed'
+            WHERE es.user_id = :user_id AND et.code = 'trout_area' AND e.status = 'completed' AND e.is_test = FALSE
         ),
         catch_stats AS (
             SELECT COUNT(c.id) as total_catches
             FROM catches c
             JOIN events e ON e.id = c.event_id
             JOIN event_types et ON et.id = e.event_type_id
-            WHERE c.user_id = :user_id AND et.code = 'trout_area'
+            WHERE c.user_id = :user_id AND et.code = 'trout_area' AND e.is_test = FALSE
         )
         SELECT s.*, c.total_catches FROM scoreboard_stats s, catch_stats c
     """)

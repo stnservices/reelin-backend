@@ -44,50 +44,60 @@ class AnalyticsService:
         Get basic stats for free users.
         Returns total catches, events, species + last 10 catches.
         """
-        # Total catches
+        # Total catches (exclude test events)
         catches_stmt = (
             select(func.count(Catch.id))
+            .join(Event, Catch.event_id == Event.id)
             .where(Catch.user_id == user_id)
             .where(Catch.status == CatchStatus.APPROVED.value)
+            .where(Event.is_test == False)
         )
         result = await db.execute(catches_stmt)
         total_catches = result.scalar() or 0
 
-        # Total events
+        # Total events (exclude test events)
         events_stmt = (
             select(func.count(distinct(Catch.event_id)))
+            .join(Event, Catch.event_id == Event.id)
             .where(Catch.user_id == user_id)
             .where(Catch.status == CatchStatus.APPROVED.value)
+            .where(Event.is_test == False)
         )
         result = await db.execute(events_stmt)
         total_events = result.scalar() or 0
 
-        # Total species
+        # Total species (exclude test events)
         species_stmt = (
             select(func.count(distinct(Catch.fish_id)))
+            .join(Event, Catch.event_id == Event.id)
             .where(Catch.user_id == user_id)
             .where(Catch.status == CatchStatus.APPROVED.value)
+            .where(Event.is_test == False)
         )
         result = await db.execute(species_stmt)
         total_species = result.scalar() or 0
 
-        # Total and average length
+        # Total and average length (exclude test events)
         length_stmt = (
             select(func.sum(Catch.length), func.avg(Catch.length))
+            .join(Event, Catch.event_id == Event.id)
             .where(Catch.user_id == user_id)
             .where(Catch.status == CatchStatus.APPROVED.value)
+            .where(Event.is_test == False)
         )
         result = await db.execute(length_stmt)
         row = result.first()
         total_length = float(row[0]) if row and row[0] else 0.0
         avg_length = float(row[1]) if row and row[1] else 0.0
 
-        # Last 10 catches
+        # Last 10 catches (exclude test events)
         last_catches_stmt = (
             select(Catch)
+            .join(Event, Catch.event_id == Event.id)
             .options(selectinload(Catch.fish), selectinload(Catch.event))
             .where(Catch.user_id == user_id)
             .where(Catch.status == CatchStatus.APPROVED.value)
+            .where(Event.is_test == False)
             .order_by(Catch.submitted_at.desc())
             .limit(10)
         )
@@ -143,10 +153,11 @@ class AnalyticsService:
 
         date_start, date_end = self._get_date_range(period, start_date, end_date)
 
-        # Build base filter
+        # Build base filter (exclude test events)
         base_filter = [
             Catch.user_id == user_id,
             Catch.status == CatchStatus.APPROVED.value,
+            Event.is_test == False,
         ]
         if date_start:
             base_filter.append(Catch.submitted_at >= datetime.combine(date_start, datetime.min.time()))
@@ -201,24 +212,37 @@ class AnalyticsService:
 
     async def _get_overview_stats(self, db: AsyncSession, base_filter: list) -> dict:
         """Get overview statistics."""
-        # Total catches
-        stmt = select(func.count(Catch.id)).where(and_(*base_filter))
+        # Total catches (join with Event for is_test filter)
+        stmt = (
+            select(func.count(Catch.id))
+            .join(Event, Catch.event_id == Event.id)
+            .where(and_(*base_filter))
+        )
         result = await db.execute(stmt)
         total_catches = result.scalar() or 0
 
         # Total events
-        stmt = select(func.count(distinct(Catch.event_id))).where(and_(*base_filter))
+        stmt = (
+            select(func.count(distinct(Catch.event_id)))
+            .join(Event, Catch.event_id == Event.id)
+            .where(and_(*base_filter))
+        )
         result = await db.execute(stmt)
         total_events = result.scalar() or 0
 
         # Total species
-        stmt = select(func.count(distinct(Catch.fish_id))).where(and_(*base_filter))
+        stmt = (
+            select(func.count(distinct(Catch.fish_id)))
+            .join(Event, Catch.event_id == Event.id)
+            .where(and_(*base_filter))
+        )
         result = await db.execute(stmt)
         total_species = result.scalar() or 0
 
         # Total and average length
         stmt = (
             select(func.sum(Catch.length), func.avg(Catch.length))
+            .join(Event, Catch.event_id == Event.id)
             .where(and_(*base_filter))
         )
         result = await db.execute(stmt)
@@ -229,6 +253,7 @@ class AnalyticsService:
         # Biggest catch
         stmt = (
             select(Catch)
+            .join(Event, Catch.event_id == Event.id)
             .options(selectinload(Catch.fish), selectinload(Catch.event))
             .where(and_(*base_filter))
             .order_by(Catch.length.desc())
@@ -269,6 +294,7 @@ class AnalyticsService:
                 func.avg(Catch.length).label("avg_length"),
                 func.max(Catch.length).label("max_length"),
             )
+            .join(Event, Catch.event_id == Event.id)
             .join(Fish, Catch.fish_id == Fish.id)
             .where(and_(*base_filter))
             .group_by(Catch.fish_id, Fish.name)
@@ -291,17 +317,20 @@ class AnalyticsService:
         ]
 
     async def _get_personal_bests(self, db: AsyncSession, user_id: int) -> list:
-        """Get personal best catch for each species."""
+        """Get personal best catch for each species (exclude test events)."""
         # Using a subquery to get the max length per species
         subquery = (
             select(Catch.fish_id, func.max(Catch.length).label("max_length"))
+            .join(Event, Catch.event_id == Event.id)
             .where(Catch.user_id == user_id)
             .where(Catch.status == CatchStatus.APPROVED.value)
+            .where(Event.is_test == False)
             .group_by(Catch.fish_id)
         ).subquery()
 
         stmt = (
             select(Catch)
+            .join(Event, Catch.event_id == Event.id)
             .options(selectinload(Catch.fish), selectinload(Catch.event))
             .join(subquery, and_(
                 Catch.fish_id == subquery.c.fish_id,
@@ -309,6 +338,7 @@ class AnalyticsService:
             ))
             .where(Catch.user_id == user_id)
             .where(Catch.status == CatchStatus.APPROVED.value)
+            .where(Event.is_test == False)
             .order_by(Catch.length.desc())
         )
         result = await db.execute(stmt)
@@ -340,6 +370,7 @@ class AnalyticsService:
                 hour_expr.label("hour"),
                 func.count(Catch.id).label("count"),
             )
+            .join(Event, Catch.event_id == Event.id)
             .where(and_(*base_filter))
             .group_by(hour_expr)
             .order_by(hour_expr)
@@ -360,6 +391,7 @@ class AnalyticsService:
                 dow_expr.label("dow"),
                 func.count(Catch.id).label("count"),
             )
+            .join(Event, Catch.event_id == Event.id)
             .where(and_(*base_filter))
             .group_by(dow_expr)
             .order_by(dow_expr)
@@ -377,6 +409,7 @@ class AnalyticsService:
                 month_expr.label("month"),
                 func.count(Catch.id).label("count"),
             )
+            .join(Event, Catch.event_id == Event.id)
             .where(and_(*base_filter))
             .group_by(month_expr)
             .order_by(month_expr)
@@ -454,7 +487,7 @@ class AnalyticsService:
         ]
 
     async def _get_monthly_trend(self, db: AsyncSession, user_id: int) -> list:
-        """Get monthly catch trend for the last 12 months."""
+        """Get monthly catch trend for the last 12 months (exclude test events)."""
         twelve_months_ago = datetime.now() - timedelta(days=365)
 
         month_expr = func.to_char(Catch.submitted_at, "YYYY-MM")
@@ -465,9 +498,11 @@ class AnalyticsService:
                 func.avg(Catch.length).label("avg_length"),
                 func.max(Catch.length).label("best_length"),
             )
+            .join(Event, Catch.event_id == Event.id)
             .where(Catch.user_id == user_id)
             .where(Catch.status == CatchStatus.APPROVED.value)
             .where(Catch.submitted_at >= twelve_months_ago)
+            .where(Event.is_test == False)
             .group_by(month_expr)
             .order_by(month_expr)
         )

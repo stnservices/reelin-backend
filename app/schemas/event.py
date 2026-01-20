@@ -251,6 +251,8 @@ class EventCreate(BaseModel):
     use_ai_analysis: bool = False  # Enable Google Vision analysis
     use_ml_auto_validation: bool = False  # Auto-approve if confidence met
     ml_confidence_threshold: float = Field(0.85, ge=0.0, le=1.0)
+    # Test event flag - test events are excluded from stats, achievements, rankings
+    is_test: bool = False
     prizes: Optional[List[EventPrizeCreate]] = None
     scoring_rules: Optional[List[EventScoringRuleCreate]] = None
     fish_scoring: Optional[List[EventFishScoringCreate]] = None  # Fish species config
@@ -310,6 +312,8 @@ class EventUpdate(BaseModel):
     use_ai_analysis: Optional[bool] = None
     use_ml_auto_validation: Optional[bool] = None
     ml_confidence_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
+    # Test event flag - test events are excluded from stats, achievements, rankings
+    is_test: Optional[bool] = None
     image_url: Optional[str] = None
     status: Optional[EventStatus] = None
 
@@ -438,6 +442,8 @@ class EventResponse(BaseModel):
     use_ai_analysis: bool = False
     use_ml_auto_validation: bool = False
     ml_confidence_threshold: float = 0.85
+    # Test event flag
+    is_test: bool = False
     image_url: Optional[str] = None
     created_at: datetime
     published_at: Optional[datetime] = None
@@ -482,6 +488,7 @@ class EventListResponse(BaseModel):
     is_team_event: bool = False
     is_national_event: bool = False
     is_tournament_event: bool = False
+    is_test: bool = False
     enrolled_count: Optional[int] = None
     max_participants: Optional[int] = None
 

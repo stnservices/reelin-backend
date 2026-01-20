@@ -232,6 +232,9 @@ class Event(Base):
         ForeignKey("user_accounts.id", ondelete="SET NULL"), nullable=True
     )
 
+    # Test event flag - test events are excluded from stats, achievements, rankings
+    is_test: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+
     # Relationships
     event_type: Mapped["EventType"] = relationship("EventType", back_populates="events", lazy="joined")
     scoring_config: Mapped["ScoringConfig"] = relationship(

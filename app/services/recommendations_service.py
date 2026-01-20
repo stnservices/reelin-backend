@@ -238,23 +238,29 @@ class RecommendationsService:
             return None, None
 
     async def get_user_participated_event_types(self, user_id: int) -> set[int]:
-        """Get event type IDs the user has participated in."""
+        """Get event type IDs the user has participated in (exclude test events)."""
         stmt = (
             select(distinct(Event.event_type_id))
             .join(EventEnrollment, EventEnrollment.event_id == Event.id)
             .where(
                 EventEnrollment.user_id == user_id,
                 EventEnrollment.status == EnrollmentStatus.APPROVED.value,
+                Event.is_test == False,
             )
         )
         result = await self.db.execute(stmt)
         return {row[0] for row in result.all()}
 
     async def get_user_caught_species(self, user_id: int) -> set[int]:
-        """Get fish species IDs the user has caught."""
-        stmt = select(distinct(Catch.fish_id)).where(
-            Catch.user_id == user_id,
-            Catch.fish_id.isnot(None),
+        """Get fish species IDs the user has caught (exclude test events)."""
+        stmt = (
+            select(distinct(Catch.fish_id))
+            .join(Event, Catch.event_id == Event.id)
+            .where(
+                Catch.user_id == user_id,
+                Catch.fish_id.isnot(None),
+                Event.is_test == False,
+            )
         )
         result = await self.db.execute(stmt)
         return {row[0] for row in result.all()}
@@ -431,7 +437,7 @@ class RecommendationsService:
         # Get dismissed events
         dismissed = await self.get_dismissed_items(user.id, "event")
 
-        # Get upcoming published events
+        # Get upcoming published events (exclude test events)
         now = datetime.now(timezone.utc)
         stmt = (
             select(Event)
@@ -440,6 +446,7 @@ class RecommendationsService:
                 Event.status == "published",
                 Event.start_date > now,
                 Event.is_deleted.is_(False),
+                Event.is_test.is_(False),
             )
             .order_by(Event.start_date)
             .limit(100)
@@ -502,13 +509,14 @@ class RecommendationsService:
     # ---- Angler Recommendations ----
 
     async def get_shared_events(self, user_id: int, candidate_id: int) -> list[dict]:
-        """Get events that both users participated in."""
+        """Get events that both users participated in (exclude test events)."""
         stmt = (
             select(Event)
             .join(EventEnrollment, EventEnrollment.event_id == Event.id)
             .where(
                 EventEnrollment.user_id == user_id,
                 EventEnrollment.status == EnrollmentStatus.APPROVED.value,
+                Event.is_test == False,
                 Event.id.in_(
                     select(EventEnrollment.event_id).where(
                         EventEnrollment.user_id == candidate_id,
@@ -759,7 +767,7 @@ class RecommendationsService:
         user_stats = await self.get_user_stats(user.id)
         user_event_types = await self.get_user_participated_event_types(user.id)
 
-        # Get user's completed events (approved enrollments only)
+        # Get user's completed events (approved enrollments only, exclude test)
         stmt = (
             select(Event)
             .join(EventEnrollment, EventEnrollment.event_id == Event.id)
@@ -769,6 +777,7 @@ class RecommendationsService:
                 EventEnrollment.status == EnrollmentStatus.APPROVED.value,
                 Event.status == "completed",
                 Event.is_deleted.is_(False),
+                Event.is_test.is_(False),
             )
             .order_by(Event.end_date.desc())
             .limit(limit)

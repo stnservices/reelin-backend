@@ -210,6 +210,12 @@ class AchievementService:
 
         Returns list of newly awarded achievements.
         """
+        # Skip achievements for test events
+        if event_id:
+            event = await db.get(Event, event_id)
+            if event and event.is_test:
+                return []
+
         newly_awarded = []
 
         # Check tiered achievements
@@ -327,12 +333,14 @@ class AchievementService:
 
         # Check species-specific achievements (Pike Master, Zander Master, etc.)
         if fish_slug in AchievementService.PREDATOR_FISH_SLUGS:
-            # Count total catches of this species by user
+            # Count total catches of this species by user (exclude test events)
             species_count_stmt = (
                 select(func.count(Catch.id))
+                .join(Event, Catch.event_id == Event.id)
                 .where(Catch.user_id == user_id)
                 .where(Catch.fish_id == fish_id)
                 .where(Catch.status == CatchStatus.APPROVED.value)
+                .where(Event.is_test == False)
             )
             result = await db.execute(species_count_stmt)
             species_catch_count = result.scalar() or 0
@@ -359,12 +367,14 @@ class AchievementService:
             result = await db.execute(predator_stmt)
             predator_fish_ids = [row[0] for row in result.fetchall()]
 
-            # Count total predator catches
+            # Count total predator catches (exclude test events)
             predator_count_stmt = (
                 select(func.count(Catch.id))
+                .join(Event, Catch.event_id == Event.id)
                 .where(Catch.user_id == user_id)
                 .where(Catch.fish_id.in_(predator_fish_ids))
                 .where(Catch.status == CatchStatus.APPROVED.value)
+                .where(Event.is_test == False)
             )
             result = await db.execute(predator_count_stmt)
             predator_catch_count = result.scalar() or 0
@@ -498,11 +508,13 @@ class AchievementService:
         format_code: Optional[str] = None,
     ) -> Optional[AchievementDefinition]:
         """Check and award First Blood (first ever catch)."""
-        # Count total approved catches
+        # Count total approved catches (exclude test events)
         count_stmt = (
             select(func.count(Catch.id))
+            .join(Event, Catch.event_id == Event.id)
             .where(Catch.user_id == user_id)
             .where(Catch.status == CatchStatus.APPROVED.value)
+            .where(Event.is_test == False)
         )
         result = await db.execute(count_stmt)
         total_catches = result.scalar() or 0
