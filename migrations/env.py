@@ -21,6 +21,8 @@ config = context.config
 # Get database URL from app settings - use sync driver for migrations
 settings = get_settings()
 sync_database_url = settings.database_url.replace("+asyncpg", "")
+# psycopg2 uses 'sslmode' instead of 'ssl'
+sync_database_url = sync_database_url.replace("ssl=require", "sslmode=require")
 config.set_main_option("sqlalchemy.url", sync_database_url)
 
 # Interpret the config file for Python logging.
