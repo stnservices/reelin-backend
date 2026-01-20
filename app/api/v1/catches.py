@@ -914,11 +914,9 @@ async def validate_catch(
         if validation_data.new_fish_id:
             catch.fish_id = validation_data.new_fish_id
 
-        # Apply adjustments if provided
+        # Apply length adjustment if provided
         if validation_data.adjusted_length:
             catch.length = validation_data.adjusted_length
-        if validation_data.adjusted_weight:
-            catch.weight = validation_data.adjusted_weight
 
         # Calculate points based on fish scoring config
         # Uses accountable_min_length and under_min_length_points
@@ -1105,11 +1103,9 @@ async def revalidate_catch(
         # Approving (or re-approving with corrections)
         catch.rejection_reason = None
 
-        # Apply adjustments if provided
+        # Apply length adjustment if provided
         if revalidation_data.adjusted_length:
             catch.length = revalidation_data.adjusted_length
-        if revalidation_data.adjusted_weight:
-            catch.weight = revalidation_data.adjusted_weight
 
         # Calculate points based on fish scoring config
         # Uses accountable_min_length and under_min_length_points
