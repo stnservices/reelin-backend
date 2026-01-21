@@ -845,7 +845,7 @@ async def update_pricing_tier(
         event_type_id=current_tier.event_type_id,
         pricing_model=update_data.get("pricing_model", current_tier.pricing_model),
         rate=update_data.get("rate", current_tier.rate),
-        currency_code=update_data.get("currency_code", current_tier.currency_code),
+        currency_id=update_data.get("currency_id", current_tier.currency_id),
         minimum_charge=update_data.get("minimum_charge", current_tier.minimum_charge),
         effective_from=now,
         created_by_id=current_user.id,
