@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from app.database import get_db
-from app.models.enrollment import Enrollment, EnrollmentStatus
+from app.models.enrollment import EventEnrollment, EnrollmentStatus
 from app.models.event import Event, EventStatus
 from app.models.route_history import RouteHistory
 from app.models.user import UserAccount
@@ -385,8 +385,8 @@ async def _get_enrollment(
 ) -> Optional[Enrollment]:
     """Get user's enrollment for an event."""
     query = select(Enrollment).where(
-        Enrollment.event_id == event_id,
-        Enrollment.user_id == user_id,
+        EventEnrollment.event_id == event_id,
+        EventEnrollment.user_id == user_id,
     )
     result = await db.execute(query)
     return result.scalar_one_or_none()
