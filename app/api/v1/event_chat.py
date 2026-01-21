@@ -514,8 +514,8 @@ async def unpin_chat_message(
 @router.get("/events/{event_id}/chat/stream")
 async def chat_stream(
     event_id: int,
+    token: str = Query(..., description="Auth token for SSE (required since EventSource can't send headers)"),
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
 ):
     """
     SSE endpoint for real-time chat updates.
@@ -525,7 +525,30 @@ async def chat_stream(
     - message_deleted: Message was deleted
     - message_pinned: Message was pinned
     - message_unpinned: Message was unpinned
+
+    Note: Token is passed as query param since EventSource API doesn't support custom headers.
     """
+    from app.core.security import decode_token
+    from sqlalchemy.orm import selectinload
+
+    # Validate token from query parameter
+    try:
+        payload = decode_token(token)
+        user_id_str = payload.get("sub")
+        if not user_id_str:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        user_id = int(user_id_str)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    # Get user from DB
+    query = select(UserAccount).options(selectinload(UserAccount.profile)).where(UserAccount.id == user_id)
+    result = await db.execute(query)
+    current_user = result.scalar_one_or_none()
+
+    if not current_user or not current_user.is_active:
+        raise HTTPException(status_code=401, detail="User not found or inactive")
+
     # Check access
     can_access, _ = await can_access_chat(db, event_id, current_user.id)
     if not can_access:
