@@ -312,6 +312,38 @@ class RedisCache:
         client = await self.get_client()
         return client.pubsub()
 
+    # === Chat Pub/Sub (Event Chat feature) ===
+
+    CHAT_CHANNEL_PREFIX = "chat"
+
+    def chat_channel(self, event_id: int) -> str:
+        """Get the Pub/Sub channel name for chat broadcasts."""
+        return f"{self.CHAT_CHANNEL_PREFIX}:event_{event_id}"
+
+    async def publish_chat_message(self, event_id: int, data: dict):
+        """
+        Publish a chat event to Redis Pub/Sub.
+        Used to notify SSE clients and sync with Firebase.
+        """
+        client = await self.get_client()
+        channel = self.chat_channel(event_id)
+        await client.publish(channel, json.dumps(data, default=str))
+
+    async def subscribe_chat_channel(self, event_id: int):
+        """
+        Subscribe to chat events for a specific event.
+        Returns a PubSub object that can be iterated for messages.
+        """
+        client = await self.get_client()
+        pubsub = client.pubsub()
+        await pubsub.subscribe(self.chat_channel(event_id))
+        return pubsub
+
+    async def get_chat_pubsub(self):
+        """Get a PubSub client for chat pattern subscriptions."""
+        client = await self.get_client()
+        return client.pubsub()
+
 
 # Global singleton
 redis_cache = RedisCache()

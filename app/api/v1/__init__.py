@@ -29,6 +29,7 @@ from app.api.v1.subscriptions import router as subscriptions_router
 from app.api.v1.pro import router as pro_router
 from app.api.v1.organizer_messages import router as organizer_messages_router
 from app.api.v1.admin_messages import router as admin_messages_router
+from app.api.v1.event_chat import router as event_chat_router
 from app.api.v1.follows import router as follows_router
 from app.api.v1.app import router as app_router
 from app.api.v1.waypoints import router as waypoints_router
@@ -79,6 +80,7 @@ router.include_router(subscriptions_router, tags=["Subscriptions"])
 router.include_router(pro_router, tags=["Pro Features"])
 router.include_router(organizer_messages_router, tags=["Organizer Messages"])
 router.include_router(admin_messages_router, tags=["Admin Messages"])
+router.include_router(event_chat_router, tags=["Event Chat"])
 router.include_router(follows_router, prefix="/users", tags=["Follows"])
 router.include_router(app_router, prefix="/app", tags=["App"])
 router.include_router(waypoints_router, tags=["Waypoints"])

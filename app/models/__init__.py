@@ -18,6 +18,7 @@ from app.models.rules import OrganizerRule, OrganizerRuleDefault
 from app.models.contestation import EventContestation, ContestationStatus, ContestationType
 from app.models.organizer_message import OrganizerMessage
 from app.models.admin_message import AdminMessage
+from app.models.event_chat import EventChatMessage, MessageType
 from app.models.currency import Currency
 from app.models.settings import VideoDurationOption
 from app.models.pro import (
@@ -135,6 +136,9 @@ __all__ = [
     "OrganizerMessage",
     # Admin Messages
     "AdminMessage",
+    # Event Chat
+    "EventChatMessage",
+    "MessageType",
     # Currency
     "Currency",
     # Settings
