@@ -61,6 +61,7 @@ class Settings(BaseSettings):
 
     # Push Notifications (Firebase Cloud Messaging)
     firebase_credentials: str = ""  # JSON string of service account credentials
+    firebase_database_url: str = ""  # Firebase Realtime Database URL (e.g., https://<project-id>-default-rtdb.firebaseio.com)
 
     # OAuth Providers
     google_client_id: str = ""

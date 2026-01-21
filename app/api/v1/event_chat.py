@@ -28,6 +28,11 @@ from app.schemas.event_chat import (
     ChatEventPayload,
 )
 from app.services.redis_cache import redis_cache
+from app.services.firebase_chat_service import (
+    sync_chat_message,
+    delete_chat_message as firebase_delete_message,
+    update_message_pinned,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -315,8 +320,21 @@ async def send_chat_message(
         message=response_msg,
     ))
 
+    # Sync to Firebase for mobile clients
+    sync_chat_message(
+        event_id=event_id,
+        message_id=chat_message.id,
+        user_id=current_user.id,
+        user_name=response_msg.user_name,
+        user_avatar=response_msg.user_avatar,
+        is_organizer=is_organizer,
+        message=message_data.message,
+        message_type=message_type,
+        is_pinned=False,
+        created_at=chat_message.created_at,
+    )
+
     # TODO: Send push notifications to offline users
-    # TODO: Sync to Firebase for mobile clients
 
     return ChatMessageSendResponse(success=True, message=response_msg)
 
@@ -378,7 +396,8 @@ async def delete_chat_message(
         message_id=message_id,
     ))
 
-    # TODO: Sync deletion to Firebase
+    # Sync deletion to Firebase
+    firebase_delete_message(event_id, message_id)
 
     return ChatMessageDeleteResponse(success=True, message_id=message_id)
 
@@ -433,7 +452,8 @@ async def pin_chat_message(
         is_pinned=True,
     ))
 
-    # TODO: Sync to Firebase
+    # Sync to Firebase
+    update_message_pinned(event_id, message_id, True, message.pinned_at)
 
     return ChatMessagePinResponse(success=True, message_id=message_id, is_pinned=True)
 
@@ -488,7 +508,8 @@ async def unpin_chat_message(
         is_pinned=False,
     ))
 
-    # TODO: Sync to Firebase
+    # Sync to Firebase
+    update_message_pinned(event_id, message_id, False, None)
 
     return ChatMessagePinResponse(success=True, message_id=message_id, is_pinned=False)
 
