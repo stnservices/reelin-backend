@@ -344,6 +344,115 @@ class RedisCache:
         client = await self.get_client()
         return client.pubsub()
 
+    # === Chat Message Caching ===
+
+    CHAT_MESSAGES_PREFIX = "chat_messages"
+    CHAT_CACHE_TTL = 3600  # 1 hour
+
+    def chat_messages_key(self, event_id: int) -> str:
+        """Key for cached chat messages (sorted set by message ID)."""
+        return f"{self.CHAT_MESSAGES_PREFIX}:{event_id}"
+
+    async def cache_chat_message(self, event_id: int, message: dict):
+        """Add a message to the cache and publish to Pub/Sub."""
+        client = await self.get_client()
+        key = self.chat_messages_key(event_id)
+
+        # Add to sorted set (score = message_id for ordering)
+        await client.zadd(key, {json.dumps(message, default=str): message["id"]})
+
+        # Keep only last 100 messages in cache
+        await client.zremrangebyrank(key, 0, -101)
+
+        # Refresh TTL
+        await client.expire(key, self.CHAT_CACHE_TTL)
+
+        # Publish to Pub/Sub for real-time subscribers
+        await self.publish_chat_message(event_id, {
+            "type": "new_message",
+            "message": message,
+        })
+
+    async def get_cached_chat_messages(
+        self, event_id: int, limit: int = 50, before_id: Optional[int] = None
+    ) -> Optional[list[dict]]:
+        """Get cached messages. Returns None if cache miss."""
+        client = await self.get_client()
+        key = self.chat_messages_key(event_id)
+
+        # Check if cache exists
+        if not await client.exists(key):
+            return None
+
+        if before_id:
+            # Get messages with ID less than before_id
+            data = await client.zrevrangebyscore(
+                key, f"({before_id}", "-inf", start=0, num=limit
+            )
+        else:
+            # Get latest messages
+            data = await client.zrevrange(key, 0, limit - 1)
+
+        if not data:
+            return None
+
+        # Parse and reverse to get chronological order
+        messages = [json.loads(item) for item in data]
+        messages.reverse()
+        return messages
+
+    async def delete_cached_chat_message(self, event_id: int, message_id: int):
+        """Remove a message from cache and publish deletion event."""
+        client = await self.get_client()
+        key = self.chat_messages_key(event_id)
+
+        # Find and remove the message
+        messages = await client.zrangebyscore(key, message_id, message_id)
+        if messages:
+            await client.zrem(key, *messages)
+
+        # Publish deletion event
+        await self.publish_chat_message(event_id, {
+            "type": "message_deleted",
+            "message_id": message_id,
+        })
+
+    async def update_cached_chat_message(self, event_id: int, message_id: int, updates: dict):
+        """Update a message in cache (e.g., pin/unpin)."""
+        client = await self.get_client()
+        key = self.chat_messages_key(event_id)
+
+        # Find the message
+        messages = await client.zrangebyscore(key, message_id, message_id)
+        if messages:
+            old_data = json.loads(messages[0])
+            # Remove old entry
+            await client.zrem(key, messages[0])
+            # Update and re-add
+            old_data.update(updates)
+            await client.zadd(key, {json.dumps(old_data, default=str): message_id})
+
+        # Publish update event
+        event_type = "message_pinned" if updates.get("is_pinned") else "message_unpinned"
+        await self.publish_chat_message(event_id, {
+            "type": event_type,
+            "message_id": message_id,
+            "is_pinned": updates.get("is_pinned", False),
+        })
+
+    async def warm_chat_cache(self, event_id: int, messages: list[dict]):
+        """Pre-populate cache with messages from database."""
+        client = await self.get_client()
+        key = self.chat_messages_key(event_id)
+
+        if not messages:
+            return
+
+        # Add all messages to sorted set
+        mapping = {json.dumps(m, default=str): m["id"] for m in messages}
+        await client.zadd(key, mapping)
+        await client.expire(key, self.CHAT_CACHE_TTL)
+
 
 # Global singleton
 redis_cache = RedisCache()

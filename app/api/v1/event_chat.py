@@ -25,20 +25,11 @@ from app.schemas.event_chat import (
     ChatMessageSendResponse,
     ChatMessageDeleteResponse,
     ChatMessagePinResponse,
-    ChatEventPayload,
 )
 from app.services.redis_cache import redis_cache
-from app.services.firebase_chat_service import (
-    sync_chat_message,
-    delete_chat_message as firebase_delete_message,
-    update_message_pinned,
-)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-# Chat-specific SSE subscribers
-_chat_subscribers: dict[int, list[asyncio.Queue]] = {}
 
 
 async def get_enrollment(db: AsyncSession, event_id: int, user_id: int) -> Optional[EventEnrollment]:
@@ -101,12 +92,6 @@ def message_to_response(msg: EventChatMessage, is_organizer: bool) -> ChatMessag
     )
 
 
-async def broadcast_chat_event(event_id: int, payload: ChatEventPayload):
-    """Broadcast chat event to Redis for SSE delivery."""
-    try:
-        await redis_cache.publish_chat_message(event_id, payload.model_dump(mode="json"))
-    except Exception as e:
-        logger.error(f"Failed to broadcast chat event: {e}")
 
 
 @router.get("/events/{event_id}/chat", response_model=ChatMessageListResponse)
@@ -123,6 +108,7 @@ async def get_chat_messages(
     - Only enrolled participants (approved) and organizers can access
     - Returns newest messages first
     - Use 'before' parameter for pagination (load older messages)
+    - Uses Redis cache for faster reads
     """
     # Check access
     can_access, _ = await can_access_chat(db, event_id, current_user.id)
@@ -140,7 +126,21 @@ async def get_chat_messages(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    # Build query for messages
+    organizer_id = event.created_by_id
+
+    # Try Redis cache first (only for initial load without pagination)
+    if before is None:
+        cached_messages = await redis_cache.get_cached_chat_messages(event_id, limit)
+        if cached_messages:
+            logger.debug(f"Chat cache hit for event {event_id}: {len(cached_messages)} messages")
+            return ChatMessageListResponse(
+                items=[ChatMessageResponse(**m) for m in cached_messages],
+                total=len(cached_messages),
+                has_more=len(cached_messages) >= limit,
+                oldest_id=cached_messages[0]["id"] if cached_messages else None,
+            )
+
+    # Cache miss or pagination - fetch from database
     query = (
         select(EventChatMessage)
         .options(
@@ -167,9 +167,6 @@ async def get_chat_messages(
     if has_more:
         messages = messages[:limit]
 
-    # Get organizer info for each message author
-    organizer_id = event.created_by_id
-
     # Build response items (reverse to show oldest first in the list)
     items = [
         message_to_response(msg, msg.user_id == organizer_id)
@@ -185,6 +182,14 @@ async def get_chat_messages(
     total = count_result.scalar() or 0
 
     oldest_id = messages[-1].id if messages else None
+
+    # Warm cache if this was initial load (no pagination)
+    if before is None and items:
+        await redis_cache.warm_chat_cache(
+            event_id,
+            [item.model_dump(mode="json") for item in items]
+        )
+        logger.debug(f"Warmed chat cache for event {event_id}: {len(items)} messages")
 
     return ChatMessageListResponse(
         items=items,
@@ -313,28 +318,13 @@ async def send_chat_message(
 
     response_msg = message_to_response(chat_message, is_organizer)
 
-    # Broadcast to subscribers via Redis
-    await broadcast_chat_event(event_id, ChatEventPayload(
-        type="new_message",
-        event_id=event_id,
-        message=response_msg,
-    ))
-
-    # Sync to Firebase for mobile clients
-    sync_chat_message(
-        event_id=event_id,
-        message_id=chat_message.id,
-        user_id=current_user.id,
-        user_name=response_msg.user_name,
-        user_avatar=response_msg.user_avatar,
-        is_organizer=is_organizer,
-        message=message_data.message,
-        message_type=message_type,
-        is_pinned=False,
-        created_at=chat_message.created_at,
+    # Cache message in Redis and publish to Pub/Sub (for SSE subscribers)
+    await redis_cache.cache_chat_message(
+        event_id,
+        response_msg.model_dump(mode="json")
     )
 
-    # TODO: Send push notifications to offline users
+    # TODO: Send push notifications to offline users via FCM
 
     return ChatMessageSendResponse(success=True, message=response_msg)
 
@@ -389,15 +379,8 @@ async def delete_chat_message(
 
     await db.commit()
 
-    # Broadcast deletion
-    await broadcast_chat_event(event_id, ChatEventPayload(
-        type="message_deleted",
-        event_id=event_id,
-        message_id=message_id,
-    ))
-
-    # Sync deletion to Firebase
-    firebase_delete_message(event_id, message_id)
+    # Remove from Redis cache and broadcast deletion via Pub/Sub
+    await redis_cache.delete_cached_chat_message(event_id, message_id)
 
     return ChatMessageDeleteResponse(success=True, message_id=message_id)
 
@@ -444,16 +427,12 @@ async def pin_chat_message(
 
     await db.commit()
 
-    # Broadcast pin
-    await broadcast_chat_event(event_id, ChatEventPayload(
-        type="message_pinned",
-        event_id=event_id,
-        message_id=message_id,
-        is_pinned=True,
-    ))
-
-    # Sync to Firebase
-    update_message_pinned(event_id, message_id, True, message.pinned_at)
+    # Update Redis cache and broadcast pin via Pub/Sub
+    await redis_cache.update_cached_chat_message(
+        event_id,
+        message_id,
+        {"is_pinned": True, "pinned_at": message.pinned_at.isoformat()}
+    )
 
     return ChatMessagePinResponse(success=True, message_id=message_id, is_pinned=True)
 
@@ -500,16 +479,12 @@ async def unpin_chat_message(
 
     await db.commit()
 
-    # Broadcast unpin
-    await broadcast_chat_event(event_id, ChatEventPayload(
-        type="message_unpinned",
-        event_id=event_id,
-        message_id=message_id,
-        is_pinned=False,
-    ))
-
-    # Sync to Firebase
-    update_message_pinned(event_id, message_id, False, None)
+    # Update Redis cache and broadcast unpin via Pub/Sub
+    await redis_cache.update_cached_chat_message(
+        event_id,
+        message_id,
+        {"is_pinned": False, "pinned_at": None}
+    )
 
     return ChatMessagePinResponse(success=True, message_id=message_id, is_pinned=False)
 
@@ -537,38 +512,54 @@ async def chat_stream(
             detail="You must be enrolled (approved) to access chat stream"
         )
 
-    # Create queue for this subscriber
-    queue: asyncio.Queue = asyncio.Queue()
-
-    # Register subscriber
-    if event_id not in _chat_subscribers:
-        _chat_subscribers[event_id] = []
-    _chat_subscribers[event_id].append(queue)
+    # Store current user ID to filter out own messages
+    subscriber_user_id = current_user.id
 
     async def event_generator():
+        pubsub = None
         try:
+            # Subscribe to Redis Pub/Sub channel for this event
+            pubsub = await redis_cache.subscribe_chat_channel(event_id)
+
             # Send initial connected event
-            yield f"event: connected\ndata: {json.dumps({'event_id': event_id})}\n\n"
+            yield f"event: connected\ndata: {json.dumps({'event_id': event_id, 'user_id': subscriber_user_id})}\n\n"
 
             while True:
                 try:
-                    # Wait for messages with timeout for keepalive
-                    data = await asyncio.wait_for(queue.get(), timeout=30.0)
-                    yield f"event: chat\ndata: {json.dumps(data)}\n\n"
+                    # Wait for messages from Redis Pub/Sub with timeout
+                    message = await asyncio.wait_for(
+                        pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
+                        timeout=30.0
+                    )
+
+                    if message and message["type"] == "message":
+                        data = json.loads(message["data"])
+
+                        # Skip new_message events for the sender (prevents duplicates)
+                        if data.get("type") == "new_message":
+                            msg = data.get("message", {})
+                            if msg.get("user_id") == subscriber_user_id:
+                                logger.debug(f"Skipping own message for user {subscriber_user_id}")
+                                continue
+
+                        yield f"event: chat\ndata: {json.dumps(data)}\n\n"
+
                 except asyncio.TimeoutError:
-                    # Send keepalive
+                    # Send keepalive ping
                     yield f"event: ping\ndata: {{}}\n\n"
+
         except asyncio.CancelledError:
-            pass
+            logger.debug(f"SSE connection cancelled for event {event_id}")
+        except Exception as e:
+            logger.error(f"Error in chat stream: {e}")
         finally:
-            # Unregister subscriber
-            if event_id in _chat_subscribers:
+            # Clean up Redis subscription
+            if pubsub:
                 try:
-                    _chat_subscribers[event_id].remove(queue)
-                    if not _chat_subscribers[event_id]:
-                        del _chat_subscribers[event_id]
-                except ValueError:
-                    pass
+                    await pubsub.unsubscribe()
+                    await pubsub.close()
+                except Exception as e:
+                    logger.debug(f"Error closing pubsub: {e}")
 
     return StreamingResponse(
         event_generator(),
@@ -579,14 +570,3 @@ async def chat_stream(
             "X-Accel-Buffering": "no",
         },
     )
-
-
-# Function to broadcast to local SSE subscribers (called from Redis listener)
-async def broadcast_to_chat_subscribers(event_id: int, data: dict):
-    """Broadcast data to all SSE subscribers for an event."""
-    if event_id in _chat_subscribers:
-        for queue in _chat_subscribers[event_id]:
-            try:
-                await queue.put(data)
-            except Exception as e:
-                logger.error(f"Failed to put message in queue: {e}")
