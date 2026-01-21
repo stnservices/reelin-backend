@@ -21,8 +21,7 @@ from app.models.enrollment import EventEnrollment, EnrollmentStatus
 from app.models.event import Event, EventStatus
 from app.models.route_history import RouteHistory
 from app.models.user import UserAccount
-from app.schemas.auth import CurrentUser
-from app.services.auth import get_current_user, get_optional_current_user
+from app.dependencies import get_current_user, get_optional_current_user
 from app.services.redis_cache import redis_cache
 
 
@@ -417,7 +416,7 @@ async def _get_user_display_info(
 async def start_tracking(
     event_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: UserAccount = Depends(get_current_user),
 ):
     """
     Start tracking session for current user in an event.
@@ -486,7 +485,7 @@ async def start_tracking(
 async def stop_tracking(
     event_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: UserAccount = Depends(get_current_user),
 ):
     """
     Stop tracking session for current user.
@@ -505,7 +504,7 @@ async def update_position(
     event_id: int,
     position: PositionUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: UserAccount = Depends(get_current_user),
 ):
     """
     Update current user's position.
@@ -548,7 +547,7 @@ async def update_position(
 async def get_tracking_participants(
     event_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[CurrentUser] = Depends(get_optional_current_user),
+    current_user: Optional[UserAccount] = Depends(get_optional_current_user),
 ):
     """
     Get all participant positions for an event.
@@ -641,7 +640,7 @@ async def stream_tracking_participants(
 @router.post("/events/{event_id}/tracking/heartbeat")
 async def tracking_heartbeat(
     event_id: int,
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: UserAccount = Depends(get_current_user),
 ):
     """
     Send heartbeat to maintain online status.
@@ -685,7 +684,7 @@ async def save_route_history(
     event_id: int,
     route_data: RouteHistoryCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: UserAccount = Depends(get_current_user),
 ):
     """
     Save route history when user stops tracking.
@@ -756,7 +755,7 @@ async def get_route_history(
     event_id: int,
     user_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[CurrentUser] = Depends(get_optional_current_user),
+    current_user: Optional[UserAccount] = Depends(get_optional_current_user),
 ):
     """
     Get route history for a specific user in an event.
@@ -793,7 +792,7 @@ async def get_route_history(
 async def list_route_histories(
     event_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[CurrentUser] = Depends(get_optional_current_user),
+    current_user: Optional[UserAccount] = Depends(get_optional_current_user),
 ):
     """
     List all route histories for an event.
