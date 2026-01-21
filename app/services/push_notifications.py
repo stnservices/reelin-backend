@@ -45,9 +45,15 @@ def initialize_firebase() -> bool:
         # Parse credentials from JSON string
         firebase_credentials = json.loads(settings.firebase_credentials)
         cred = credentials.Certificate(firebase_credentials)
-        firebase_admin.initialize_app(cred)
+
+        # Build options (include databaseURL if set for Realtime Database)
+        options = {}
+        if settings.firebase_database_url:
+            options['databaseURL'] = settings.firebase_database_url
+
+        firebase_admin.initialize_app(cred, options if options else None)
         _firebase_initialized = True
-        logger.info("Firebase Admin SDK initialized successfully")
+        logger.info(f"Firebase Admin SDK initialized successfully (RTDB: {bool(options.get('databaseURL'))})")
         return True
 
     except json.JSONDecodeError as e:

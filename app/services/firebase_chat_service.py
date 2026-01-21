@@ -12,62 +12,25 @@ from app.services.push_notifications import initialize_firebase
 
 logger = logging.getLogger(__name__)
 
-# Firebase Realtime Database URL
-_db_initialized = False
 
-
-def _get_database_url() -> Optional[str]:
-    """Get Firebase Realtime Database URL from settings."""
-    settings = get_settings()
-    # The database URL should be in format: https://<project-id>-default-rtdb.firebaseio.com
-    return getattr(settings, 'firebase_database_url', None)
-
-
-def initialize_realtime_db() -> bool:
-    """Initialize Firebase Realtime Database connection.
+def _ensure_firebase_ready() -> bool:
+    """Ensure Firebase is initialized with Realtime Database support.
 
     Returns:
-        True if initialized successfully, False otherwise.
+        True if ready, False otherwise.
     """
-    global _db_initialized
-
-    if _db_initialized:
-        return True
-
-    # Ensure Firebase Admin SDK is initialized first
+    # Initialize Firebase if needed
     if not initialize_firebase():
         logger.warning("Firebase Admin SDK not initialized, chat sync disabled")
         return False
 
-    database_url = _get_database_url()
-    if not database_url:
+    # Check if database URL is configured
+    settings = get_settings()
+    if not settings.firebase_database_url:
         logger.warning("FIREBASE_DATABASE_URL not set, chat sync disabled")
         return False
 
-    try:
-        # Re-initialize the app with database URL if needed
-        app = firebase_admin.get_app()
-        # Check if database URL is already configured
-        if not app.options.get('databaseURL'):
-            # We need to delete and reinitialize with database URL
-            firebase_admin.delete_app(app)
-
-            import json
-            settings = get_settings()
-            firebase_credentials = json.loads(settings.firebase_credentials)
-            from firebase_admin import credentials
-            cred = credentials.Certificate(firebase_credentials)
-            firebase_admin.initialize_app(cred, {
-                'databaseURL': database_url
-            })
-
-        _db_initialized = True
-        logger.info(f"Firebase Realtime Database initialized: {database_url}")
-        return True
-
-    except Exception as e:
-        logger.error(f"Error initializing Firebase Realtime Database: {e}")
-        return False
+    return True
 
 
 def sync_chat_message(
@@ -99,7 +62,7 @@ def sync_chat_message(
     Returns:
         True if synced successfully, False otherwise.
     """
-    if not initialize_realtime_db():
+    if not _ensure_firebase_ready():
         return False
 
     try:
@@ -134,7 +97,7 @@ def delete_chat_message(event_id: int, message_id: int) -> bool:
     Returns:
         True if deleted successfully, False otherwise.
     """
-    if not initialize_realtime_db():
+    if not _ensure_firebase_ready():
         return False
 
     try:
@@ -160,7 +123,7 @@ def update_message_pinned(event_id: int, message_id: int, is_pinned: bool, pinne
     Returns:
         True if updated successfully, False otherwise.
     """
-    if not initialize_realtime_db():
+    if not _ensure_firebase_ready():
         return False
 
     try:
