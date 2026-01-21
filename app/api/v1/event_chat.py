@@ -18,6 +18,7 @@ from app.models.user import UserAccount
 from app.models.event import Event, EventStatus
 from app.models.enrollment import EventEnrollment, EnrollmentStatus
 from app.models.event_chat import EventChatMessage, MessageType
+from app.models.event_validator import EventValidator
 from app.schemas.event_chat import (
     ChatMessageCreate,
     ChatMessageResponse,
@@ -56,14 +57,35 @@ async def is_event_organizer(db: AsyncSession, event_id: int, user_id: int) -> b
     return event is not None and event.created_by_id == user_id
 
 
+async def is_event_validator(db: AsyncSession, event_id: int, user_id: int) -> bool:
+    """Check if user is an active validator for the event."""
+    query = select(EventValidator).where(
+        EventValidator.event_id == event_id,
+        EventValidator.validator_id == user_id,
+        EventValidator.is_active == True,
+    )
+    result = await db.execute(query)
+    return result.scalar_one_or_none() is not None
+
+
 async def can_access_chat(db: AsyncSession, event_id: int, user_id: int) -> tuple[bool, bool]:
     """
     Check if user can access the chat.
-    Returns (can_access, is_organizer)
+    Returns (can_access, is_organizer_or_validator)
+
+    Access granted to:
+    - Event organizer (creator)
+    - Active validators (judges)
+    - Approved enrolled participants
     """
     # Check if organizer
     is_organizer = await is_event_organizer(db, event_id, user_id)
     if is_organizer:
+        return True, True
+
+    # Check if validator (judges can also manage chat like organizers)
+    is_validator = await is_event_validator(db, event_id, user_id)
+    if is_validator:
         return True, True
 
     # Check if approved enrollment
