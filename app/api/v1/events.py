@@ -662,6 +662,15 @@ async def get_event(
     approved_result = await db.execute(approved_count_query)
     approved_count = approved_result.scalar() or 0
 
+    # Fetch validator IDs (for chat access on mobile)
+    from app.models.event_validator import EventValidator
+    validators_query = select(EventValidator.validator_id).where(
+        EventValidator.event_id == event_id,
+        EventValidator.is_active == True,
+    )
+    validators_result = await db.execute(validators_query)
+    validator_ids = [row[0] for row in validators_result.fetchall()]
+
     # Build response with organizer info, rule, location and sponsors
     response = {
         **{k: v for k, v in event.__dict__.items() if not k.startswith('_') and k != 'fish_scoring'},
@@ -699,6 +708,7 @@ async def get_event(
             "legal_name": event.billing_profile.legal_name,
             "organizer_type": event.billing_profile.organizer_type,
         } if event.billing_profile else None,
+        "validator_ids": validator_ids,
     }
 
     return response
@@ -866,6 +876,15 @@ async def get_event_by_slug(
     approved_result = await db.execute(approved_count_query)
     approved_count = approved_result.scalar() or 0
 
+    # Fetch validator IDs (for chat access on mobile)
+    from app.models.event_validator import EventValidator
+    validators_query = select(EventValidator.validator_id).where(
+        EventValidator.event_id == event.id,
+        EventValidator.is_active == True,
+    )
+    validators_result = await db.execute(validators_query)
+    validator_ids = [row[0] for row in validators_result.fetchall()]
+
     # Build response with organizer info, rule, location and sponsors
     response = {
         **{k: v for k, v in event.__dict__.items() if not k.startswith('_') and k != 'fish_scoring'},
@@ -903,6 +922,7 @@ async def get_event_by_slug(
             "legal_name": event.billing_profile.legal_name,
             "organizer_type": event.billing_profile.organizer_type,
         } if event.billing_profile else None,
+        "validator_ids": validator_ids,
     }
 
     return response

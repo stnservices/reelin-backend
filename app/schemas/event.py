@@ -470,6 +470,9 @@ class EventResponse(BaseModel):
     enrolled_count: Optional[int] = None
     approved_count: Optional[int] = None
 
+    # Validator user IDs (for chat access check on mobile)
+    validator_ids: List[int] = []
+
 
 class EventListResponse(BaseModel):
     """Schema for event list item (lighter than full EventResponse)."""
