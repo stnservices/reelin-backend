@@ -453,6 +453,138 @@ class RedisCache:
         await client.zadd(key, mapping)
         await client.expire(key, self.CHAT_CACHE_TTL)
 
+    # === Live Tracking ===
+
+    TRACKING_CHANNEL_PREFIX = "tracking"
+    TRACKING_POSITIONS_PREFIX = "tracking_positions"
+    TRACKING_STATS_PREFIX = "tracking_stats"
+    TRACKING_TTL = 7200  # 2 hours - positions expire after event
+
+    def tracking_channel(self, event_id: int) -> str:
+        """Get Pub/Sub channel for live tracking broadcasts."""
+        return f"{self.TRACKING_CHANNEL_PREFIX}:event_{event_id}"
+
+    def tracking_positions_key(self, event_id: int) -> str:
+        """Key for hash storing all participant positions."""
+        return f"{self.TRACKING_POSITIONS_PREFIX}:{event_id}"
+
+    def tracking_stats_key(self, event_id: int) -> str:
+        """Key for tracking statistics (participant count, etc)."""
+        return f"{self.TRACKING_STATS_PREFIX}:{event_id}"
+
+    async def update_participant_position(
+        self,
+        event_id: int,
+        user_id: int,
+        position_data: dict,
+    ):
+        """Update participant's live position in Redis hash and publish update."""
+        client = await self.get_client()
+        key = self.tracking_positions_key(event_id)
+
+        # Store position in hash (field = user_id, value = position JSON)
+        await client.hset(key, str(user_id), json.dumps(position_data, default=str))
+        await client.expire(key, self.TRACKING_TTL)
+
+        # Publish position update to subscribers
+        await client.publish(
+            self.tracking_channel(event_id),
+            json.dumps({
+                "type": "position_update",
+                "user_id": user_id,
+                "position": position_data,
+            }, default=str),
+        )
+
+    async def get_all_participant_positions(self, event_id: int) -> dict[int, dict]:
+        """Get all participant positions for an event."""
+        client = await self.get_client()
+        key = self.tracking_positions_key(event_id)
+
+        data = await client.hgetall(key)
+        result = {}
+        for user_id_str, position_json in data.items():
+            try:
+                result[int(user_id_str)] = json.loads(position_json)
+            except (json.JSONDecodeError, ValueError):
+                continue
+        return result
+
+    async def get_participant_position(self, event_id: int, user_id: int) -> dict | None:
+        """Get a single participant's position."""
+        client = await self.get_client()
+        key = self.tracking_positions_key(event_id)
+
+        data = await client.hget(key, str(user_id))
+        if data:
+            try:
+                return json.loads(data)
+            except json.JSONDecodeError:
+                return None
+        return None
+
+    async def remove_participant_position(self, event_id: int, user_id: int):
+        """Remove participant from tracking (when they stop)."""
+        client = await self.get_client()
+        key = self.tracking_positions_key(event_id)
+
+        await client.hdel(key, str(user_id))
+
+        # Publish removal event
+        await client.publish(
+            self.tracking_channel(event_id),
+            json.dumps({
+                "type": "participant_removed",
+                "user_id": user_id,
+            }),
+        )
+
+    async def set_participant_offline(self, event_id: int, user_id: int):
+        """Mark participant as offline without removing them."""
+        client = await self.get_client()
+        key = self.tracking_positions_key(event_id)
+
+        # Get current position and update online status
+        data = await client.hget(key, str(user_id))
+        if data:
+            try:
+                position = json.loads(data)
+                position["is_online"] = False
+                position["disconnected_at"] = datetime.utcnow().isoformat()
+                await client.hset(key, str(user_id), json.dumps(position, default=str))
+
+                # Publish offline event
+                await client.publish(
+                    self.tracking_channel(event_id),
+                    json.dumps({
+                        "type": "participant_offline",
+                        "user_id": user_id,
+                    }),
+                )
+            except json.JSONDecodeError:
+                pass
+
+    async def get_tracking_participant_count(self, event_id: int) -> int:
+        """Get number of participants currently tracking."""
+        client = await self.get_client()
+        key = self.tracking_positions_key(event_id)
+        return await client.hlen(key)
+
+    async def subscribe_tracking_channel(self, event_id: int):
+        """Subscribe to tracking updates for an event."""
+        client = await self.get_client()
+        pubsub = client.pubsub()
+        await pubsub.subscribe(self.tracking_channel(event_id))
+        return pubsub
+
+    async def publish_tracking_event(self, event_id: int, data: dict):
+        """Publish a generic tracking event."""
+        client = await self.get_client()
+        await client.publish(
+            self.tracking_channel(event_id),
+            json.dumps(data, default=str),
+        )
+
 
 # Global singleton
 redis_cache = RedisCache()

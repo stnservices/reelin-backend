@@ -723,28 +723,3 @@ async def change_password(
     return {"message": "Password changed successfully"}
 
 
-@router.get("/firebase-token")
-async def get_firebase_token(
-    current_user: UserAccount = Depends(get_current_user),
-) -> dict:
-    """
-    Get a Firebase custom token for the authenticated user.
-
-    This token is used to authenticate with Firebase services
-    (Realtime Database, Firestore) from the mobile app.
-    The token is valid for 1 hour.
-
-    Returns:
-        firebase_token: Custom token for Firebase authentication
-    """
-    from app.services.push_notifications import create_firebase_custom_token
-
-    token = create_firebase_custom_token(current_user.id)
-
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Firebase service unavailable",
-        )
-
-    return {"firebase_token": token}

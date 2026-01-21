@@ -5,7 +5,7 @@ import logging
 from typing import List, Optional
 
 import firebase_admin
-from firebase_admin import credentials, messaging, auth as firebase_auth
+from firebase_admin import credentials, messaging
 from firebase_admin.exceptions import FirebaseError
 
 from app.config import get_settings
@@ -46,14 +46,9 @@ def initialize_firebase() -> bool:
         firebase_credentials = json.loads(settings.firebase_credentials)
         cred = credentials.Certificate(firebase_credentials)
 
-        # Build options (include databaseURL if set for Realtime Database)
-        options = {}
-        if settings.firebase_database_url:
-            options['databaseURL'] = settings.firebase_database_url
-
-        firebase_admin.initialize_app(cred, options if options else None)
+        firebase_admin.initialize_app(cred)
         _firebase_initialized = True
-        logger.info(f"Firebase Admin SDK initialized successfully (RTDB: {bool(options.get('databaseURL'))})")
+        logger.info("Firebase Admin SDK initialized successfully (FCM only)")
         return True
 
     except json.JSONDecodeError as e:
@@ -332,40 +327,3 @@ def is_token_valid(token: str) -> bool:
         return False
     except Exception:
         return False
-
-
-def create_firebase_custom_token(user_id: int) -> Optional[str]:
-    """Generate a Firebase custom token for a user.
-
-    This token allows the user to authenticate with Firebase
-    and access resources protected by Firebase Security Rules.
-    The token is valid for 1 hour by default.
-
-    Args:
-        user_id: The user's ID from your backend
-
-    Returns:
-        Firebase custom token string, or None if failed
-    """
-    if not initialize_firebase():
-        logger.warning("Firebase not initialized, cannot create custom token")
-        return None
-
-    try:
-        # Create custom token with user_id as the UID
-        # This makes auth.uid in Firebase rules equal to user_id
-        custom_token = firebase_auth.create_custom_token(str(user_id))
-
-        # Token is bytes, decode to string
-        if isinstance(custom_token, bytes):
-            custom_token = custom_token.decode('utf-8')
-
-        logger.info(f"Created Firebase custom token for user {user_id}")
-        return custom_token
-
-    except FirebaseError as e:
-        logger.error(f"Firebase error creating custom token: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Unexpected error creating custom token: {e}")
-        return None
