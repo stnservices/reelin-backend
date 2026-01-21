@@ -21,7 +21,7 @@ from app.models.enrollment import EventEnrollment, EnrollmentStatus
 from app.models.event import Event, EventStatus
 from app.models.route_history import RouteHistory
 from app.models.user import UserAccount
-from app.dependencies import get_current_user, get_optional_current_user
+from app.dependencies import get_current_user, get_current_user_optional
 from app.services.redis_cache import redis_cache
 
 
@@ -547,7 +547,7 @@ async def update_position(
 async def get_tracking_participants(
     event_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[UserAccount] = Depends(get_optional_current_user),
+    current_user: Optional[UserAccount] = Depends(get_current_user_optional),
 ):
     """
     Get all participant positions for an event.
@@ -755,7 +755,7 @@ async def get_route_history(
     event_id: int,
     user_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[UserAccount] = Depends(get_optional_current_user),
+    current_user: Optional[UserAccount] = Depends(get_current_user_optional),
 ):
     """
     Get route history for a specific user in an event.
@@ -792,7 +792,7 @@ async def get_route_history(
 async def list_route_histories(
     event_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[UserAccount] = Depends(get_optional_current_user),
+    current_user: Optional[UserAccount] = Depends(get_current_user_optional),
 ):
     """
     List all route histories for an event.
