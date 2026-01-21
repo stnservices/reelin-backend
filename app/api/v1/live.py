@@ -381,9 +381,9 @@ class PositionUpdate(BaseModel):
 
 async def _get_enrollment(
     db: AsyncSession, event_id: int, user_id: int
-) -> Optional[Enrollment]:
+) -> Optional[EventEnrollment]:
     """Get user's enrollment for an event."""
-    query = select(Enrollment).where(
+    query = select(EventEnrollment).where(
         EventEnrollment.event_id == event_id,
         EventEnrollment.user_id == user_id,
     )
