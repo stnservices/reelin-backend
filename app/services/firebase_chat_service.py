@@ -103,7 +103,7 @@ def sync_chat_message(
         return False
 
     try:
-        ref = firebase_db.reference(f'events/{event_id}/chat/{message_id}')
+        ref = firebase_db.reference(f'chat/{event_id}/messages/{message_id}')
         ref.set({
             'id': message_id,
             'event_id': event_id,
@@ -138,7 +138,7 @@ def delete_chat_message(event_id: int, message_id: int) -> bool:
         return False
 
     try:
-        ref = firebase_db.reference(f'events/{event_id}/chat/{message_id}')
+        ref = firebase_db.reference(f'chat/{event_id}/messages/{message_id}')
         ref.delete()
         logger.debug(f"Chat message {message_id} deleted from Firebase for event {event_id}")
         return True
@@ -164,7 +164,7 @@ def update_message_pinned(event_id: int, message_id: int, is_pinned: bool, pinne
         return False
 
     try:
-        ref = firebase_db.reference(f'events/{event_id}/chat/{message_id}')
+        ref = firebase_db.reference(f'chat/{event_id}/messages/{message_id}')
         updates = {
             'is_pinned': is_pinned,
             'pinned_at': pinned_at.isoformat() if pinned_at else None,
