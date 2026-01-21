@@ -17,17 +17,19 @@ sync_engine = create_engine(
     sync_database_url,
     echo=False,
     pool_pre_ping=True,
-    pool_size=3,
-    max_overflow=5,
+    pool_size=2,
+    max_overflow=3,  # Max 5 for Celery sync
 )
 
 # Create async engine
+# Pool sized to fit within DigitalOcean's 22 connection pool limit
+# Async: 8, Sync: 5, Celery async: 4 = 17 max (leaves headroom)
 engine = create_async_engine(
     settings.database_url,
     echo=settings.debug,
     pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=10,
+    pool_size=4,
+    max_overflow=4,  # Max 8 for FastAPI async
 )
 
 # Create async session factory
@@ -65,13 +67,14 @@ def create_celery_session_maker():
     """Create a fresh async session maker for Celery tasks.
 
     This avoids event loop conflicts when Celery creates its own event loop.
+    Pool sized to fit within DigitalOcean's 22 connection limit.
     """
     celery_engine = create_async_engine(
         settings.database_url,
         echo=False,
         pool_pre_ping=True,
         pool_size=2,
-        max_overflow=3,
+        max_overflow=2,  # Max 4 for Celery async
     )
     return async_sessionmaker(
         celery_engine,
