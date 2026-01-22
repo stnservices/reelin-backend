@@ -16,11 +16,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
+from jose import JWTError
+from sqlalchemy.orm import selectinload
+
 from app.database import get_db
+from app.core.security import decode_token
 from app.models.enrollment import EventEnrollment, EnrollmentStatus
 from app.models.event import Event, EventStatus
+from app.models.event_validator import EventValidator
 from app.models.route_history import RouteHistory
-from app.models.user import UserAccount
+from app.models.user import UserAccount, TokenBlacklist
 from app.dependencies import get_current_user, get_current_user_optional
 from app.services.redis_cache import redis_cache
 
@@ -412,6 +417,74 @@ async def _get_user_display_info(
     return f"User {user_id}", None
 
 
+async def _get_user_from_token(db: AsyncSession, token: str) -> Optional[UserAccount]:
+    """Get user from a raw JWT token string (for SSE endpoints)."""
+    if not token:
+        return None
+
+    try:
+        payload = decode_token(token)
+        user_id_str = payload.get("sub")
+        token_type = payload.get("type")
+        token_jti = payload.get("jti")
+
+        if not user_id_str or token_type != "access":
+            return None
+
+        user_id = int(user_id_str)
+
+        # Check if token is blacklisted
+        blacklist_query = select(TokenBlacklist).where(TokenBlacklist.token_jti == token_jti)
+        blacklist_result = await db.execute(blacklist_query)
+        if blacklist_result.scalar_one_or_none():
+            return None
+
+        # Get user with profile
+        user_query = (
+            select(UserAccount)
+            .options(selectinload(UserAccount.profile))
+            .where(UserAccount.id == user_id)
+        )
+        result = await db.execute(user_query)
+        user = result.scalar_one_or_none()
+
+        if user and user.is_active:
+            return user
+
+    except (JWTError, ValueError, TypeError):
+        pass
+
+    return None
+
+
+async def _can_view_tracking(
+    db: AsyncSession, event: Event, user: UserAccount
+) -> bool:
+    """
+    Check if user can view live tracking map.
+    Allowed: admins, event organizer, event validators.
+    """
+    # Admin can view all
+    if user.is_superuser or (user.profile and user.profile.is_administrator):
+        return True
+
+    # Event organizer can view
+    if event.created_by_id == user.id:
+        return True
+
+    # Event validators can view
+    query = select(EventValidator).where(
+        EventValidator.event_id == event.id,
+        EventValidator.validator_id == user.id,
+        EventValidator.is_active == True,
+    )
+    result = await db.execute(query)
+    if result.scalar_one_or_none():
+        return True
+
+    return False
+
+
 @router.post("/events/{event_id}/tracking/start")
 async def start_tracking(
     event_id: int,
@@ -547,16 +620,23 @@ async def update_position(
 async def get_tracking_participants(
     event_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[UserAccount] = Depends(get_current_user_optional),
+    current_user: UserAccount = Depends(get_current_user),
 ):
     """
     Get all participant positions for an event.
-    Public endpoint - anyone can view live tracking.
+    Restricted to admins, event organizer, and event validators.
     """
     # Check event exists
     event = await _get_event(db, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
+
+    # Check if user can view tracking
+    if not await _can_view_tracking(db, event, current_user):
+        raise HTTPException(
+            status_code=403,
+            detail="Only admins, organizers, and validators can view live tracking"
+        )
 
     # Get all positions from Redis
     positions = await redis_cache.get_all_participant_positions(event_id)
@@ -574,17 +654,46 @@ async def get_tracking_participants(
 @router.get("/events/{event_id}/tracking/stream")
 async def stream_tracking_participants(
     event_id: int,
+    request: Request,
     token: str = Query(None, description="Auth token for SSE"),
     db: AsyncSession = Depends(get_db),
 ):
     """
     SSE stream for real-time participant position updates.
-    Public endpoint - anyone can watch live tracking.
+    Restricted to admins, event organizer, and event validators.
     """
     # Check event exists
     event = await _get_event(db, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
+
+    # Get token from query param or Authorization header
+    auth_token = token
+    if not auth_token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            auth_token = auth_header[7:]
+
+    # Authenticate user
+    if not auth_token:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required to view live tracking"
+        )
+
+    user = await _get_user_from_token(db, auth_token)
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired token"
+        )
+
+    # Check if user can view tracking
+    if not await _can_view_tracking(db, event, user):
+        raise HTTPException(
+            status_code=403,
+            detail="Only admins, organizers, and validators can view live tracking"
+        )
 
     async def event_generator():
         """Generate SSE events from Redis Pub/Sub."""
