@@ -5,6 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
+import sqlalchemy as sa
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -132,6 +133,9 @@ class FishResponse(BaseModel):
     image_url: Optional[str] = None
     is_active: bool
     created_at: Optional[datetime] = None
+    # Usage counts (populated by endpoint, not from ORM)
+    catch_count: int = 0
+    event_count: int = 0
 
 
 class SponsorCreate(BaseModel):
@@ -569,14 +573,42 @@ async def list_fish(
     include_inactive: bool = False,
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(AdminOnly),
-) -> list[Fish]:
-    """List all fish species."""
+) -> list[FishResponse]:
+    """List all fish species with usage counts."""
+    from app.models.catch import Catch
+
     query = select(Fish)
     if not include_inactive:
         query = query.where(Fish.is_active == True)
     query = query.order_by(Fish.name)
     result = await db.execute(query)
-    return result.scalars().all()
+    fish_list = result.scalars().all()
+
+    # Get catch counts per fish
+    catch_counts_query = (
+        select(Catch.fish_id, sa.func.count(Catch.id).label('count'))
+        .group_by(Catch.fish_id)
+    )
+    catch_result = await db.execute(catch_counts_query)
+    catch_counts = {row.fish_id: row.count for row in catch_result}
+
+    # Get event configuration counts per fish
+    event_counts_query = (
+        select(EventFishScoring.fish_id, sa.func.count(EventFishScoring.id).label('count'))
+        .group_by(EventFishScoring.fish_id)
+    )
+    event_result = await db.execute(event_counts_query)
+    event_counts = {row.fish_id: row.count for row in event_result}
+
+    # Build response with usage counts
+    response = []
+    for fish in fish_list:
+        fish_data = FishResponse.model_validate(fish)
+        fish_data.catch_count = catch_counts.get(fish.id, 0)
+        fish_data.event_count = event_counts.get(fish.id, 0)
+        response.append(fish_data)
+
+    return response
 
 
 def generate_fish_slug(name: str) -> str:
