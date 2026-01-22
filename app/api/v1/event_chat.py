@@ -514,7 +514,7 @@ async def unpin_chat_message(
 @router.get("/events/{event_id}/chat/stream")
 async def chat_stream(
     event_id: int,
-    token: Optional[str] = Query(None, description="Auth token for SSE (required since EventSource can't send headers)"),
+    token: Optional[str] = Query(None, description="Auth token for SSE"),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -534,7 +534,7 @@ async def chat_stream(
     # Check token is provided
     if not token:
         logger.warning(f"Chat stream request for event {event_id} missing token")
-        raise HTTPException(status_code=401, detail="Authentication token required - pass token as query parameter")
+        raise HTTPException(status_code=401, detail="Authentication token required")
 
     # Validate token from query parameter
     try:
