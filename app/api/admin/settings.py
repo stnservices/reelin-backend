@@ -668,8 +668,10 @@ async def update_fish(
     data: FishUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(AdminOnly),
-) -> Fish:
+) -> FishResponse:
     """Update a fish species."""
+    from app.models.catch import Catch
+
     result = await db.execute(select(Fish).where(Fish.id == fish_id))
     fish = result.scalar_one_or_none()
 
@@ -703,7 +705,24 @@ async def update_fish(
 
     await db.commit()
     await db.refresh(fish)
-    return fish
+
+    # Get usage counts for the response
+    catch_count_result = await db.execute(
+        select(sa.func.count(Catch.id)).where(Catch.fish_id == fish_id)
+    )
+    catch_count = catch_count_result.scalar() or 0
+
+    event_count_result = await db.execute(
+        select(sa.func.count(EventFishScoring.id)).where(EventFishScoring.fish_id == fish_id)
+    )
+    event_count = event_count_result.scalar() or 0
+
+    # Build response with usage counts
+    fish_response = FishResponse.model_validate(fish)
+    fish_response.catch_count = catch_count
+    fish_response.event_count = event_count
+
+    return fish_response
 
 
 @router.delete("/fish/{fish_id}")
