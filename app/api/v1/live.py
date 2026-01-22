@@ -434,7 +434,7 @@ async def start_tracking(
 
     # Check if user can track (enrolled and approved, or organizer/validator)
     is_organizer = event.created_by_id == current_user.id
-    is_admin = "administrator" in current_user.roles
+    is_admin = current_user.is_superuser
 
     if not is_organizer and not is_admin:
         enrollment = await _get_enrollment(db, event_id, current_user.id)
@@ -691,7 +691,7 @@ async def save_route_history(
     This stores the compressed route in PostgreSQL for later analysis.
     """
     # Verify user is saving their own route or is admin
-    if route_data.user_id != current_user.id and "administrator" not in current_user.roles:
+    if route_data.user_id != current_user.id and not current_user.is_superuser:
         raise HTTPException(status_code=403, detail="Cannot save route for another user")
 
     # Check if route history already exists (upsert)
