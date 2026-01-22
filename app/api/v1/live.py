@@ -438,7 +438,7 @@ async def start_tracking(
 
     if not is_organizer and not is_admin:
         enrollment = await _get_enrollment(db, event_id, current_user.id)
-        if not enrollment or enrollment.status != EnrollmentStatus.approved:
+        if not enrollment or enrollment.status != EnrollmentStatus.APPROVED:
             raise HTTPException(
                 status_code=403, detail="Must be enrolled and approved to track"
             )
