@@ -780,6 +780,7 @@ async def search_catches(
             team_name=team_info[1] if team_info else None,
             fish_id=catch.fish_id,
             fish_name=catch.fish.name if catch.fish else "Unknown",
+            fish_name_ro=catch.fish.name_ro if catch.fish else None,
             length=catch.length,
             weight=catch.weight,
             photo_url=catch.photo_url,
@@ -1376,10 +1377,22 @@ async def update_scoreboard(db: AsyncSession, catch: Catch) -> None:
     if catch.weight:
         scoreboard.total_weight = (scoreboard.total_weight or 0) + catch.weight
 
-    # Update best catch if this is better
-    if not scoreboard.best_catch_length or catch.length > scoreboard.best_catch_length:
-        scoreboard.best_catch_length = catch.length
-        scoreboard.best_catch_id = catch.id
+    # Update best catch if this is better AND accountable (length >= min_length)
+    # Get the min_length for this fish species in this event
+    fish_scoring_query = select(EventFishScoring).where(
+        EventFishScoring.event_id == catch.event_id,
+        EventFishScoring.fish_id == catch.fish_id,
+    )
+    fish_scoring_result = await db.execute(fish_scoring_query)
+    fish_scoring = fish_scoring_result.scalar_one_or_none()
+    min_length = fish_scoring.accountable_min_length if fish_scoring else 0
+
+    # Only update best_catch if this catch is accountable (>= min_length)
+    is_accountable = catch.length >= min_length
+    if is_accountable:
+        if not scoreboard.best_catch_length or catch.length > scoreboard.best_catch_length:
+            scoreboard.best_catch_length = catch.length
+            scoreboard.best_catch_id = catch.id
 
     # Update average_length
     scoreboard.average_length = round(scoreboard.total_length / scoreboard.total_catches, 2)
@@ -1592,10 +1605,28 @@ async def recalculate_user_score(db: AsyncSession, event_id: int, user_id: int) 
     scoreboard.total_points = sum(c.points or c.length for c in catches)
     scoreboard.total_weight = sum(c.weight for c in catches if c.weight) or None
 
-    # Find best catch
-    best = max(catches, key=lambda c: c.length)
-    scoreboard.best_catch_length = best.length
-    scoreboard.best_catch_id = best.id
+    # Find best ACCOUNTABLE catch (length >= min_length for that species)
+    # Get all fish scoring configs for this event to check min lengths
+    fish_scoring_query = select(EventFishScoring).where(
+        EventFishScoring.event_id == event_id
+    )
+    fish_scoring_result = await db.execute(fish_scoring_query)
+    fish_scoring_configs = {fs.fish_id: fs.accountable_min_length for fs in fish_scoring_result.scalars().all()}
+
+    # Filter for accountable catches only
+    accountable_catches = [
+        c for c in catches
+        if c.length >= fish_scoring_configs.get(c.fish_id, 0)
+    ]
+
+    if accountable_catches:
+        best = max(accountable_catches, key=lambda c: c.length)
+        scoreboard.best_catch_length = best.length
+        scoreboard.best_catch_id = best.id
+    else:
+        # No accountable catches - clear best catch
+        scoreboard.best_catch_length = None
+        scoreboard.best_catch_id = None
 
     # Calculate tiebreaker fields
     scoreboard.species_count = len(set(c.fish_id for c in catches))

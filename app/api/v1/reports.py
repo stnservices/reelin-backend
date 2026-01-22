@@ -242,8 +242,15 @@ async def get_event_public_stats(
                 "count": most_catches_entry.total_catches,
             }
 
-    # Biggest catch
-    biggest_catch_query = await db.execute(
+    # Biggest catch - only accountable catches (length >= min_length for that species)
+    # First, get event fish scoring config to know min_length per species
+    fish_scoring_query = await db.execute(
+        select(EventFishScoring).where(EventFishScoring.event_id == event_id)
+    )
+    fish_scoring_configs = {fs.fish_id: fs for fs in fish_scoring_query.scalars().all()}
+
+    # Get all approved catches for this event
+    all_catches_query = await db.execute(
         select(Catch)
         .options(
             selectinload(Catch.user).selectinload(UserAccount.profile),
@@ -254,9 +261,27 @@ async def get_event_public_stats(
             Catch.status == CatchStatus.APPROVED.value,
         )
         .order_by(Catch.length.desc())
-        .limit(1)
     )
-    biggest_catch_entry = biggest_catch_query.scalar_one_or_none()
+    all_catches = all_catches_query.scalars().all()
+
+    # Filter for accountable catches (length >= min_length)
+    accountable_catches = []
+    non_accountable_catches = []
+    for catch in all_catches:
+        fish_config = fish_scoring_configs.get(catch.fish_id)
+        min_length = fish_config.accountable_min_length if fish_config else 0
+        if catch.length >= min_length:
+            accountable_catches.append(catch)
+        else:
+            non_accountable_catches.append(catch)
+
+    # Biggest catch is the largest accountable catch, or fallback to largest non-accountable
+    biggest_catch_entry = None
+    if accountable_catches:
+        biggest_catch_entry = accountable_catches[0]  # Already sorted by length desc
+    elif non_accountable_catches:
+        biggest_catch_entry = non_accountable_catches[0]  # Fallback if no accountable catches
+
     biggest_catch = None
     if biggest_catch_entry:
         profile = biggest_catch_entry.user.profile if biggest_catch_entry.user else None
@@ -265,6 +290,8 @@ async def get_event_public_stats(
             "user_name": user_name,
             "length": biggest_catch_entry.length,
             "species": biggest_catch_entry.fish.name if biggest_catch_entry.fish else "Unknown",
+            "species_ro": biggest_catch_entry.fish.name_ro if biggest_catch_entry.fish else None,
+            "is_accountable": len(accountable_catches) > 0 and biggest_catch_entry in accountable_catches,
         }
 
     # Most species

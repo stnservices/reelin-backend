@@ -130,6 +130,7 @@ class FishResponse(BaseModel):
     max_length: Optional[float] = None
     image_url: Optional[str] = None
     is_active: bool
+    created_at: Optional[datetime] = None
 
 
 class SponsorCreate(BaseModel):

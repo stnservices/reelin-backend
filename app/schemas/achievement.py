@@ -22,6 +22,7 @@ class AchievementDefinitionResponse(BaseModel):
     applicable_formats: Optional[list[str]] = None
     fish_id: Optional[int] = None
     fish_name: Optional[str] = None
+    fish_name_ro: Optional[str] = None
     icon_url: Optional[str] = None
     badge_color: Optional[str] = None
     sort_order: int
@@ -45,6 +46,7 @@ class AchievementDefinitionResponse(BaseModel):
             applicable_formats=achievement.applicable_formats,
             fish_id=achievement.fish_id,
             fish_name=achievement.fish.name if achievement.fish else None,
+            fish_name_ro=achievement.fish.name_ro if achievement.fish else None,
             icon_url=achievement.icon_url,
             badge_color=achievement.badge_color,
             sort_order=achievement.sort_order,
@@ -88,6 +90,7 @@ class AchievementProgressResponse(BaseModel):
     progress_percentage: float  # 0-100
     fish_id: Optional[int] = None  # For fish-specific progress
     fish_name: Optional[str] = None
+    fish_name_ro: Optional[str] = None
 
 
 class EventTypeStatsResponse(BaseModel):
@@ -118,6 +121,7 @@ class EventTypeStatsResponse(BaseModel):
     # Catch quality
     largest_catch_cm: Optional[float] = None
     largest_catch_species: Optional[str] = None
+    largest_catch_species_ro: Optional[str] = None
     average_catch_length: float
 
     # Species diversity
@@ -160,6 +164,7 @@ class EventTypeStatsResponse(BaseModel):
             total_penalty_points=stats.total_penalty_points,
             largest_catch_cm=stats.largest_catch_cm,
             largest_catch_species=stats.largest_catch_species.name if stats.largest_catch_species else None,
+            largest_catch_species_ro=stats.largest_catch_species.name_ro if stats.largest_catch_species else None,
             average_catch_length=stats.average_catch_length,
             unique_species_count=stats.unique_species_count,
             consecutive_events=stats.consecutive_events,

@@ -52,6 +52,7 @@ class FishResponse(BaseModel):
 
     id: int
     name: str
+    name_ro: Optional[str] = None
     scientific_name: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
@@ -105,6 +106,7 @@ class CatchDetailResponse(CatchResponse):
     """Detailed catch response with fish and user info."""
 
     fish_name: Optional[str] = None
+    fish_name_ro: Optional[str] = None
     fish_slug: Optional[str] = None
     user_email: Optional[str] = None
     user_first_name: Optional[str] = None
@@ -165,6 +167,7 @@ class CatchDetailResponse(CatchResponse):
             validated_at=catch.validated_at,
             rejection_reason=catch.rejection_reason,
             fish_name=catch.fish.name if catch.fish else None,
+            fish_name_ro=catch.fish.name_ro if catch.fish else None,
             fish_slug=catch.fish.slug if catch.fish else None,
             user_email=catch.user.email if catch.user else None,
             user_first_name=catch.user.profile.first_name if catch.user and catch.user.profile else None,
@@ -259,6 +262,7 @@ class CatchSearchItem(BaseModel):
     team_name: Optional[str] = None
     fish_id: int
     fish_name: str
+    fish_name_ro: Optional[str] = None
     length: float
     weight: Optional[float] = None
     photo_url: str
@@ -291,6 +295,7 @@ class CatchMapItem(BaseModel):
     lng: float
     species_id: int
     species_name: str
+    species_name_ro: Optional[str] = None
     species_icon: Optional[str] = None  # Icon URL or slug
     user_id: int
     user_name: str
@@ -317,6 +322,7 @@ class CatchMapItem(BaseModel):
             lng=catch.location_lng,
             species_id=catch.fish_id,
             species_name=catch.fish.name if catch.fish else "Unknown",
+            species_name_ro=catch.fish.name_ro if catch.fish else None,
             species_icon=catch.fish.slug if catch.fish else None,
             user_id=catch.user_id,
             user_name=user_name,
