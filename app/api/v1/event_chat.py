@@ -514,7 +514,7 @@ async def unpin_chat_message(
 @router.get("/events/{event_id}/chat/stream")
 async def chat_stream(
     event_id: int,
-    token: str = Query(..., description="Auth token for SSE (required since EventSource can't send headers)"),
+    token: Optional[str] = Query(None, description="Auth token for SSE (required since EventSource can't send headers)"),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -531,6 +531,11 @@ async def chat_stream(
     from app.core.security import decode_token
     from sqlalchemy.orm import selectinload
 
+    # Check token is provided
+    if not token:
+        logger.warning(f"Chat stream request for event {event_id} missing token")
+        raise HTTPException(status_code=401, detail="Authentication token required - pass token as query parameter")
+
     # Validate token from query parameter
     try:
         payload = decode_token(token)
@@ -538,7 +543,8 @@ async def chat_stream(
         if not user_id_str:
             raise HTTPException(status_code=401, detail="Invalid token")
         user_id = int(user_id_str)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Chat stream token validation failed for event {event_id}: {e}")
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     # Get user from DB
