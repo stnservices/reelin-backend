@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -514,7 +514,8 @@ async def unpin_chat_message(
 @router.get("/events/{event_id}/chat/stream")
 async def chat_stream(
     event_id: int,
-    token: Optional[str] = Query(None, description="Auth token for SSE"),
+    request: Request,
+    token: Optional[str] = Query(None, description="Auth token for SSE (query param for web EventSource)"),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -526,19 +527,28 @@ async def chat_stream(
     - message_pinned: Message was pinned
     - message_unpinned: Message was unpinned
 
-    Note: Token is passed as query param since EventSource API doesn't support custom headers.
+    Auth can be provided via:
+    - Query param: ?token=xxx (for web EventSource which doesn't support headers)
+    - Header: Authorization: Bearer xxx (for mobile/native clients)
     """
     from app.core.security import decode_token
     from sqlalchemy.orm import selectinload
 
+    # Try to get token from query param first, then from Authorization header
+    auth_token = token
+    if not auth_token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            auth_token = auth_header[7:]  # Remove "Bearer " prefix
+
     # Check token is provided
-    if not token:
-        logger.warning(f"Chat stream request for event {event_id} missing token")
+    if not auth_token:
+        logger.warning(f"Chat stream request for event {event_id} missing token (no query param or header)")
         raise HTTPException(status_code=401, detail="Authentication token required")
 
-    # Validate token from query parameter
+    # Validate token
     try:
-        payload = decode_token(token)
+        payload = decode_token(auth_token)
         user_id_str = payload.get("sub")
         if not user_id_str:
             raise HTTPException(status_code=401, detail="Invalid token")
