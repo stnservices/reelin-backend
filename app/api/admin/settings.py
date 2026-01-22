@@ -56,6 +56,7 @@ class EventTypeResponse(BaseModel):
     description: Optional[str] = None
     icon_url: Optional[str] = None
     is_active: bool
+    event_count: int = 0
 
 
 class ScoringConfigCreate(BaseModel):
@@ -92,6 +93,7 @@ class ScoringConfigResponse(BaseModel):
     rules: dict
     is_active: bool
     event_types: list[dict] = []  # List of {id, code, name}
+    event_count: int = 0
 
 
 class FishCreate(BaseModel):
@@ -299,14 +301,31 @@ async def list_event_types(
     include_inactive: bool = False,
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(AdminOnly),
-) -> list[EventType]:
-    """List all event types (admin can see inactive ones too)."""
+) -> list[EventTypeResponse]:
+    """List all event types with event counts (admin can see inactive ones too)."""
     query = select(EventType)
     if not include_inactive:
         query = query.where(EventType.is_active == True)
     query = query.order_by(EventType.name)
     result = await db.execute(query)
-    return result.scalars().all()
+    event_types = result.scalars().all()
+
+    # Get event counts per event type
+    event_counts_query = (
+        select(Event.event_type_id, sa.func.count(Event.id).label('count'))
+        .group_by(Event.event_type_id)
+    )
+    event_result = await db.execute(event_counts_query)
+    event_counts = {row.event_type_id: row.count for row in event_result}
+
+    # Build response with event counts
+    response = []
+    for et in event_types:
+        et_data = EventTypeResponse.model_validate(et)
+        et_data.event_count = event_counts.get(et.id, 0)
+        response.append(et_data)
+
+    return response
 
 
 @router.post("/event-types", response_model=EventTypeResponse, status_code=status.HTTP_201_CREATED)
@@ -415,8 +434,8 @@ async def delete_event_type(
 # ============================================================================
 
 
-def _scoring_config_to_response(config: ScoringConfig) -> dict:
-    """Convert ScoringConfig to response dict with event_types."""
+def _scoring_config_to_response(config: ScoringConfig, event_count: int = 0) -> dict:
+    """Convert ScoringConfig to response dict with event_types and event_count."""
     return {
         "id": config.id,
         "name": config.name,
@@ -430,6 +449,7 @@ def _scoring_config_to_response(config: ScoringConfig) -> dict:
             {"id": et.id, "code": et.code, "name": et.name}
             for et in config.event_types
         ],
+        "event_count": event_count,
     }
 
 
@@ -440,7 +460,7 @@ async def list_scoring_configs(
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(AdminOnly),
 ):
-    """List all scoring configurations sorted alphabetically by name."""
+    """List all scoring configurations with event counts, sorted alphabetically by name."""
     from sqlalchemy.orm import selectinload
     from app.models.event import scoring_config_event_types
 
@@ -461,7 +481,16 @@ async def list_scoring_configs(
     result = await db.execute(query)
     configs = result.scalars().unique().all()
 
-    return [_scoring_config_to_response(c) for c in configs]
+    # Get event counts per scoring config
+    event_counts_query = (
+        select(Event.scoring_config_id, sa.func.count(Event.id).label('count'))
+        .where(Event.scoring_config_id.isnot(None))
+        .group_by(Event.scoring_config_id)
+    )
+    event_result = await db.execute(event_counts_query)
+    event_counts = {row.scoring_config_id: row.count for row in event_result}
+
+    return [_scoring_config_to_response(c, event_counts.get(c.id, 0)) for c in configs]
 
 
 @router.post("/scoring-configs", status_code=status.HTTP_201_CREATED)
