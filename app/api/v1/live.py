@@ -407,13 +407,23 @@ async def _get_user_display_info(
     db: AsyncSession, user_id: int
 ) -> tuple[str, Optional[str]]:
     """Get user's display name and avatar URL."""
-    query = select(UserAccount).where(UserAccount.id == user_id)
+    query = (
+        select(UserAccount)
+        .options(selectinload(UserAccount.profile))
+        .where(UserAccount.id == user_id)
+    )
     result = await db.execute(query)
     user = result.scalar_one_or_none()
     if user:
-        name_parts = [user.first_name, user.last_name]
-        display_name = " ".join(p for p in name_parts if p) or user.email.split("@")[0]
-        return display_name, user.avatar_url
+        # Get name from profile if available
+        if user.profile:
+            name_parts = [user.profile.first_name, user.profile.last_name]
+            display_name = " ".join(p for p in name_parts if p) or user.email.split("@")[0]
+        else:
+            display_name = user.email.split("@")[0]
+        # Use effective avatar (profile picture > OAuth avatar)
+        avatar_url = user.effective_avatar_url
+        return display_name, avatar_url
     return f"User {user_id}", None
 
 
