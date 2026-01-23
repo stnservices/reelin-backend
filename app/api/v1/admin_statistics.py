@@ -1096,6 +1096,9 @@ async def recalculate_user_achievements(
             for ach in awarded:
                 if ach.code not in new_achievements:
                     new_achievements.append(ach.code)
+                    # Send notification for newly awarded achievement
+                    from app.tasks.achievements import send_achievement_notification
+                    send_achievement_notification.delay(user_id, ach.id, catch.event_id)
 
     # Trigger event_completed for each completed event
     for event_row in events:
@@ -1112,6 +1115,9 @@ async def recalculate_user_achievements(
             for ach in awarded:
                 if ach.code not in new_achievements:
                     new_achievements.append(ach.code)
+                    # Send notification for newly awarded achievement
+                    from app.tasks.achievements import send_achievement_notification
+                    send_achievement_notification.delay(user_id, ach.id, event_row.id)
 
     await db.commit()
 

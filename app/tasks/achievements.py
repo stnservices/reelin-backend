@@ -173,7 +173,7 @@ async def _send_achievement_notification(
     achievement_id: int,
     event_id: Optional[int] = None,
 ) -> bool:
-    """Send push notification for achievement unlock."""
+    """Send push notification and in-app (bell) notification for achievement unlock."""
     try:
         session_maker = create_celery_session_maker()
         async with session_maker() as db:
@@ -190,24 +190,40 @@ async def _send_achievement_notification(
 
             # Import here to avoid circular dependency
             from app.tasks.notifications import send_notification_to_users
+            from app.models.notification import Notification
 
             title = "Achievement Unlocked!"
             message = f"Congratulations! You earned the '{achievement.name}' badge!"
             if event_name:
                 message += f" (from {event_name})"
 
+            notification_data = {
+                "type": "achievement_unlocked",
+                "achievement_id": achievement_id,
+                "achievement_code": achievement.code,
+                "achievement_name": achievement.name,
+                "achievement_tier": achievement.tier,
+                "achievement_category": achievement.category,
+                "event_id": event_id,
+            }
+
+            # Create in-app (bell) notification
+            in_app_notification = Notification(
+                user_id=user_id,
+                type="achievement_unlocked",
+                title=title,
+                message=message,
+                data=notification_data,
+            )
+            db.add(in_app_notification)
+            await db.commit()
+
             # Queue the push notification
             send_notification_to_users.delay(
                 user_ids=[user_id],
                 title=title,
                 body=message,
-                data={
-                    "type": "achievement_unlocked",
-                    "achievement_id": achievement_id,
-                    "achievement_code": achievement.code,
-                    "achievement_name": achievement.name,
-                    "event_id": event_id,
-                },
+                data=notification_data,
             )
 
             return True
