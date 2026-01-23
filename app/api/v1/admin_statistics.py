@@ -1202,3 +1202,183 @@ async def recalculate_all_achievements(
         message=f"Bulk achievement recalculation queued for {user_count} users. Processing in background.",
         users_queued=user_count,
     )
+
+
+class SyncBulkRecalculateRequest(BaseModel):
+    """Request for synchronous bulk recalculation."""
+    limit: int = 10  # Process this many users at a time
+    offset: int = 0  # Start from this user index
+    send_notifications: bool = False
+
+
+class SyncBulkRecalculateResponse(BaseModel):
+    """Response for synchronous bulk recalculation."""
+    success: bool
+    message: str
+    users_processed: int
+    total_new_achievements: int
+    next_offset: int
+    has_more: bool
+
+
+@router.post("/recalculate-achievements-sync", response_model=SyncBulkRecalculateResponse)
+async def recalculate_achievements_sync(
+    request: SyncBulkRecalculateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+) -> SyncBulkRecalculateResponse:
+    """
+    Synchronously recalculate achievements for a batch of users.
+
+    Use this for testing or when Celery is not available.
+    Process in batches to avoid timeout (default 10 users at a time).
+
+    Call multiple times with increasing offset to process all users:
+    - First call: offset=0, limit=10
+    - Second call: offset=10, limit=10
+    - etc.
+    """
+    from sqlalchemy import distinct
+    from sqlalchemy.orm import selectinload
+    from datetime import timedelta
+
+    # Get users who have participated in completed events
+    users_query = (
+        select(distinct(EventEnrollment.user_id))
+        .join(Event, Event.id == EventEnrollment.event_id)
+        .where(EventEnrollment.status == "approved")
+        .where(Event.status == "completed")
+        .where(Event.is_test == False)
+        .order_by(EventEnrollment.user_id)
+        .offset(request.offset)
+        .limit(request.limit + 1)  # +1 to check if there are more
+    )
+    result = await db.execute(users_query)
+    user_ids = result.scalars().all()
+
+    has_more = len(user_ids) > request.limit
+    user_ids_to_process = user_ids[:request.limit]
+
+    total_new_achievements = 0
+
+    for user_id in user_ids_to_process:
+        # Get user's completed events
+        events_query = (
+            select(Event.id, Event.event_type_id)
+            .join(EventEnrollment, EventEnrollment.event_id == Event.id)
+            .where(EventEnrollment.user_id == user_id)
+            .where(EventEnrollment.status == "approved")
+            .where(Event.status == "completed")
+            .where(Event.is_test == False)
+            .order_by(Event.end_date)
+        )
+        events_result = await db.execute(events_query)
+        events = events_result.fetchall()
+
+        # Get user's approved catches with fish info
+        catches_query = (
+            select(Catch)
+            .join(Event, Event.id == Catch.event_id)
+            .options(selectinload(Catch.fish))
+            .where(Catch.user_id == user_id)
+            .where(Catch.status == CatchStatus.APPROVED.value)
+            .where(Event.is_test == False)
+            .order_by(Catch.submitted_at)
+        )
+        catches_result = await db.execute(catches_query)
+        catches = catches_result.scalars().all()
+
+        new_achievements = []
+        max_length_seen = 0.0
+
+        # Process each catch
+        for catch in catches:
+            event = await db.get(Event, catch.event_id)
+            if not event or not event.event_type:
+                continue
+
+            format_code = "sf" if event.event_type.code == "street_fishing" else "ta"
+
+            catch_time = catch.catch_time or catch.submitted_at
+            early_cutoff = event.start_date + timedelta(minutes=30)
+            late_cutoff = event.end_date - timedelta(minutes=30)
+
+            is_early_bird = catch_time <= early_cutoff if catch_time and event.start_date else False
+            is_last_minute = catch_time >= late_cutoff if catch_time and event.end_date else False
+            is_personal_best = catch.length > max_length_seen if catch.length else False
+
+            if catch.length and catch.length > max_length_seen:
+                max_length_seen = catch.length
+
+            context = {
+                "catch_length": catch.length,
+                "catch_weight": catch.weight,
+                "fish_id": catch.fish_id,
+                "fish_slug": catch.fish.slug if catch.fish else None,
+                "is_early_bird": is_early_bird,
+                "is_last_minute": is_last_minute,
+                "is_personal_best": is_personal_best,
+            }
+
+            awarded = await AchievementService.check_and_award_achievements(
+                db,
+                user_id=user_id,
+                trigger="catch_approved",
+                event_id=catch.event_id,
+                catch_id=catch.id,
+                context=context,
+                format_code=format_code,
+            )
+
+            for ach in awarded:
+                if ach.code not in new_achievements:
+                    new_achievements.append(ach.code)
+                    if request.send_notifications:
+                        from app.tasks.achievements import send_achievement_notification
+                        send_achievement_notification.delay(user_id, ach.id, catch.event_id)
+
+        # Process each completed event
+        for event_row in events:
+            event = await db.get(Event, event_row.id)
+            if not event or not event.event_type:
+                continue
+
+            format_code = "sf" if event.event_type.code == "street_fishing" else "ta"
+
+            awarded = await AchievementService.check_and_award_achievements(
+                db,
+                user_id=user_id,
+                trigger="event_completed",
+                event_id=event_row.id,
+                format_code=format_code,
+            )
+
+            for ach in awarded:
+                if ach.code not in new_achievements:
+                    new_achievements.append(ach.code)
+                    if request.send_notifications:
+                        from app.tasks.achievements import send_achievement_notification
+                        send_achievement_notification.delay(user_id, ach.id, event_row.id)
+
+        # Check Hall of Fame achievements
+        from app.tasks.achievements import _check_hall_of_fame_achievements
+        hof_awards = await _check_hall_of_fame_achievements(db, user_id)
+        for ach in hof_awards:
+            if ach.code not in new_achievements:
+                new_achievements.append(ach.code)
+                if request.send_notifications:
+                    from app.tasks.achievements import send_achievement_notification
+                    send_achievement_notification.delay(user_id, ach.id, None)
+
+        total_new_achievements += len(new_achievements)
+
+    await db.commit()
+
+    return SyncBulkRecalculateResponse(
+        success=True,
+        message=f"Processed {len(user_ids_to_process)} users, awarded {total_new_achievements} new achievements.",
+        users_processed=len(user_ids_to_process),
+        total_new_achievements=total_new_achievements,
+        next_offset=request.offset + len(user_ids_to_process),
+        has_more=has_more,
+    )
