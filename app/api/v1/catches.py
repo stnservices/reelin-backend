@@ -1447,8 +1447,8 @@ async def update_scoreboard(db: AsyncSession, catch: Catch) -> None:
 
     await db.flush()
 
-    # Recalculate all ranks for the event
-    await recalculate_ranks(db, catch.event_id)
+    # Note: Ranks are calculated by the Celery leaderboard task and cached in Redis.
+    # We no longer update DB ranks inline to avoid deadlocks from concurrent validations.
 
 
 async def recalculate_ranks(db: AsyncSession, event_id: int) -> None:
