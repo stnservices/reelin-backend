@@ -602,7 +602,9 @@ async def _get_individual_leaderboard(
 
         if enrolled_no_catches:
             # All 0-catch participants share the same rank = last_rank + 1
-            last_rank = user_scores[-1]["rank"] if user_scores else 0
+            # Use len of limited list since ranks are only assigned to user_scores[:limit]
+            ranked_count = min(len(user_scores), limit)
+            last_rank = user_scores[ranked_count - 1]["rank"] if ranked_count > 0 else 0
             shared_rank = last_rank + 1
 
             for enrollment in enrolled_no_catches:
