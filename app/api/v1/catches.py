@@ -1340,41 +1340,62 @@ async def get_user_active_club_id(db: AsyncSession, user_id: int) -> int | None:
 
 
 async def update_scoreboard(db: AsyncSession, catch: Catch) -> None:
-    """Update scoreboard after a catch is approved."""
-    # Get or create scoreboard entry
-    # Use FOR UPDATE to lock the row and prevent race conditions
-    # Use of=EventScoreboard to only lock the scoreboard table (not joined tables)
-    # Use .first() instead of .scalar_one_or_none() to handle any existing duplicates
-    scoreboard_query = (
-        select(EventScoreboard)
-        .where(
-            EventScoreboard.event_id == catch.event_id,
-            EventScoreboard.user_id == catch.user_id,
+    """Update scoreboard after a catch is approved.
+
+    Uses retry logic to handle race conditions when creating new scoreboards.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    scoreboard = None
+    max_retries = 3
+
+    for attempt in range(max_retries):
+        # Try to get existing scoreboard with lock
+        scoreboard_query = (
+            select(EventScoreboard)
+            .where(
+                EventScoreboard.event_id == catch.event_id,
+                EventScoreboard.user_id == catch.user_id,
+            )
+            .with_for_update(of=EventScoreboard, skip_locked=False)
         )
-        .with_for_update(of=EventScoreboard)
-    )
-    result = await db.execute(scoreboard_query)
-    scoreboard = result.scalars().first()
+        result = await db.execute(scoreboard_query)
+        scoreboard = result.scalars().first()
+
+        if scoreboard:
+            break  # Got existing scoreboard, proceed with update
+
+        # No scoreboard exists, try to create one
+        try:
+            team_id = await get_user_team_id(db, catch.event_id, catch.user_id)
+            club_id = await get_user_active_club_id(db, catch.user_id)
+
+            scoreboard = EventScoreboard(
+                event_id=catch.event_id,
+                user_id=catch.user_id,
+                team_id=team_id,
+                club_id=club_id,
+                total_catches=0,
+                total_length=0.0,
+                total_points=0.0,
+                species_count=0,
+                average_length=0.0,
+                first_catch_time=None,
+                rank=0,
+            )
+            db.add(scoreboard)
+            await db.flush()  # Try to insert now to catch unique violation early
+            break  # Success, proceed with update
+
+        except IntegrityError:
+            # Another request created it first, rollback and retry
+            await db.rollback()
+            if attempt == max_retries - 1:
+                raise  # Give up after max retries
+            continue
 
     if not scoreboard:
-        # Get team_id and club_id for new scoreboard entry
-        team_id = await get_user_team_id(db, catch.event_id, catch.user_id)
-        club_id = await get_user_active_club_id(db, catch.user_id)
-
-        scoreboard = EventScoreboard(
-            event_id=catch.event_id,
-            user_id=catch.user_id,
-            team_id=team_id,
-            club_id=club_id,
-            total_catches=0,
-            total_length=0.0,
-            total_points=0.0,
-            species_count=0,
-            average_length=0.0,
-            first_catch_time=None,
-            rank=0,
-        )
-        db.add(scoreboard)
+        raise ValueError(f"Failed to get or create scoreboard for event={catch.event_id}, user={catch.user_id}")
 
     # Update aggregates
     scoreboard.total_catches += 1
