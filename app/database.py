@@ -75,25 +75,35 @@ async def init_db() -> None:
         await conn.run_sync(Base.metadata.create_all)
 
 
-def create_celery_session_maker():
-    """Create a fresh async session maker for Celery tasks.
+# Singleton Celery engine and session maker (created lazily)
+_celery_engine = None
+_celery_session_maker = None
 
-    This avoids event loop conflicts when Celery creates its own event loop.
-    Uses smaller pool since Celery tasks are less frequent.
+
+def create_celery_session_maker():
+    """Get the singleton async session maker for Celery tasks.
+
+    Creates engine on first call, reuses on subsequent calls.
+    This avoids memory leaks from creating new engines per task.
     """
-    celery_async_pool = int(os.getenv("DB_CELERY_POOL_SIZE", "2"))
-    celery_async_overflow = int(os.getenv("DB_CELERY_MAX_OVERFLOW", "2"))
-    celery_engine = create_async_engine(
-        settings.database_url,
-        echo=False,
-        pool_pre_ping=True,
-        pool_size=celery_async_pool,
-        max_overflow=celery_async_overflow,
-    )
-    return async_sessionmaker(
-        celery_engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-        autocommit=False,
-        autoflush=False,
-    )
+    global _celery_engine, _celery_session_maker
+
+    if _celery_session_maker is None:
+        celery_async_pool = int(os.getenv("DB_CELERY_POOL_SIZE", "2"))
+        celery_async_overflow = int(os.getenv("DB_CELERY_MAX_OVERFLOW", "2"))
+        _celery_engine = create_async_engine(
+            settings.database_url,
+            echo=False,
+            pool_pre_ping=True,
+            pool_size=celery_async_pool,
+            max_overflow=celery_async_overflow,
+        )
+        _celery_session_maker = async_sessionmaker(
+            _celery_engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+            autocommit=False,
+            autoflush=False,
+        )
+
+    return _celery_session_maker
