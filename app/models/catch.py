@@ -150,6 +150,9 @@ class EventScoreboard(Base):
     """
 
     __tablename__ = "event_scoreboards"
+    __table_args__ = (
+        UniqueConstraint("event_id", "user_id", name="uq_event_scoreboard_event_user"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     event_id: Mapped[int] = mapped_column(

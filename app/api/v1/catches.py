@@ -1342,12 +1342,18 @@ async def get_user_active_club_id(db: AsyncSession, user_id: int) -> int | None:
 async def update_scoreboard(db: AsyncSession, catch: Catch) -> None:
     """Update scoreboard after a catch is approved."""
     # Get or create scoreboard entry
-    scoreboard_query = select(EventScoreboard).where(
-        EventScoreboard.event_id == catch.event_id,
-        EventScoreboard.user_id == catch.user_id,
+    # Use FOR UPDATE to lock the row and prevent race conditions
+    # Use .first() instead of .scalar_one_or_none() to handle any existing duplicates
+    scoreboard_query = (
+        select(EventScoreboard)
+        .where(
+            EventScoreboard.event_id == catch.event_id,
+            EventScoreboard.user_id == catch.user_id,
+        )
+        .with_for_update()
     )
     result = await db.execute(scoreboard_query)
-    scoreboard = result.scalar_one_or_none()
+    scoreboard = result.scalars().first()
 
     if not scoreboard:
         # Get team_id and club_id for new scoreboard entry
