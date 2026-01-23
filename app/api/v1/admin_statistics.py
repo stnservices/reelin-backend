@@ -12,6 +12,7 @@ from app.models.user import UserAccount
 from app.models.event import Event
 from app.models.catch import Catch, CatchStatus
 from app.models.enrollment import EventEnrollment
+from app.models.fish import Fish
 from app.models.trout_area import TALineup
 from app.models.statistics import UserEventTypeStats
 from app.models.achievement import UserAchievement, AchievementDefinition
@@ -1033,30 +1034,63 @@ async def recalculate_user_achievements(
 
     new_achievements: List[str] = []
 
-    # Get user's approved catches from non-test events
+    # Get user's approved catches from non-test events with fish info
+    from sqlalchemy.orm import selectinload
     catches_query = (
-        select(Catch.id, Catch.event_id)
+        select(Catch)
         .join(Event, Event.id == Catch.event_id)
+        .options(selectinload(Catch.fish))
         .where(Catch.user_id == user_id)
         .where(Catch.status == CatchStatus.APPROVED.value)
         .where(Event.is_test == False)
         .order_by(Catch.submitted_at)
     )
     catches_result = await db.execute(catches_query)
-    catches = catches_result.fetchall()
+    catches = catches_result.scalars().all()
 
     # Trigger catch_approved for each catch to check special achievements
+    from datetime import timedelta
+    max_length_seen = 0.0  # Track max length for personal best detection
+
     for catch in catches:
         # Get event's format code
         event = await db.get(Event, catch.event_id)
         if event and event.event_type:
             format_code = "sf" if event.event_type.code == "street_fishing" else "ta"
+
+            # Build context for fish species and special achievements
+            catch_time = catch.catch_time or catch.submitted_at
+
+            # Early bird: first 30 minutes
+            early_cutoff = event.start_date + timedelta(minutes=30)
+            is_early_bird = catch_time <= early_cutoff if catch_time and event.start_date else False
+
+            # Last minute: final 30 minutes
+            late_cutoff = event.end_date - timedelta(minutes=30)
+            is_last_minute = catch_time >= late_cutoff if catch_time and event.end_date else False
+
+            # Personal best detection (check if this was largest at time of catch)
+            is_personal_best = catch.length > max_length_seen if catch.length else False
+            if catch.length and catch.length > max_length_seen:
+                max_length_seen = catch.length
+
+            context = {
+                "catch_length": catch.length,
+                "catch_weight": catch.weight,
+                "fish_id": catch.fish_id,
+                "fish_slug": catch.fish.slug if catch.fish else None,
+                "is_early_bird": is_early_bird,
+                "is_last_minute": is_last_minute,
+                "is_personal_best": is_personal_best,
+            }
+
             awarded = await AchievementService.check_and_award_achievements(
                 db,
                 user_id=user_id,
                 trigger="catch_approved",
                 event_id=catch.event_id,
                 catch_id=catch.id,
+                context=context,
                 format_code=format_code,
             )
             for ach in awarded:
