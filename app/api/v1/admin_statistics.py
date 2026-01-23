@@ -1135,3 +1135,61 @@ async def recalculate_user_achievements(
         achievements_after=achievements_after,
         new_achievements=new_achievements,
     )
+
+
+class BulkAchievementRecalculateRequest(BaseModel):
+    """Request for bulk achievement recalculation."""
+    send_notifications: bool = False
+
+
+class BulkAchievementRecalculateResponse(BaseModel):
+    """Response for bulk achievement recalculation."""
+    success: bool
+    message: str
+    users_queued: int
+
+
+@router.post("/recalculate-all-achievements", response_model=BulkAchievementRecalculateResponse)
+async def recalculate_all_achievements(
+    request: BulkAchievementRecalculateRequest = BulkAchievementRecalculateRequest(),
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+) -> BulkAchievementRecalculateResponse:
+    """
+    Trigger bulk achievement recalculation for ALL users.
+
+    This will queue a background task that:
+    1. Finds all users who participated in completed events
+    2. Recalculates achievements for each user
+    3. Optionally sends notifications for newly awarded achievements
+
+    Use this after:
+    - Achievement logic changes (new achievements, fixed bugs)
+    - Database migrations affecting achievements
+    - Data corrections
+
+    Note: This is a long-running task. Users will be processed in the background
+    with a 2-second delay between each to avoid overwhelming the system.
+    """
+    from sqlalchemy import distinct
+    from app.models.event import EventEnrollment
+
+    # Count users to be processed
+    result = await db.execute(
+        select(func.count(distinct(EventEnrollment.user_id)))
+        .join(Event, Event.id == EventEnrollment.event_id)
+        .where(EventEnrollment.status == "approved")
+        .where(Event.status == "completed")
+        .where(Event.is_test == False)
+    )
+    user_count = result.scalar() or 0
+
+    # Queue the bulk task
+    from app.tasks.achievements import recalculate_all_achievements as recalc_task
+    recalc_task.delay(send_notifications=request.send_notifications)
+
+    return BulkAchievementRecalculateResponse(
+        success=True,
+        message=f"Bulk achievement recalculation queued for {user_count} users. Processing in background.",
+        users_queued=user_count,
+    )
