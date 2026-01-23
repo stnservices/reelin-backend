@@ -828,15 +828,13 @@ class AchievementService:
         """Check and award TA Champion (won a TA tournament in Hall of Fame)."""
         from app.models.hall_of_fame import HallOfFameEntry
 
-        # Check if user has a Hall of Fame entry for TA with position 1
+        # Check if user has a Hall of Fame entry for TA with position 1 (National Champion)
         hof_stmt = (
             select(HallOfFameEntry.id)
             .where(HallOfFameEntry.user_id == user_id)
             .where(HallOfFameEntry.format_code == "ta")
             .where(HallOfFameEntry.position == 1)
-            .where(HallOfFameEntry.achievement_type.in_([
-                "world_champion", "national_champion"
-            ]))
+            .where(HallOfFameEntry.achievement_type == "national_champion")
         )
         result = await db.execute(hof_stmt)
         has_ta_title = result.scalar() is not None
@@ -856,15 +854,13 @@ class AchievementService:
         """Check and award SF Champion (won an SF tournament in Hall of Fame)."""
         from app.models.hall_of_fame import HallOfFameEntry
 
-        # Check if user has a Hall of Fame entry for SF with position 1
+        # Check if user has a Hall of Fame entry for SF with position 1 (National Champion)
         hof_stmt = (
             select(HallOfFameEntry.id)
             .where(HallOfFameEntry.user_id == user_id)
             .where(HallOfFameEntry.format_code == "sf")
             .where(HallOfFameEntry.position == 1)
-            .where(HallOfFameEntry.achievement_type.in_([
-                "world_champion", "national_champion"
-            ]))
+            .where(HallOfFameEntry.achievement_type == "national_champion")
         )
         result = await db.execute(hof_stmt)
         has_sf_title = result.scalar() is not None
