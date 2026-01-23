@@ -603,7 +603,16 @@ class AchievementService:
         2. Getting their final rank (from EventScoreboard)
         3. Improvement = worst_rank - final_rank
         4. Awards if improvement >= 5
+
+        For team events: Uses the team's rank movements (user gets achievement if their team came back)
         """
+        from app.models.team import Team, TeamMember
+
+        # Check if this is a team event
+        event_stmt = select(Event.is_team_event).where(Event.id == event_id)
+        result = await db.execute(event_stmt)
+        is_team_event = result.scalar()
+
         # Get user's final rank from scoreboard
         final_rank_stmt = (
             select(EventScoreboard.rank)
@@ -616,18 +625,55 @@ class AchievementService:
         if final_rank is None:
             return None  # User not in scoreboard
 
-        # Get user's worst rank from movement history
-        # worst_rank = MAX of all old_rank and new_rank values (highest number = worst position)
-        worst_rank_stmt = (
-            select(func.greatest(
-                func.max(RankingMovement.old_rank),
-                func.max(RankingMovement.new_rank)
-            ))
-            .where(RankingMovement.event_id == event_id)
-            .where(RankingMovement.user_id == user_id)
-        )
-        result = await db.execute(worst_rank_stmt)
-        worst_rank = result.scalar()
+        worst_rank = None
+
+        if is_team_event:
+            # For team events: find user's team, then check team's movement history
+            team_stmt = (
+                select(Team.id)
+                .join(TeamMember, TeamMember.team_id == Team.id)
+                .join(EventEnrollment, EventEnrollment.id == TeamMember.enrollment_id)
+                .where(Team.event_id == event_id)
+                .where(EventEnrollment.user_id == user_id)
+                .where(TeamMember.is_active == True)
+            )
+            result = await db.execute(team_stmt)
+            team_id = result.scalar()
+
+            if team_id:
+                # Get team's worst rank from movement history
+                worst_old = (
+                    select(func.max(RankingMovement.old_rank))
+                    .where(RankingMovement.event_id == event_id)
+                    .where(RankingMovement.team_id == team_id)
+                )
+                worst_new = (
+                    select(func.max(RankingMovement.new_rank))
+                    .where(RankingMovement.event_id == event_id)
+                    .where(RankingMovement.team_id == team_id)
+                )
+                result_old = await db.execute(worst_old)
+                result_new = await db.execute(worst_new)
+                max_old = result_old.scalar() or 0
+                max_new = result_new.scalar() or 0
+                worst_rank = max(max_old, max_new) if (max_old or max_new) else None
+        else:
+            # For individual events: check user's movement history directly
+            worst_old = (
+                select(func.max(RankingMovement.old_rank))
+                .where(RankingMovement.event_id == event_id)
+                .where(RankingMovement.user_id == user_id)
+            )
+            worst_new = (
+                select(func.max(RankingMovement.new_rank))
+                .where(RankingMovement.event_id == event_id)
+                .where(RankingMovement.user_id == user_id)
+            )
+            result_old = await db.execute(worst_old)
+            result_new = await db.execute(worst_new)
+            max_old = result_old.scalar() or 0
+            max_new = result_new.scalar() or 0
+            worst_rank = max(max_old, max_new) if (max_old or max_new) else None
 
         if worst_rank is None:
             return None  # No movement history
