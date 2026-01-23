@@ -1119,6 +1119,15 @@ async def recalculate_user_achievements(
                     from app.tasks.achievements import send_achievement_notification
                     send_achievement_notification.delay(user_id, ach.id, event_row.id)
 
+    # Check Hall of Fame achievements (SF/TA Champion)
+    from app.tasks.achievements import _check_hall_of_fame_achievements
+    hof_awards = await _check_hall_of_fame_achievements(db, user_id)
+    for ach in hof_awards:
+        if ach.code not in new_achievements:
+            new_achievements.append(ach.code)
+            from app.tasks.achievements import send_achievement_notification
+            send_achievement_notification.delay(user_id, ach.id, None)
+
     await db.commit()
 
     # Get final achievement count

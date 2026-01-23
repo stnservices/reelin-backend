@@ -518,6 +518,22 @@ class AchievementService:
                 if ta_champion_awarded:
                     newly_awarded.append(ta_champion_awarded)
 
+            # SF-specific achievements (only for Street Fishing events)
+            if format_code == "sf" and event_id:
+                # SF Champion - win an SF tournament (rank 1)
+                sf_champion_awarded = await AchievementService._check_sf_champion(
+                    db, user_id, event_id
+                )
+                if sf_champion_awarded:
+                    newly_awarded.append(sf_champion_awarded)
+
+            # Team event achievements
+            if event_id:
+                team_awards = await AchievementService._check_team_achievements(
+                    db, user_id, event_id
+                )
+                newly_awarded.extend(team_awards)
+
         await db.flush()
         return newly_awarded
 
@@ -809,21 +825,160 @@ class AchievementService:
         user_id: int,
         event_id: int,
     ) -> Optional[AchievementDefinition]:
-        """Check and award TA Champion (win a TA tournament - rank 1)."""
-        # Check if user finished 1st in this event
-        final_rank_stmt = (
-            select(EventScoreboard.rank)
-            .where(EventScoreboard.event_id == event_id)
-            .where(EventScoreboard.user_id == user_id)
-        )
-        result = await db.execute(final_rank_stmt)
-        final_rank = result.scalar()
+        """Check and award TA Champion (won a TA tournament in Hall of Fame)."""
+        from app.models.hall_of_fame import HallOfFameEntry
 
-        if final_rank == 1:
+        # Check if user has a Hall of Fame entry for TA with position 1
+        hof_stmt = (
+            select(HallOfFameEntry.id)
+            .where(HallOfFameEntry.user_id == user_id)
+            .where(HallOfFameEntry.format_code == "ta")
+            .where(HallOfFameEntry.position == 1)
+            .where(HallOfFameEntry.achievement_type.in_([
+                "world_champion", "national_champion"
+            ]))
+        )
+        result = await db.execute(hof_stmt)
+        has_ta_title = result.scalar() is not None
+
+        if has_ta_title:
             return await AchievementService._award_achievement(
                 db, user_id, "ta_champion", event_id, None
             )
         return None
+
+    @staticmethod
+    async def _check_sf_champion(
+        db: AsyncSession,
+        user_id: int,
+        event_id: int,
+    ) -> Optional[AchievementDefinition]:
+        """Check and award SF Champion (won an SF tournament in Hall of Fame)."""
+        from app.models.hall_of_fame import HallOfFameEntry
+
+        # Check if user has a Hall of Fame entry for SF with position 1
+        hof_stmt = (
+            select(HallOfFameEntry.id)
+            .where(HallOfFameEntry.user_id == user_id)
+            .where(HallOfFameEntry.format_code == "sf")
+            .where(HallOfFameEntry.position == 1)
+            .where(HallOfFameEntry.achievement_type.in_([
+                "world_champion", "national_champion"
+            ]))
+        )
+        result = await db.execute(hof_stmt)
+        has_sf_title = result.scalar() is not None
+
+        if has_sf_title:
+            return await AchievementService._award_achievement(
+                db, user_id, "sf_champion", event_id, None
+            )
+        return None
+
+    @staticmethod
+    async def _check_team_achievements(
+        db: AsyncSession,
+        user_id: int,
+        event_id: int,
+    ) -> List[AchievementDefinition]:
+        """Check and award team event achievements."""
+        from app.models.team import Team, TeamMember
+
+        newly_awarded: List[AchievementDefinition] = []
+
+        # Check if this is a team event
+        event = await db.get(Event, event_id)
+        if not event or not event.is_team_event:
+            return newly_awarded
+
+        # Get user's team for this event
+        team_stmt = (
+            select(Team)
+            .join(TeamMember, TeamMember.team_id == Team.id)
+            .where(Team.event_id == event_id)
+            .where(TeamMember.user_id == user_id)
+        )
+        result = await db.execute(team_stmt)
+        team = result.scalar_one_or_none()
+
+        if not team:
+            return newly_awarded
+
+        # Team Player - participate in a team event (first team event)
+        team_events_stmt = (
+            select(func.count(distinct(Team.event_id)))
+            .join(TeamMember, TeamMember.team_id == Team.id)
+            .join(Event, Event.id == Team.event_id)
+            .where(TeamMember.user_id == user_id)
+            .where(Event.status == "completed")
+            .where(Event.is_test == False)
+        )
+        result = await db.execute(team_events_stmt)
+        team_event_count = result.scalar() or 0
+
+        if team_event_count == 1:
+            awarded = await AchievementService._award_achievement(
+                db, user_id, "team_player", event_id, None
+            )
+            if awarded:
+                newly_awarded.append(awarded)
+
+        # Team Champion - win a team event (team rank 1)
+        team_rank_stmt = (
+            select(EventScoreboard.rank)
+            .where(EventScoreboard.event_id == event_id)
+            .where(EventScoreboard.team_id == team.id)
+        )
+        result = await db.execute(team_rank_stmt)
+        team_rank = result.scalar()
+
+        if team_rank == 1:
+            awarded = await AchievementService._award_achievement(
+                db, user_id, "team_champion", event_id, None
+            )
+            if awarded:
+                newly_awarded.append(awarded)
+
+        # Team Spirit - tiered achievement for winning multiple team events
+        if team_rank == 1:
+            # Count total team event wins
+            team_wins_stmt = (
+                select(func.count(distinct(Team.event_id)))
+                .join(TeamMember, TeamMember.team_id == Team.id)
+                .join(Event, Event.id == Team.event_id)
+                .join(EventScoreboard, and_(
+                    EventScoreboard.event_id == Team.event_id,
+                    EventScoreboard.team_id == Team.id
+                ))
+                .where(TeamMember.user_id == user_id)
+                .where(Event.status == "completed")
+                .where(Event.is_test == False)
+                .where(EventScoreboard.rank == 1)
+            )
+            result = await db.execute(team_wins_stmt)
+            team_wins = result.scalar() or 0
+
+            # Award tiered team spirit achievements
+            if team_wins >= 10:
+                awarded = await AchievementService._award_achievement(
+                    db, user_id, "team_spirit_gold", event_id, None
+                )
+                if awarded:
+                    newly_awarded.append(awarded)
+            elif team_wins >= 5:
+                awarded = await AchievementService._award_achievement(
+                    db, user_id, "team_spirit_silver", event_id, None
+                )
+                if awarded:
+                    newly_awarded.append(awarded)
+            elif team_wins >= 3:
+                awarded = await AchievementService._award_achievement(
+                    db, user_id, "team_spirit_bronze", event_id, None
+                )
+                if awarded:
+                    newly_awarded.append(awarded)
+
+        return newly_awarded
 
     @staticmethod
     async def _check_precision_angler(

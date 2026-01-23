@@ -233,6 +233,91 @@ async def _send_achievement_notification(
         return False
 
 
+async def _check_hall_of_fame_achievements(
+    db,
+    user_id: int,
+) -> List:
+    """Check and award Hall of Fame achievements (SF/TA Champion)."""
+    from app.models.hall_of_fame import HallOfFameEntry
+    from app.models.achievement import AchievementDefinition, UserAchievement
+
+    newly_awarded = []
+
+    # Check for SF Champion (Hall of Fame SF title holder)
+    sf_hof_stmt = (
+        select(HallOfFameEntry.id)
+        .where(HallOfFameEntry.user_id == user_id)
+        .where(HallOfFameEntry.format_code == "sf")
+        .where(HallOfFameEntry.position == 1)
+        .where(HallOfFameEntry.achievement_type.in_([
+            "world_champion", "national_champion"
+        ]))
+    )
+    result = await db.execute(sf_hof_stmt)
+    has_sf_title = result.scalar() is not None
+
+    if has_sf_title:
+        # Check if already awarded
+        existing_stmt = (
+            select(UserAchievement.id)
+            .join(AchievementDefinition, AchievementDefinition.id == UserAchievement.achievement_id)
+            .where(UserAchievement.user_id == user_id)
+            .where(AchievementDefinition.code == "sf_champion")
+        )
+        result = await db.execute(existing_stmt)
+        if not result.scalar():
+            # Award SF Champion
+            ach_stmt = select(AchievementDefinition).where(AchievementDefinition.code == "sf_champion")
+            result = await db.execute(ach_stmt)
+            sf_ach = result.scalar_one_or_none()
+            if sf_ach:
+                user_ach = UserAchievement(
+                    user_id=user_id,
+                    achievement_id=sf_ach.id,
+                )
+                db.add(user_ach)
+                newly_awarded.append(sf_ach)
+                logger.info(f"Awarded SF Champion to user {user_id}")
+
+    # Check for TA Champion (Hall of Fame TA title holder)
+    ta_hof_stmt = (
+        select(HallOfFameEntry.id)
+        .where(HallOfFameEntry.user_id == user_id)
+        .where(HallOfFameEntry.format_code == "ta")
+        .where(HallOfFameEntry.position == 1)
+        .where(HallOfFameEntry.achievement_type.in_([
+            "world_champion", "national_champion"
+        ]))
+    )
+    result = await db.execute(ta_hof_stmt)
+    has_ta_title = result.scalar() is not None
+
+    if has_ta_title:
+        # Check if already awarded
+        existing_stmt = (
+            select(UserAchievement.id)
+            .join(AchievementDefinition, AchievementDefinition.id == UserAchievement.achievement_id)
+            .where(UserAchievement.user_id == user_id)
+            .where(AchievementDefinition.code == "ta_champion")
+        )
+        result = await db.execute(existing_stmt)
+        if not result.scalar():
+            # Award TA Champion
+            ach_stmt = select(AchievementDefinition).where(AchievementDefinition.code == "ta_champion")
+            result = await db.execute(ach_stmt)
+            ta_ach = result.scalar_one_or_none()
+            if ta_ach:
+                user_ach = UserAchievement(
+                    user_id=user_id,
+                    achievement_id=ta_ach.id,
+                )
+                db.add(user_ach)
+                newly_awarded.append(ta_ach)
+                logger.info(f"Awarded TA Champion to user {user_id}")
+
+    return newly_awarded
+
+
 # === Celery Tasks ===
 
 
@@ -511,6 +596,14 @@ def recalculate_user_achievements(user_id: int, send_notifications: bool = False
                         new_achievements.append(ach.code)
                         if send_notifications:
                             send_achievement_notification.delay(user_id, ach.id, event_row.id)
+
+            # Check Hall of Fame achievements (not tied to specific app events)
+            hof_awards = await _check_hall_of_fame_achievements(db, user_id)
+            for ach in hof_awards:
+                if ach.code not in new_achievements:
+                    new_achievements.append(ach.code)
+                    if send_notifications:
+                        send_achievement_notification.delay(user_id, ach.id, None)
 
             await db.commit()
             return {"user_id": user_id, "new_achievements": new_achievements}
