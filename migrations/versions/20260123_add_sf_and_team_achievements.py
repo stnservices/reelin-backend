@@ -28,12 +28,12 @@ def upgrade() -> None:
     op.execute("""
         INSERT INTO achievement_definitions (
             code, name, description, category, achievement_type, tier,
-            applicable_formats, is_active
+            applicable_formats, sort_order, is_active
         )
         VALUES (
             'sf_champion', 'SF Champion', 'Win a National Street Fishing Championship',
             'special', 'one_time', NULL,
-            '["sf"]', true
+            '["sf"]', 100, true
         )
         ON CONFLICT (code) DO NOTHING
     """)
@@ -42,12 +42,12 @@ def upgrade() -> None:
     op.execute("""
         INSERT INTO achievement_definitions (
             code, name, description, category, achievement_type, tier,
-            is_active
+            sort_order, is_active
         )
         VALUES (
             'team_player', 'Team Player', 'Participate in your first team event',
             'special', 'one_time', NULL,
-            true
+            101, true
         )
         ON CONFLICT (code) DO NOTHING
     """)
@@ -56,12 +56,12 @@ def upgrade() -> None:
     op.execute("""
         INSERT INTO achievement_definitions (
             code, name, description, category, achievement_type, tier,
-            is_active
+            sort_order, is_active
         )
         VALUES (
             'team_champion', 'Team Champion', 'Win a team event with your team',
             'special', 'one_time', NULL,
-            true
+            102, true
         )
         ON CONFLICT (code) DO NOTHING
     """)
@@ -70,12 +70,12 @@ def upgrade() -> None:
     op.execute("""
         INSERT INTO achievement_definitions (
             code, name, description, category, achievement_type, tier,
-            threshold, is_active
+            threshold, sort_order, is_active
         )
         VALUES (
             'team_spirit_bronze', 'Team Spirit', 'Win 3 team events',
             'tiered', 'team_wins', 'bronze',
-            3, true
+            3, 103, true
         )
         ON CONFLICT (code) DO NOTHING
     """)
@@ -84,12 +84,12 @@ def upgrade() -> None:
     op.execute("""
         INSERT INTO achievement_definitions (
             code, name, description, category, achievement_type, tier,
-            threshold, is_active
+            threshold, sort_order, is_active
         )
         VALUES (
             'team_spirit_silver', 'Team Spirit', 'Win 5 team events',
             'tiered', 'team_wins', 'silver',
-            5, true
+            5, 104, true
         )
         ON CONFLICT (code) DO NOTHING
     """)
@@ -98,12 +98,12 @@ def upgrade() -> None:
     op.execute("""
         INSERT INTO achievement_definitions (
             code, name, description, category, achievement_type, tier,
-            threshold, is_active
+            threshold, sort_order, is_active
         )
         VALUES (
             'team_spirit_gold', 'Team Spirit', 'Win 10 team events',
             'tiered', 'team_wins', 'gold',
-            10, true
+            10, 105, true
         )
         ON CONFLICT (code) DO NOTHING
     """)
