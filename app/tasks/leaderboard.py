@@ -251,15 +251,23 @@ async def _async_recalculate(event_id: int) -> dict:
 
         await db.commit()
 
-        # Broadcast that recalculation completed (for SSE subscribers)
+        # Broadcast leaderboard update with FULL DATA (for SSE subscribers)
+        # This allows frontend to update state directly without refetching
         # Use Redis Pub/Sub to notify FastAPI process (Celery runs in separate process)
-        await redis_cache.publish_sse_event(event_id, {
-            "type": "leaderboard_recalculated",
+        sse_payload = {
+            "type": "leaderboard_update",
             "event_id": event_id,
+            # Include full leaderboard data so frontend can update state directly
+            "leaderboard": result["leaderboard"],
+            # Include movements for the "Recent Movements" section
+            "movements": movements[-10:] if movements else [],  # Last 10 movements
+            # Metadata
             "entries_count": len(result["leaderboard"]["entries"]),
             "movements_count": len(movements),
-        })
-        logger.info(f"Published leaderboard_recalculated event to Redis for event {event_id}")
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+        await redis_cache.publish_sse_event(event_id, sse_payload)
+        logger.info(f"Published leaderboard_update event to Redis for event {event_id} with {len(result['leaderboard']['entries'])} entries")
 
         logger.info(
             f"Leaderboard recalculated for event {event_id}: "
