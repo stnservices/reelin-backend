@@ -1,4 +1,13 @@
-"""Celery tasks for leaderboard calculation and caching."""
+"""Celery tasks for leaderboard notifications and rank updates.
+
+This task is triggered after catch validation to:
+1. Update EventScoreboard ranks in the database
+2. Detect ranking movements
+3. Notify SSE clients via Redis pub/sub
+
+The main leaderboard calculation happens in the API endpoint (api/v1/leaderboard.py).
+This task ensures DB ranks are updated and clients are notified of changes.
+"""
 
 import asyncio
 import logging
@@ -8,12 +17,12 @@ from datetime import datetime
 from typing import Optional
 
 from celery import shared_task
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery_app
 from app.database import create_celery_session_maker
-from app.models.catch import Catch, CatchStatus, RankingMovement
+from app.models.catch import Catch, CatchStatus, RankingMovement, EventScoreboard
 from app.models.event import Event, EventFishScoring, EventSpeciesBonusPoints
 from app.models.fish import Fish
 from app.models.team import Team, TeamMember
@@ -36,21 +45,16 @@ def get_initials(name: str) -> str:
 @celery_app.task(bind=True, max_retries=3)
 def recalculate_event_leaderboard(self, event_id: int, triggered_by: str = "unknown"):
     """
-    Celery task to recalculate leaderboard for an event.
+    Celery task to update leaderboard ranks and notify clients.
 
-    Triggered by:
-    - catch_submitted
-    - catch_validated
-    - catch_revalidated
-    - catch_rejected
-    - manual_recalculate
+    Triggered by catch validation events. This task:
+    1. Calculates current rankings
+    2. Updates EventScoreboard.rank in database
+    3. Detects and records ranking movements
+    4. Publishes SSE notification for live clients
 
-    This task:
-    1. Loads all catches for the event
-    2. Calculates rankings with 6-level tiebreakers
-    3. Calculates detailed catch breakdown per user/team
-    4. Detects ranking movements
-    5. Stores everything in Redis cache
+    Note: Main leaderboard data is always calculated fresh from DB in the API.
+    This task ensures ranks are persisted and clients are notified.
     """
     logger.info(f"Recalculating leaderboard for event {event_id} (triggered by: {triggered_by})")
 
@@ -163,15 +167,15 @@ async def _async_recalculate(event_id: int) -> dict:
             for e in disqualified_enrollments
         }
 
-        # Get old rankings for movement detection
-        old_leaderboard = await redis_cache.get_leaderboard(event_id)
+        # Get old rankings from EventScoreboard (DB is source of truth)
         old_rankings = {}
-        if old_leaderboard and "entries" in old_leaderboard:
-            for entry in old_leaderboard["entries"]:
-                if event.is_team_event:
-                    old_rankings[entry.get("team_id")] = entry.get("rank")
-                else:
-                    old_rankings[entry.get("user_id")] = entry.get("rank")
+        scoreboard_query = select(EventScoreboard).where(
+            EventScoreboard.event_id == event_id
+        )
+        scoreboard_result = await db.execute(scoreboard_query)
+        scoreboards = scoreboard_result.scalars().all()
+        for sb in scoreboards:
+            old_rankings[sb.user_id] = sb.rank
 
         # Calculate based on event type
         if event.is_team_event:
@@ -214,31 +218,38 @@ async def _async_recalculate(event_id: int) -> dict:
                     movement["user_name"] = entry.get("user_name")
                 movements.append(movement)
 
-        # Store in Redis
-        await redis_cache.set_leaderboard(event_id, result["leaderboard"])
+        # Update EventScoreboard ranks in DB (source of truth)
+        for entry in result["leaderboard"]["entries"]:
+            if entry.get("is_disqualified"):
+                continue
+            user_id = entry.get("user_id")
+            new_rank = entry.get("rank")
+            old_rank = old_rankings.get(user_id)
+            if user_id and new_rank is not None:
+                await db.execute(
+                    update(EventScoreboard)
+                    .where(
+                        EventScoreboard.event_id == event_id,
+                        EventScoreboard.user_id == user_id,
+                    )
+                    .values(rank=new_rank, previous_rank=old_rank)
+                )
 
-        if event.is_team_event:
-            await redis_cache.set_all_team_details(event_id, result["team_details"])
-        else:
-            await redis_cache.set_all_user_details(event_id, result["user_details"])
-
-        # Save movements to database AND Redis
+        # Save movements to database and Redis (for live feed)
         if movements:
             for m in movements:
-                # Save to database
                 db_movement = RankingMovement(
                     event_id=event_id,
                     user_id=m.get("user_id"),
                     team_id=m.get("team_id"),
                     old_rank=m["old_rank"],
                     new_rank=m["new_rank"],
-                    catch_id=m.get("catch_id"),  # Optional - catch that triggered this
+                    catch_id=m.get("catch_id"),
                 )
                 db.add(db_movement)
-                # Also add to Redis for real-time access
                 await redis_cache.add_movement(event_id, m)
 
-            await db.commit()
+        await db.commit()
 
         # Broadcast that recalculation completed (for SSE subscribers)
         # Use Redis Pub/Sub to notify FastAPI process (Celery runs in separate process)

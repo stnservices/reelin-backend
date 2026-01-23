@@ -283,7 +283,6 @@ async def get_event_leaderboard(
     event_id: int,
     limit: int = Query(50, ge=1, le=200),
     include_breakdown: bool = Query(False),
-    force_refresh: bool = Query(False, description="Force recalculation, bypassing cache"),
     db: AsyncSession = Depends(get_db),
     current_user: Optional[UserAccount] = Depends(get_current_user_optional),
 ):
@@ -302,7 +301,7 @@ async def get_event_leaderboard(
 
     Plus species diversity bonus points if configured.
 
-    Results are cached in Redis for fast access. Use force_refresh=true to bypass cache.
+    Leaderboard is always calculated fresh from DB for reliability.
     """
     # Get list of users the current user follows (if authenticated)
     following_user_ids: set[int] = set()
@@ -313,27 +312,6 @@ async def get_event_leaderboard(
             )
         )
         following_user_ids = {row[0] for row in following_result.fetchall()}
-
-    # Try Redis cache first (unless force_refresh)
-    if not force_refresh:
-        try:
-            cached = await redis_cache.get_leaderboard(event_id)
-            if cached:
-                # Apply limit to cached result
-                if "entries" in cached:
-                    cached["entries"] = cached["entries"][:limit]
-                    # Add is_following to cached entries if user is authenticated
-                    if following_user_ids:
-                        for entry in cached["entries"]:
-                            user_id = entry.get("user_id")
-                            if user_id:
-                                entry["is_following"] = user_id in following_user_ids
-                # Add viewer count
-                cached["viewer_count"] = await redis_cache.get_viewer_count(event_id)
-                return cached
-        except Exception:
-            # Redis unavailable, fall through to direct calculation
-            pass
 
     # Load event with scoring config
     event_query = (
@@ -393,13 +371,21 @@ async def get_event_leaderboard(
 
     # Check if this is a team event
     if event.is_team_event:
-        return await _get_team_leaderboard(
+        result = await _get_team_leaderboard(
             db, event, calculator, all_catches, limit, include_breakdown, following_user_ids
         )
     else:
-        return await _get_individual_leaderboard(
+        result = await _get_individual_leaderboard(
             db, event, calculator, all_catches, limit, include_breakdown, following_user_ids
         )
+
+    # Add viewer count from Redis (still useful for live view)
+    try:
+        result["viewer_count"] = await redis_cache.get_viewer_count(event_id)
+    except Exception:
+        result["viewer_count"] = 0
+
+    return result
 
 
 async def _get_individual_leaderboard(
@@ -1250,15 +1236,8 @@ async def get_user_catch_details(
     - Rejected catches with reasons
 
     This is a PUBLIC endpoint for viewing catch details.
+    Calculated fresh from DB for reliability.
     """
-    # Try Redis cache first
-    try:
-        cached = await redis_cache.get_user_details(event_id, user_id)
-        if cached:
-            return cached
-    except Exception:
-        pass  # Redis unavailable
-
     # Check event exists
     event_query = select(Event).where(Event.id == event_id)
     event_result = await db.execute(event_query)
@@ -1352,15 +1331,8 @@ async def get_team_catch_details(
     - Team member breakdown
 
     This is a PUBLIC endpoint for viewing catch details.
+    Calculated fresh from DB for reliability.
     """
-    # Try Redis cache first
-    try:
-        cached = await redis_cache.get_team_details(event_id, team_id)
-        if cached:
-            return cached
-    except Exception:
-        pass  # Redis unavailable
-
     # Check event exists
     event_query = select(Event).where(Event.id == event_id)
     event_result = await db.execute(event_query)
