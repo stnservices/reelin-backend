@@ -275,27 +275,34 @@ class MediaProcessor:
         def _process():
             # Open and process image
             img = Image.open(input_path)
+            original_img = img  # Keep reference for cleanup
 
-            # Convert to RGB if necessary (required for JPEG)
-            if img.mode in ("RGBA", "P"):
-                background = Image.new("RGB", img.size, (255, 255, 255))
-                if img.mode == "P":
-                    img = img.convert("RGBA")
-                background.paste(img, mask=img.split()[-1] if img.mode == "RGBA" else None)
-                img = background
-            elif img.mode != "RGB":
-                img = img.convert("RGB")
+            try:
+                # Convert to RGB if necessary (required for JPEG)
+                if img.mode in ("RGBA", "P"):
+                    background = Image.new("RGB", img.size, (255, 255, 255))
+                    if img.mode == "P":
+                        img = img.convert("RGBA")
+                    background.paste(img, mask=img.split()[-1] if img.mode == "RGBA" else None)
+                    img = background
+                elif img.mode != "RGB":
+                    img = img.convert("RGB")
 
-            # Resize to fit within max dimensions (preserves aspect ratio)
-            img.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
+                # Resize to fit within max dimensions (preserves aspect ratio)
+                img.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
 
-            # Save as JPEG for maximum compatibility
-            output_fd, output_path = tempfile.mkstemp(suffix=".jpg")
-            os.close(output_fd)
+                # Save as JPEG for maximum compatibility
+                output_fd, output_path = tempfile.mkstemp(suffix=".jpg")
+                os.close(output_fd)
 
-            img.save(output_path, format="JPEG", quality=quality, optimize=True)
+                img.save(output_path, format="JPEG", quality=quality, optimize=True)
 
-            return output_path
+                return output_path
+            finally:
+                # Explicitly release memory immediately
+                if img is not original_img:
+                    img.close()
+                original_img.close()
 
         # Run in executor to avoid blocking
         loop = asyncio.get_event_loop()
