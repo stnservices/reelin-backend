@@ -891,12 +891,13 @@ class AchievementService:
         if not event or not event.is_team_event:
             return newly_awarded
 
-        # Get user's team for this event
+        # Get user's team for this event (TeamMember -> EventEnrollment has user_id)
         team_stmt = (
             select(Team)
             .join(TeamMember, TeamMember.team_id == Team.id)
+            .join(EventEnrollment, EventEnrollment.id == TeamMember.enrollment_id)
             .where(Team.event_id == event_id)
-            .where(TeamMember.user_id == user_id)
+            .where(EventEnrollment.user_id == user_id)
         )
         result = await db.execute(team_stmt)
         team = result.scalar_one_or_none()
@@ -908,8 +909,9 @@ class AchievementService:
         team_events_stmt = (
             select(func.count(distinct(Team.event_id)))
             .join(TeamMember, TeamMember.team_id == Team.id)
+            .join(EventEnrollment, EventEnrollment.id == TeamMember.enrollment_id)
             .join(Event, Event.id == Team.event_id)
-            .where(TeamMember.user_id == user_id)
+            .where(EventEnrollment.user_id == user_id)
             .where(Event.status == "completed")
             .where(Event.is_test == False)
         )
@@ -945,12 +947,13 @@ class AchievementService:
             team_wins_stmt = (
                 select(func.count(distinct(Team.event_id)))
                 .join(TeamMember, TeamMember.team_id == Team.id)
+                .join(EventEnrollment, EventEnrollment.id == TeamMember.enrollment_id)
                 .join(Event, Event.id == Team.event_id)
                 .join(EventScoreboard, and_(
                     EventScoreboard.event_id == Team.event_id,
                     EventScoreboard.team_id == Team.id
                 ))
-                .where(TeamMember.user_id == user_id)
+                .where(EventEnrollment.user_id == user_id)
                 .where(Event.status == "completed")
                 .where(Event.is_test == False)
                 .where(EventScoreboard.rank == 1)
