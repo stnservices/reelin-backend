@@ -495,6 +495,29 @@ class AchievementService:
             )
             newly_awarded.extend(streak_awards)
 
+            # TA-specific achievements (only for Trout Area events)
+            if format_code == "ta" and event_id:
+                # TA Clean Sheet - win a match where opponent catches nothing
+                ta_clean_awarded = await AchievementService._check_ta_clean_sheet(
+                    db, user_id, event_id
+                )
+                if ta_clean_awarded:
+                    newly_awarded.append(ta_clean_awarded)
+
+                # TA Perfect Leg - win all matches in a single leg
+                ta_perfect_awarded = await AchievementService._check_ta_perfect_leg(
+                    db, user_id, event_id
+                )
+                if ta_perfect_awarded:
+                    newly_awarded.append(ta_perfect_awarded)
+
+                # TA Champion - win a TA tournament (rank 1)
+                ta_champion_awarded = await AchievementService._check_ta_champion(
+                    db, user_id, event_id
+                )
+                if ta_champion_awarded:
+                    newly_awarded.append(ta_champion_awarded)
+
         await db.flush()
         return newly_awarded
 
@@ -684,6 +707,121 @@ class AchievementService:
         if rank_improvement >= 5:
             return await AchievementService._award_achievement_with_format(
                 db, user_id, "comeback_king", event_id, None, format_code
+            )
+        return None
+
+    @staticmethod
+    async def _check_ta_clean_sheet(
+        db: AsyncSession,
+        user_id: int,
+        event_id: int,
+    ) -> Optional[AchievementDefinition]:
+        """Check and award TA Clean Sheet (win a match while opponent catches nothing)."""
+        from app.models.trout_area import TAMatch, TAMatchOutcome, TAMatchStatus
+
+        # Find matches where user won and opponent had 0 catches
+        # User can be competitor_a or competitor_b
+        matches_query = (
+            select(TAMatch)
+            .where(TAMatch.event_id == event_id)
+            .where(TAMatch.status == TAMatchStatus.COMPLETED.value)
+            .where(
+                # User won as competitor A and opponent (B) caught nothing
+                (
+                    (TAMatch.competitor_a_id == user_id) &
+                    (TAMatch.competitor_a_outcome_code == TAMatchOutcome.VICTORY.value) &
+                    (TAMatch.competitor_b_catches == 0)
+                ) |
+                # User won as competitor B and opponent (A) caught nothing
+                (
+                    (TAMatch.competitor_b_id == user_id) &
+                    (TAMatch.competitor_b_outcome_code == TAMatchOutcome.VICTORY.value) &
+                    (TAMatch.competitor_a_catches == 0)
+                )
+            )
+        )
+        result = await db.execute(matches_query)
+        clean_sheet_matches = result.scalars().all()
+
+        if len(clean_sheet_matches) > 0:
+            return await AchievementService._award_achievement(
+                db, user_id, "ta_clean_sheet", event_id, None
+            )
+        return None
+
+    @staticmethod
+    async def _check_ta_perfect_leg(
+        db: AsyncSession,
+        user_id: int,
+        event_id: int,
+    ) -> Optional[AchievementDefinition]:
+        """Check and award TA Perfect Leg (win all matches in a single leg)."""
+        from app.models.trout_area import TAMatch, TAMatchOutcome, TAMatchStatus
+
+        # Get all completed matches for this user in this event, grouped by leg
+        matches_query = (
+            select(TAMatch)
+            .where(TAMatch.event_id == event_id)
+            .where(TAMatch.status == TAMatchStatus.COMPLETED.value)
+            .where(
+                (TAMatch.competitor_a_id == user_id) |
+                (TAMatch.competitor_b_id == user_id)
+            )
+            .order_by(TAMatch.leg_number)
+        )
+        result = await db.execute(matches_query)
+        user_matches = result.scalars().all()
+
+        if not user_matches:
+            return None
+
+        # Group matches by leg
+        matches_by_leg: dict[int, list] = {}
+        for match in user_matches:
+            leg = match.leg_number
+            if leg not in matches_by_leg:
+                matches_by_leg[leg] = []
+            matches_by_leg[leg].append(match)
+
+        # Check if user won ALL matches in any single leg
+        for leg_number, leg_matches in matches_by_leg.items():
+            all_wins = True
+            for match in leg_matches:
+                if match.competitor_a_id == user_id:
+                    if match.competitor_a_outcome_code != TAMatchOutcome.VICTORY.value:
+                        all_wins = False
+                        break
+                else:  # competitor_b
+                    if match.competitor_b_outcome_code != TAMatchOutcome.VICTORY.value:
+                        all_wins = False
+                        break
+
+            if all_wins and len(leg_matches) > 0:
+                return await AchievementService._award_achievement(
+                    db, user_id, "ta_perfect_leg", event_id, None
+                )
+
+        return None
+
+    @staticmethod
+    async def _check_ta_champion(
+        db: AsyncSession,
+        user_id: int,
+        event_id: int,
+    ) -> Optional[AchievementDefinition]:
+        """Check and award TA Champion (win a TA tournament - rank 1)."""
+        # Check if user finished 1st in this event
+        final_rank_stmt = (
+            select(EventScoreboard.rank)
+            .where(EventScoreboard.event_id == event_id)
+            .where(EventScoreboard.user_id == user_id)
+        )
+        result = await db.execute(final_rank_stmt)
+        final_rank = result.scalar()
+
+        if final_rank == 1:
+            return await AchievementService._award_achievement(
+                db, user_id, "ta_champion", event_id, None
             )
         return None
 
