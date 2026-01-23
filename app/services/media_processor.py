@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import io
 import os
+import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -213,6 +214,35 @@ class MediaProcessor:
             )
 
     @staticmethod
+    def _is_image_already_optimized(input_path: str, max_dimension: int = 1200, max_size_kb: int = 500) -> bool:
+        """
+        Check if image is already optimized (JPEG, within size limits).
+
+        Skip processing if:
+        - Already JPEG format
+        - Dimensions within max_dimension
+        - File size under max_size_kb
+        """
+        try:
+            # Check file size first (fast)
+            file_size_kb = os.path.getsize(input_path) / 1024
+            if file_size_kb > max_size_kb:
+                return False
+
+            # Check format and dimensions
+            img = Image.open(input_path)
+            width, height = img.size
+
+            # Must be JPEG and within dimension limits
+            is_jpeg = img.format in ('JPEG', 'JPG')
+            within_dimensions = width <= max_dimension and height <= max_dimension
+
+            img.close()
+            return is_jpeg and within_dimensions
+        except Exception:
+            return False
+
+    @staticmethod
     async def process_image(
         input_path: str,
         max_dimension: int = 1200,
@@ -224,14 +254,24 @@ class MediaProcessor:
         Using JPEG instead of WebP for maximum Android compatibility.
         Some Android devices have issues decoding WebP images.
 
+        Skips processing if image is already optimized (JPEG, ≤1200px, ≤500KB).
+
         Args:
             input_path: Path to the input image
             max_dimension: Maximum width or height
             quality: JPEG quality (1-100)
 
         Returns:
-            Path to the processed JPEG image
+            Path to the processed JPEG image (or original if already optimized)
         """
+        # Skip processing if already optimized (mobile pre-compressed)
+        if MediaProcessor._is_image_already_optimized(input_path, max_dimension):
+            # Just copy to new temp file with .jpg extension
+            output_fd, output_path = tempfile.mkstemp(suffix=".jpg")
+            os.close(output_fd)
+            shutil.copy2(input_path, output_path)
+            return output_path
+
         def _process():
             # Open and process image
             img = Image.open(input_path)
