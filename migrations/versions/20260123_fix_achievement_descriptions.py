@@ -6,10 +6,11 @@ that we only have SF and TA formats now (TSF was removed).
 Also ensures triple_threat and dual_champion are aligned.
 """
 
+from typing import Union
 from alembic import op
 
-revision = '20260123_fix_descriptions'
-down_revision = None  # Will be set by alembic
+revision: str = 'fix_ach_desc_001'
+down_revision: Union[str, None] = 'scoreboard_unique_001'
 branch_labels = None
 depends_on = None
 
