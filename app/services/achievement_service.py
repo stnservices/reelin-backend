@@ -18,7 +18,7 @@ from app.models.achievement import (
 )
 from app.models.statistics import UserEventTypeStats
 from app.models.event import Event, EventStatus
-from app.models.catch import Catch, CatchStatus, EventScoreboard
+from app.models.catch import Catch, CatchStatus, EventScoreboard, RankingMovement
 from app.models.enrollment import EventEnrollment
 from app.models.fish import Fish
 
@@ -482,13 +482,12 @@ class AchievementService:
             if diversity_awarded:
                 newly_awarded.append(diversity_awarded)
 
-            # Comeback King - improved 5+ ranks
-            if context.get("rank_improvement", 0) >= 5:
-                awarded = await AchievementService._award_achievement_with_format(
-                    db, user_id, "comeback_king", event_id, None, format_code
-                )
-                if awarded:
-                    newly_awarded.append(awarded)
+            # Comeback King - improved 5+ ranks from worst position
+            comeback_awarded = await AchievementService._check_comeback_king(
+                db, user_id, event_id, format_code
+            )
+            if comeback_awarded:
+                newly_awarded.append(comeback_awarded)
 
             # Update streaks and check streak achievements
             streak_awards = await AchievementService._update_streaks(
@@ -587,6 +586,58 @@ class AchievementService:
         if approved_count >= 3 and rejected_count == 0:
             return await AchievementService._award_achievement_with_format(
                 db, user_id, "clean_sheet", event_id, None, format_code
+            )
+        return None
+
+    @staticmethod
+    async def _check_comeback_king(
+        db: AsyncSession,
+        user_id: int,
+        event_id: int,
+        format_code: Optional[str] = None,
+    ) -> Optional[AchievementDefinition]:
+        """Check and award Comeback King (improved 5+ ranks from worst position).
+
+        Calculates rank improvement by:
+        1. Finding user's worst rank during the event (from RankingMovement history)
+        2. Getting their final rank (from EventScoreboard)
+        3. Improvement = worst_rank - final_rank
+        4. Awards if improvement >= 5
+        """
+        # Get user's final rank from scoreboard
+        final_rank_stmt = (
+            select(EventScoreboard.rank)
+            .where(EventScoreboard.event_id == event_id)
+            .where(EventScoreboard.user_id == user_id)
+        )
+        result = await db.execute(final_rank_stmt)
+        final_rank = result.scalar()
+
+        if final_rank is None:
+            return None  # User not in scoreboard
+
+        # Get user's worst rank from movement history
+        # worst_rank = MAX of all old_rank and new_rank values (highest number = worst position)
+        worst_rank_stmt = (
+            select(func.greatest(
+                func.max(RankingMovement.old_rank),
+                func.max(RankingMovement.new_rank)
+            ))
+            .where(RankingMovement.event_id == event_id)
+            .where(RankingMovement.user_id == user_id)
+        )
+        result = await db.execute(worst_rank_stmt)
+        worst_rank = result.scalar()
+
+        if worst_rank is None:
+            return None  # No movement history
+
+        # Calculate improvement (positive = improved, e.g., 15th to 3rd = 12)
+        rank_improvement = worst_rank - final_rank
+
+        if rank_improvement >= 5:
+            return await AchievementService._award_achievement_with_format(
+                db, user_id, "comeback_king", event_id, None, format_code
             )
         return None
 
