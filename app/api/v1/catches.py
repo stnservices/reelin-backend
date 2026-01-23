@@ -1343,6 +1343,7 @@ async def update_scoreboard(db: AsyncSession, catch: Catch) -> None:
     """Update scoreboard after a catch is approved."""
     # Get or create scoreboard entry
     # Use FOR UPDATE to lock the row and prevent race conditions
+    # Use of=EventScoreboard to only lock the scoreboard table (not joined tables)
     # Use .first() instead of .scalar_one_or_none() to handle any existing duplicates
     scoreboard_query = (
         select(EventScoreboard)
@@ -1350,7 +1351,7 @@ async def update_scoreboard(db: AsyncSession, catch: Catch) -> None:
             EventScoreboard.event_id == catch.event_id,
             EventScoreboard.user_id == catch.user_id,
         )
-        .with_for_update()
+        .with_for_update(of=EventScoreboard)
     )
     result = await db.execute(scoreboard_query)
     scoreboard = result.scalars().first()
