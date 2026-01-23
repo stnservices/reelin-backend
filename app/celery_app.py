@@ -45,10 +45,10 @@ celery_app.conf.update(
     task_max_retries=3,
 
     # Worker memory management - prevent memory leaks from accumulating
-    # Restart worker after 50 tasks to release memory (SQLAlchemy sessions, etc.)
-    worker_max_tasks_per_child=50,
-    # Restart worker if memory exceeds 400MB (container has 512MB)
-    worker_max_memory_per_child=400000,  # in KB
+    # Restart worker after 100 tasks to release memory (SQLAlchemy sessions, etc.)
+    worker_max_tasks_per_child=100,
+    # Restart worker if memory exceeds 1.5GB (container has 2GB)
+    worker_max_memory_per_child=1500000,  # in KB
 
     # Rate limiting
     task_annotations={
