@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -17,7 +17,6 @@ from app.models.catch import Catch, CatchStatus, EventScoreboard, RankingMovemen
 from app.models.fish import Fish
 from app.models.team import Team, TeamMember
 from app.models.enrollment import EventEnrollment, EnrollmentStatus
-from app.api.v1.live import live_scoring_service
 from app.services.redis_cache import redis_cache
 from app.tasks.leaderboard import queue_leaderboard_recalculation
 
@@ -1184,12 +1183,15 @@ async def get_ranking_movements(
 @router.post("/events/{event_id}/recalculate")
 async def recalculate_leaderboard(
     event_id: int,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Force recalculation of the entire leaderboard.
-    Admin only - useful after fixing catch data.
+    Trigger leaderboard refresh for live clients and update DB ranks.
+
+    Since the leaderboard API always calculates fresh from DB, this endpoint
+    is mainly useful for:
+    1. Notifying SSE clients to refresh their view
+    2. Updating EventScoreboard.rank in DB (for exports/reports)
     """
     # Check event exists
     event_query = select(Event).where(Event.id == event_id)
@@ -1199,28 +1201,13 @@ async def recalculate_leaderboard(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    # Queue background recalculation
-    background_tasks.add_task(full_leaderboard_recalculation, event_id)
+    # Queue Celery task to update DB ranks and notify SSE clients
+    queue_leaderboard_recalculation(event_id, "manual_recalculate")
 
     return {
-        "message": "Leaderboard recalculation queued",
+        "message": "Leaderboard refresh triggered",
         "event_id": event_id,
     }
-
-
-async def full_leaderboard_recalculation(event_id: int):
-    """Background task to fully recalculate leaderboard from scratch."""
-    from app.database import async_session_maker
-
-    async with async_session_maker() as db:
-        # Queue Celery task
-        queue_leaderboard_recalculation(event_id, "manual_recalculate")
-
-        # Broadcast that recalculation happened
-        await live_scoring_service.broadcast(event_id, {
-            "type": "leaderboard_recalculated",
-            "event_id": event_id,
-        })
 
 
 @router.get("/events/{event_id}/user/{user_id}/details")
