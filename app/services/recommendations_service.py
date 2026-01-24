@@ -1077,7 +1077,7 @@ class RecommendationsService:
                 or_(
                     func.lower(UserProfile.first_name).like(search_pattern),
                     func.lower(UserProfile.last_name).like(search_pattern),
-                    func.lower(concat(UserProfile.first_name, ' ', UserProfile.last_name)).like(search_pattern),
+                    func.lower(func.concat(UserProfile.first_name, ' ', UserProfile.last_name)).like(search_pattern),
                 ),
             )
             .order_by(UserProfile.first_name, UserProfile.last_name)
