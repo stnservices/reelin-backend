@@ -3,6 +3,10 @@
 .env.local
 .env.*.local
 
+# Deployment specs with secrets
+app-spec.yaml
+app-spec.*.yaml
+
 # Python
 __pycache__/
 *.py[cod]
