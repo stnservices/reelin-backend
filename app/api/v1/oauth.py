@@ -1,5 +1,7 @@
 """OAuth authentication endpoints for social login."""
 
+import logging
+import time
 from urllib.parse import urlencode, urlparse
 
 import httpx
@@ -7,6 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
+from jose import jwt, JWTError
+from jose.exceptions import JWTClaimsError, ExpiredSignatureError
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +24,58 @@ from app.models.user import UserAccount
 from app.services.social_auth import SocialAuthService
 from app.services.account_deletion import account_deletion_service
 from app.schemas.social_account import SocialAccountResponse
+
+logger = logging.getLogger(__name__)
+
+# Apple public keys cache
+_apple_public_keys_cache: dict = {"keys": None, "fetched_at": 0}
+APPLE_KEYS_URL = "https://appleid.apple.com/auth/keys"
+APPLE_KEYS_CACHE_TTL = 3600  # 1 hour
+
+
+async def get_apple_public_keys() -> list[dict]:
+    """
+    Fetch Apple's public keys for JWT verification.
+    Keys are cached for 1 hour to avoid repeated requests.
+    """
+    current_time = time.time()
+
+    # Return cached keys if still valid
+    if (
+        _apple_public_keys_cache["keys"] is not None
+        and current_time - _apple_public_keys_cache["fetched_at"] < APPLE_KEYS_CACHE_TTL
+    ):
+        return _apple_public_keys_cache["keys"]
+
+    # Fetch fresh keys from Apple
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(APPLE_KEYS_URL, timeout=10.0)
+            response.raise_for_status()
+            keys_data = response.json()
+
+            _apple_public_keys_cache["keys"] = keys_data.get("keys", [])
+            _apple_public_keys_cache["fetched_at"] = current_time
+
+            logger.info("Fetched Apple public keys successfully")
+            return _apple_public_keys_cache["keys"]
+    except Exception as e:
+        logger.error(f"Failed to fetch Apple public keys: {e}")
+        # If we have cached keys, return them even if expired (better than failing)
+        if _apple_public_keys_cache["keys"] is not None:
+            return _apple_public_keys_cache["keys"]
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to verify Apple authentication at this time",
+        )
+
+
+def get_apple_public_key_for_kid(keys: list[dict], kid: str) -> dict | None:
+    """Find the public key matching the given key ID."""
+    for key in keys:
+        if key.get("kid") == kid:
+            return key
+    return None
 
 
 async def check_pending_deletion_for_mobile(user: UserAccount, db: AsyncSession) -> None:
@@ -467,31 +523,64 @@ async def apple_mobile_auth(
     Note: Apple only sends the user's name on the FIRST sign-in. After that, we only get
     the user's unique identifier (sub) and email.
     """
-    import jwt
+    settings = get_settings()
 
     try:
-        # Decode the identity token without verification first to get the header
-        # Apple's identity token is a JWT signed with RS256
+        # Get the unverified header to find the key ID (kid)
         unverified_header = jwt.get_unverified_header(request_body.identity_token)
+        kid = unverified_header.get("kid")
 
-        # For production, you should verify the token signature using Apple's public keys
-        # from https://appleid.apple.com/auth/keys
-        # For now, we decode and extract the claims
-        # In production, use: jwt.decode(token, key, algorithms=["RS256"], audience=bundle_id)
-
-        # Decode without verification (for development)
-        # TODO: Add proper signature verification for production
-        claims = jwt.decode(
-            request_body.identity_token,
-            options={"verify_signature": False},
-            algorithms=["RS256"],
-        )
-
-        # Verify issuer
-        if claims.get("iss") != "https://appleid.apple.com":
+        if not kid:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token issuer",
+                detail="Invalid token: missing key ID",
+            )
+
+        # Fetch Apple's public keys
+        apple_keys = await get_apple_public_keys()
+
+        # Find the key matching the kid in the token header
+        public_key = get_apple_public_key_for_kid(apple_keys, kid)
+
+        if not public_key:
+            # Key not found - might be rotated, try refreshing cache
+            _apple_public_keys_cache["fetched_at"] = 0  # Force refresh
+            apple_keys = await get_apple_public_keys()
+            public_key = get_apple_public_key_for_kid(apple_keys, kid)
+
+            if not public_key:
+                logger.error(f"Apple public key not found for kid: {kid}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token: key not found",
+                )
+
+        # Verify and decode the JWT with proper signature verification
+        # The audience should be your app's bundle ID
+        try:
+            claims = jwt.decode(
+                request_body.identity_token,
+                public_key,
+                algorithms=["RS256"],
+                audience=settings.apple_bundle_id,
+                issuer="https://appleid.apple.com",
+            )
+        except ExpiredSignatureError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token has expired",
+            )
+        except JWTClaimsError as e:
+            logger.warning(f"Apple JWT claims error: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token claims",
+            )
+        except JWTError as e:
+            logger.warning(f"Apple JWT verification failed: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token signature",
             )
 
         # Extract user identifier (this is stable and unique per user per app)
@@ -548,17 +637,19 @@ async def apple_mobile_auth(
             },
         )
 
-    except jwt.InvalidTokenError as e:
+    except JWTError as e:
+        logger.warning(f"Apple JWT error: {e}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid identity token: {str(e)}",
+            detail="Invalid identity token",
         )
     except Exception as e:
         if isinstance(e, HTTPException):
             raise
+        logger.error(f"Apple auth error: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Authentication failed: {str(e)}",
+            detail="Authentication failed",
         )
 
 

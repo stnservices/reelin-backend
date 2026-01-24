@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     google_client_secret: str = ""
     facebook_client_id: str = ""
     facebook_client_secret: str = ""
+    apple_bundle_id: str = ""  # iOS app bundle ID for Apple Sign In verification
 
     # Frontend URL (for OAuth redirects)
     frontend_url: str = "http://localhost:3000"
