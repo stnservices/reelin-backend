@@ -1,7 +1,8 @@
 """Achievement service for checking and awarding achievements."""
 
+import time
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 from sqlalchemy import select, func, and_, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +22,35 @@ from app.models.event import Event, EventStatus
 from app.models.catch import Catch, CatchStatus, EventScoreboard, RankingMovement
 from app.models.enrollment import EventEnrollment
 from app.models.fish import Fish
+
+
+# In-memory cache for achievement definitions (refreshes every 5 minutes)
+_achievement_cache: Dict[str, AchievementDefinition] = {}
+_achievement_cache_time: float = 0
+_ACHIEVEMENT_CACHE_TTL = 300  # 5 minutes
+
+
+async def get_cached_achievement(
+    db: AsyncSession, code: str
+) -> Optional[AchievementDefinition]:
+    """Get achievement definition from cache or database."""
+    global _achievement_cache, _achievement_cache_time
+
+    # Refresh cache if expired or empty
+    if not _achievement_cache or (time.time() - _achievement_cache_time) > _ACHIEVEMENT_CACHE_TTL:
+        result = await db.execute(select(AchievementDefinition))
+        achievements = result.scalars().all()
+        _achievement_cache = {a.code: a for a in achievements}
+        _achievement_cache_time = time.time()
+
+    return _achievement_cache.get(code)
+
+
+def invalidate_achievement_cache():
+    """Invalidate the achievement cache (call when definitions are updated)."""
+    global _achievement_cache, _achievement_cache_time
+    _achievement_cache = {}
+    _achievement_cache_time = 0
 
 
 class AchievementService:
@@ -1201,18 +1231,14 @@ class AchievementService:
         catch_id: Optional[int],
     ) -> Optional[AchievementDefinition]:
         """Award an achievement if not already earned."""
-        # Get achievement definition
-        achievement_stmt = select(AchievementDefinition).where(
-            AchievementDefinition.code == achievement_code
-        )
-        result = await db.execute(achievement_stmt)
-        achievement = result.scalar_one_or_none()
+        # Get achievement definition from cache
+        achievement = await get_cached_achievement(db, achievement_code)
 
         if not achievement or not achievement.is_active:
             return None
 
         # Check if already earned
-        existing_stmt = select(UserAchievement).where(
+        existing_stmt = select(UserAchievement.id).where(
             and_(
                 UserAchievement.user_id == user_id,
                 UserAchievement.achievement_id == achievement.id,
@@ -1263,12 +1289,8 @@ class AchievementService:
         Returns:
             The awarded AchievementDefinition if newly awarded, None otherwise
         """
-        # Get achievement definition
-        achievement_stmt = select(AchievementDefinition).where(
-            AchievementDefinition.code == achievement_code
-        )
-        result = await db.execute(achievement_stmt)
-        achievement = result.scalar_one_or_none()
+        # Get achievement definition from cache
+        achievement = await get_cached_achievement(db, achievement_code)
 
         if not achievement or not achievement.is_active:
             return None
@@ -1279,7 +1301,7 @@ class AchievementService:
                 return None  # Achievement doesn't apply to this format
 
         # Check if already earned
-        existing_stmt = select(UserAchievement).where(
+        existing_stmt = select(UserAchievement.id).where(
             and_(
                 UserAchievement.user_id == user_id,
                 UserAchievement.achievement_id == achievement.id,

@@ -1261,11 +1261,15 @@ async def recalculate_achievements_sync(
 
     total_new_achievements = 0
 
+    # Pre-load Hall of Fame check function once
+    from app.tasks.achievements import _check_hall_of_fame_achievements
+
     for user_id in user_ids_to_process:
-        # Get user's completed events
+        # Get user's completed events with event_type eagerly loaded
         events_query = (
-            select(Event.id, Event.event_type_id)
+            select(Event)
             .join(EventEnrollment, EventEnrollment.event_id == Event.id)
+            .options(selectinload(Event.event_type))
             .where(EventEnrollment.user_id == user_id)
             .where(EventEnrollment.status == "approved")
             .where(Event.status == "completed")
@@ -1273,9 +1277,9 @@ async def recalculate_achievements_sync(
             .order_by(Event.end_date)
         )
         events_result = await db.execute(events_query)
-        events = events_result.fetchall()
+        user_events = {e.id: e for e in events_result.scalars().all()}
 
-        # Get user's approved catches with fish info
+        # Get user's approved catches with fish and event info
         catches_query = (
             select(Catch)
             .join(Event, Event.id == Catch.event_id)
@@ -1293,18 +1297,19 @@ async def recalculate_achievements_sync(
 
         # Process each catch
         for catch in catches:
-            event = await db.get(Event, catch.event_id)
+            # Use pre-loaded event instead of querying
+            event = user_events.get(catch.event_id)
             if not event or not event.event_type:
                 continue
 
             format_code = "sf" if event.event_type.code == "street_fishing" else "ta"
 
             catch_time = catch.catch_time or catch.submitted_at
-            early_cutoff = event.start_date + timedelta(minutes=30)
-            late_cutoff = event.end_date - timedelta(minutes=30)
+            early_cutoff = event.start_date + timedelta(minutes=30) if event.start_date else None
+            late_cutoff = event.end_date - timedelta(minutes=30) if event.end_date else None
 
-            is_early_bird = catch_time <= early_cutoff if catch_time and event.start_date else False
-            is_last_minute = catch_time >= late_cutoff if catch_time and event.end_date else False
+            is_early_bird = catch_time <= early_cutoff if catch_time and early_cutoff else False
+            is_last_minute = catch_time >= late_cutoff if catch_time and late_cutoff else False
             is_personal_best = catch.length > max_length_seen if catch.length else False
 
             if catch.length and catch.length > max_length_seen:
@@ -1337,10 +1342,9 @@ async def recalculate_achievements_sync(
                         from app.tasks.achievements import send_achievement_notification
                         send_achievement_notification.delay(user_id, ach.id, catch.event_id)
 
-        # Process each completed event
-        for event_row in events:
-            event = await db.get(Event, event_row.id)
-            if not event or not event.event_type:
+        # Process each completed event (use pre-loaded events)
+        for event in user_events.values():
+            if not event.event_type:
                 continue
 
             format_code = "sf" if event.event_type.code == "street_fishing" else "ta"
@@ -1349,7 +1353,7 @@ async def recalculate_achievements_sync(
                 db,
                 user_id=user_id,
                 trigger="event_completed",
-                event_id=event_row.id,
+                event_id=event.id,
                 format_code=format_code,
             )
 
@@ -1358,10 +1362,9 @@ async def recalculate_achievements_sync(
                     new_achievements.append(ach.code)
                     if request.send_notifications:
                         from app.tasks.achievements import send_achievement_notification
-                        send_achievement_notification.delay(user_id, ach.id, event_row.id)
+                        send_achievement_notification.delay(user_id, ach.id, event.id)
 
         # Check Hall of Fame achievements
-        from app.tasks.achievements import _check_hall_of_fame_achievements
         hof_awards = await _check_hall_of_fame_achievements(db, user_id)
         for ach in hof_awards:
             if ach.code not in new_achievements:
