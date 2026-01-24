@@ -21,6 +21,8 @@ from app.schemas.recommendation import (
     EventSummary,
     MLInsights,
     ReasonItem,
+    UserSearchResponse,
+    UserSearchResult,
     UserSummary,
 )
 from app.services.recommendations_service import RecommendationsService
@@ -247,6 +249,47 @@ async def get_angler_recommendations(
         recommendations=recommendations,
         is_pro=is_pro,
         total_available=len(recommendations),
+    )
+
+
+@router.get("/anglers/search", response_model=UserSearchResponse)
+async def search_anglers(
+    q: str = Query(..., min_length=2, max_length=100, description="Search query (min 2 chars)"),
+    limit: int = Query(20, ge=1, le=50, description="Max results to return"),
+    current_user: UserAccount = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Search for anglers by name (PRO feature only).
+
+    - Minimum 2 characters required
+    - Case-insensitive search
+    - Returns public profiles only
+    - Shows if you're already following each user
+
+    **Requires Pro subscription**
+    """
+    # Check PRO status
+    is_pro = await is_user_pro(current_user.id, db)
+    if not is_pro:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=403,
+            detail="User search is a Pro feature. Upgrade to search for anglers.",
+        )
+
+    # Perform search
+    service = RecommendationsService(db)
+    results = await service.search_users(
+        query=q,
+        current_user_id=current_user.id,
+        limit=limit,
+    )
+
+    return UserSearchResponse(
+        results=[UserSearchResult(**r) for r in results],
+        query=q,
+        total=len(results),
     )
 
 

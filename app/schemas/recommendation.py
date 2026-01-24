@@ -132,3 +132,25 @@ class CompletedEventInsightsResponse(BaseModel):
 
     insights: list[CompletedEventInsight]
     total: int = Field(description="Total completed events analyzed")
+
+
+# ---- User Search (Pro only) ----
+
+
+class UserSearchResult(BaseModel):
+    """A single user search result."""
+
+    id: int
+    name: str
+    profile_picture_url: Optional[str] = None
+    location: Optional[str] = None
+    follower_count: int = 0
+    is_following: bool = False
+
+
+class UserSearchResponse(BaseModel):
+    """Response for user search endpoint."""
+
+    results: list[UserSearchResult]
+    query: str
+    total: int = Field(description="Total results returned")

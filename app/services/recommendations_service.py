@@ -1037,3 +1037,80 @@ class RecommendationsService:
                 })
 
         return insights
+
+    # ---- User Search (Pro only) ----
+
+    async def search_users(
+        self,
+        query: str,
+        current_user_id: int,
+        limit: int = 20,
+    ) -> list[dict]:
+        """
+        Search for users by name (PRO feature).
+        Returns public profiles matching the query.
+        """
+        if len(query) < 2:
+            return []
+
+        # Normalize query for case-insensitive search
+        search_pattern = f"%{query.lower()}%"
+
+        # Get users I'm already following
+        following_stmt = select(UserFollow.following_id).where(
+            UserFollow.follower_id == current_user_id
+        )
+        following_result = await self.db.execute(following_stmt)
+        following_ids = {row[0] for row in following_result.all()}
+
+        # Search users by name (case-insensitive)
+        stmt = (
+            select(UserAccount, UserProfile)
+            .join(UserProfile, UserProfile.user_id == UserAccount.id)
+            .where(
+                UserAccount.id != current_user_id,
+                UserAccount.is_active.is_(True),
+                UserProfile.is_profile_public.is_(True),
+                UserProfile.is_deleted.is_(False),
+                func.lower(UserProfile.full_name).like(search_pattern),
+            )
+            .order_by(UserProfile.full_name)
+            .limit(limit)
+        )
+        result = await self.db.execute(stmt)
+        users = result.all()
+
+        if not users:
+            return []
+
+        # Batch fetch follower counts
+        user_ids = [row.UserAccount.id for row in users]
+        follower_counts_stmt = (
+            select(UserFollow.following_id, func.count(UserFollow.id).label("count"))
+            .where(UserFollow.following_id.in_(user_ids))
+            .group_by(UserFollow.following_id)
+        )
+        follower_result = await self.db.execute(follower_counts_stmt)
+        follower_counts = {row.following_id: row.count for row in follower_result.all()}
+
+        # Build response
+        results = []
+        for row in users:
+            user = row.UserAccount
+            profile = row.UserProfile
+
+            # Get city name for location
+            location = None
+            if profile.city:
+                location = profile.city.name
+
+            results.append({
+                "id": user.id,
+                "name": profile.full_name,
+                "profile_picture_url": profile.profile_picture_url,
+                "location": location,
+                "follower_count": follower_counts.get(user.id, 0),
+                "is_following": user.id in following_ids,
+            })
+
+        return results
