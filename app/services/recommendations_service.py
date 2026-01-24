@@ -707,7 +707,8 @@ class RecommendationsService:
             select(
                 UserFollow.following_id.label("candidate_id"),
                 UserAccount.id,
-                UserProfile.full_name,
+                UserProfile.first_name,
+                UserProfile.last_name,
                 UserProfile.profile_picture_url,
             )
             .join(UserAccount, UserAccount.id == UserFollow.follower_id)
@@ -726,7 +727,7 @@ class RecommendationsService:
             if len(mutual[row.candidate_id]) < 5:
                 mutual[row.candidate_id].append({
                     "id": row.id,
-                    "name": row.full_name,
+                    "name": f"{row.first_name} {row.last_name}",
                     "profile_picture_url": row.profile_picture_url,
                 })
         return mutual
