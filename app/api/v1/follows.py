@@ -270,16 +270,18 @@ async def get_user_stats(db: AsyncSession, user_id: int) -> AnglerCardStats:
     )
 
 
-async def get_top_badges(db: AsyncSession, user_id: int, limit: int = 3) -> List[AnglerCardBadge]:
-    """Get user's top earned badges for angler card."""
-    # Get most recent achievements
-    result = await db.execute(
+async def get_top_badges(db: AsyncSession, user_id: int, limit: int | None = None) -> List[AnglerCardBadge]:
+    """Get user's earned badges for angler card."""
+    # Get achievements ordered by most recent first
+    query = (
         select(UserAchievement)
         .options(selectinload(UserAchievement.achievement))
         .where(UserAchievement.user_id == user_id)
         .order_by(UserAchievement.earned_at.desc())
-        .limit(limit)
     )
+    if limit:
+        query = query.limit(limit)
+    result = await db.execute(query)
     achievements = result.scalars().all()
 
     badges = []
@@ -385,7 +387,7 @@ async def get_angler_card(
     Returns quick-view profile data including:
     - Basic info: name, avatar, location, is_pro
     - Stats: wins, podiums, catches, largest catch (the Power 4)
-    - Badges: top 3 earned badges
+    - Badges: all earned badges
     - Social links: only if user is PRO and profile is public
     - Follow info: follower count, is_following
 
@@ -454,8 +456,8 @@ async def get_angler_card(
         # Stats (the Power 4)
         response.stats = await get_user_stats(db, user_id)
 
-        # Top badges
-        response.badges = await get_top_badges(db, user_id, limit=3)
+        # All earned badges
+        response.badges = await get_top_badges(db, user_id)
 
         # Social links - only for PRO users with public profile
         if user_is_pro and profile:
