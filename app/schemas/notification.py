@@ -14,6 +14,7 @@ class AudienceType(str, Enum):
     EVENT_PARTICIPANTS = "event_participants"
     CLUB_MEMBERS = "club_members"
     ALL_ORGANIZERS = "all_organizers"
+    ALL_USERS = "all_users"
 
 
 class TargetedNotificationRequest(BaseModel):

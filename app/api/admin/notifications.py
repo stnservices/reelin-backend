@@ -13,6 +13,7 @@ from app.models.user import UserAccount, UserProfile
 from app.models.event import Event
 from app.models.enrollment import EventEnrollment, EnrollmentStatus
 from app.models.club import Club, ClubMembership, MembershipStatus
+from app.models.notification import UserDeviceToken
 from app.schemas.notification import (
     AudienceType,
     TargetedNotificationRequest,
@@ -133,6 +134,14 @@ async def _get_all_organizer_ids(db: AsyncSession) -> List[int]:
         select(UserProfile.user_id).where(
             UserProfile.roles.contains(["organizer"])
         )
+    )
+    return list(result.scalars().all())
+
+
+async def _get_all_users_with_tokens(db: AsyncSession) -> List[int]:
+    """Get user IDs of all users that have at least one push notification token."""
+    result = await db.execute(
+        select(UserDeviceToken.user_id).distinct()
     )
     return list(result.scalars().all())
 
@@ -281,6 +290,14 @@ async def send_targeted_notification(
             )
         user_ids = await _get_all_organizer_ids(db)
 
+    elif notification.audience_type == AudienceType.ALL_USERS:
+        if not is_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only administrators can send to all users",
+            )
+        user_ids = await _get_all_users_with_tokens(db)
+
     if not user_ids:
         return TargetedNotificationResponse(
             success=True,
@@ -360,6 +377,12 @@ async def get_recipient_count(
         if not is_admin:
             raise HTTPException(status_code=403, detail="Admin only")
         user_ids = await _get_all_organizer_ids(db)
+        count = len(user_ids)
+
+    elif audience_type == AudienceType.ALL_USERS:
+        if not is_admin:
+            raise HTTPException(status_code=403, detail="Admin only")
+        user_ids = await _get_all_users_with_tokens(db)
         count = len(user_ids)
 
     return {"recipient_count": count}
