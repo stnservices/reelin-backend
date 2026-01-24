@@ -1064,7 +1064,8 @@ class RecommendationsService:
         following_result = await self.db.execute(following_stmt)
         following_ids = {row[0] for row in following_result.all()}
 
-        # Search users by name (case-insensitive)
+        # Search users by name (case-insensitive) - search in first_name or last_name
+        from sqlalchemy import or_, concat
         stmt = (
             select(UserAccount, UserProfile)
             .join(UserProfile, UserProfile.user_id == UserAccount.id)
@@ -1073,9 +1074,13 @@ class RecommendationsService:
                 UserAccount.is_active.is_(True),
                 UserProfile.is_profile_public.is_(True),
                 UserProfile.is_deleted.is_(False),
-                func.lower(UserProfile.full_name).like(search_pattern),
+                or_(
+                    func.lower(UserProfile.first_name).like(search_pattern),
+                    func.lower(UserProfile.last_name).like(search_pattern),
+                    func.lower(concat(UserProfile.first_name, ' ', UserProfile.last_name)).like(search_pattern),
+                ),
             )
-            .order_by(UserProfile.full_name)
+            .order_by(UserProfile.first_name, UserProfile.last_name)
             .limit(limit)
         )
         result = await self.db.execute(stmt)
