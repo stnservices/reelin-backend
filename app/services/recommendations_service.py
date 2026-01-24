@@ -594,10 +594,6 @@ class RecommendationsService:
         reasons = []
         mutual_friends = []
 
-        # Skip if already following
-        if await self.is_following(user.id, candidate.id):
-            return 0, [], []
-
         # Skip if profile is private
         if not candidate_profile.is_profile_public:
             return 0, [], []
@@ -656,16 +652,208 @@ class RecommendationsService:
 
         return score, reasons, mutual_friends if is_pro else []
 
+    async def _batch_get_shared_events(
+        self, user_id: int, candidate_ids: list[int]
+    ) -> dict[int, list[dict]]:
+        """Batch fetch shared events between user and all candidates."""
+        if not candidate_ids:
+            return {}
+
+        # Get events the user participated in
+        user_events_stmt = (
+            select(EventEnrollment.event_id)
+            .where(
+                EventEnrollment.user_id == user_id,
+                EventEnrollment.status == EnrollmentStatus.APPROVED.value,
+            )
+        )
+
+        # Get shared events for all candidates in one query
+        stmt = (
+            select(EventEnrollment.user_id, Event.id, Event.name)
+            .join(Event, Event.id == EventEnrollment.event_id)
+            .where(
+                EventEnrollment.user_id.in_(candidate_ids),
+                EventEnrollment.status == EnrollmentStatus.APPROVED.value,
+                Event.is_test == False,
+                Event.id.in_(user_events_stmt),
+            )
+        )
+        result = await self.db.execute(stmt)
+        rows = result.all()
+
+        # Group by candidate_id
+        shared: dict[int, list[dict]] = {cid: [] for cid in candidate_ids}
+        for row in rows:
+            if len(shared[row.user_id]) < 5:  # Limit to 5 per candidate
+                shared[row.user_id].append({"id": row.id, "name": row.name})
+        return shared
+
+    async def _batch_get_mutual_follows(
+        self, user_id: int, candidate_ids: list[int]
+    ) -> dict[int, list[dict]]:
+        """Batch fetch mutual follows for all candidates."""
+        if not candidate_ids:
+            return {}
+
+        # Users that I follow
+        my_following_stmt = (
+            select(UserFollow.following_id)
+            .where(UserFollow.follower_id == user_id)
+        )
+
+        # Find users I follow who also follow the candidates
+        stmt = (
+            select(
+                UserFollow.following_id.label("candidate_id"),
+                UserAccount.id,
+                UserProfile.full_name,
+                UserProfile.profile_picture_url,
+            )
+            .join(UserAccount, UserAccount.id == UserFollow.follower_id)
+            .join(UserProfile, UserProfile.user_id == UserAccount.id)
+            .where(
+                UserFollow.following_id.in_(candidate_ids),
+                UserFollow.follower_id.in_(my_following_stmt),
+            )
+        )
+        result = await self.db.execute(stmt)
+        rows = result.all()
+
+        # Group by candidate_id
+        mutual: dict[int, list[dict]] = {cid: [] for cid in candidate_ids}
+        for row in rows:
+            if len(mutual[row.candidate_id]) < 5:
+                mutual[row.candidate_id].append({
+                    "id": row.id,
+                    "name": row.full_name,
+                    "profile_picture_url": row.profile_picture_url,
+                })
+        return mutual
+
+    async def _batch_get_species(
+        self, candidate_ids: list[int]
+    ) -> dict[int, set[int]]:
+        """Batch fetch caught species for all candidates."""
+        if not candidate_ids:
+            return {}
+
+        stmt = (
+            select(Catch.user_id, Catch.fish_id)
+            .join(Event, Catch.event_id == Event.id)
+            .where(
+                Catch.user_id.in_(candidate_ids),
+                Catch.fish_id.isnot(None),
+                Event.is_test == False,
+            )
+            .distinct()
+        )
+        result = await self.db.execute(stmt)
+        rows = result.all()
+
+        species: dict[int, set[int]] = {cid: set() for cid in candidate_ids}
+        for row in rows:
+            species[row.user_id].add(row.fish_id)
+        return species
+
+    async def _batch_get_catch_counts(
+        self, candidate_ids: list[int]
+    ) -> dict[int, int]:
+        """Batch fetch catch counts for all candidates."""
+        if not candidate_ids:
+            return {}
+
+        stmt = (
+            select(Catch.user_id, func.count(Catch.id).label("count"))
+            .where(Catch.user_id.in_(candidate_ids))
+            .group_by(Catch.user_id)
+        )
+        result = await self.db.execute(stmt)
+        rows = result.all()
+
+        counts: dict[int, int] = {cid: 0 for cid in candidate_ids}
+        for row in rows:
+            counts[row.user_id] = row.count
+        return counts
+
+    def _calculate_angler_score_from_batch(
+        self,
+        user_id: int,
+        candidate_id: int,
+        candidate_profile: UserProfile,
+        user_species: set[int],
+        user_catch_count: int,
+        shared_events: list[dict],
+        mutual_friends: list[dict],
+        candidate_species: set[int],
+        candidate_catch_count: int,
+        user_city_id: Optional[int],
+        is_pro: bool,
+        species_names: dict[int, str],
+    ) -> tuple[float, list[dict], list[dict]]:
+        """
+        Calculate recommendation score using pre-fetched batch data.
+        No DB queries - pure computation.
+        """
+        score = 0.0
+        reasons = []
+
+        # Skip if profile is private
+        if not candidate_profile.is_profile_public:
+            return 0, [], []
+
+        # 1. Same events attended (max 30 points)
+        if shared_events:
+            score += min(30, len(shared_events) * 10)
+            if len(shared_events) == 1:
+                reasons.append(reason("met_at_event", event_name=shared_events[0]['name']))
+            else:
+                reasons.append(reason("shared_events", count=len(shared_events)))
+
+        # 2. Mutual follows (max 25 points)
+        if mutual_friends:
+            score += min(25, len(mutual_friends) * 8)
+            if is_pro:
+                if len(mutual_friends) == 1:
+                    reasons.append(reason("followed_by", name=mutual_friends[0]['name']))
+                else:
+                    reasons.append(reason("mutual_friends", count=len(mutual_friends)))
+            else:
+                reasons.append(reason("mutual_connections"))
+
+        # 3. Similar species caught (max 20 points)
+        overlap = user_species & candidate_species
+        if overlap:
+            score += min(20, len(overlap) * 5)
+            overlap_list = list(overlap)[:2]
+            names = [species_names.get(sid, "") for sid in overlap_list if species_names.get(sid)]
+            if names:
+                reasons.append(reason("also_catches", species=", ".join(names)))
+
+        # 4. Location proximity (max 15 points)
+        if user_city_id and candidate_profile.city_id == user_city_id:
+            score += 15
+            reasons.append(reason("nearby_angler"))
+
+        # 5. Similar experience level (max 10 points)
+        if abs(user_catch_count - candidate_catch_count) < 20:
+            score += 10
+            reasons.append(reason("similar_experience"))
+
+        return score, reasons, mutual_friends if is_pro else []
+
     async def get_angler_recommendations(
         self,
         user: UserAccount,
         is_pro: bool,
         limit: int = 10,
     ) -> list[dict]:
-        """Get personalized angler recommendations for user."""
+        """Get personalized angler recommendations for user (optimized - no N+1)."""
         # Get user's species history and catch count
         user_species = await self.get_user_caught_species(user.id)
         user_stats = await self.get_user_catch_count(user.id)
+        user_catch_count = user_stats.get("catches", 0)
+        user_city_id = user.profile.city_id if user.profile else None
 
         # Get dismissed anglers
         dismissed = await self.get_dismissed_items(user.id, "angler")
@@ -686,35 +874,67 @@ class RecommendationsService:
                 UserAccount.is_active.is_(True),
                 UserProfile.is_profile_public.is_(True),
                 UserProfile.is_deleted.is_(False),
+                UserAccount.id.notin_(dismissed | already_following),
                 # Users who have at least one catch
                 UserAccount.id.in_(
                     select(distinct(Catch.user_id))
                 ),
             )
-            .limit(200)
+            .limit(100)
         )
         result = await self.db.execute(stmt)
         candidates = result.all()
 
-        # Score each candidate
+        if not candidates:
+            return []
+
+        # Extract candidate IDs for batch queries
+        candidate_ids = [row.UserAccount.id for row in candidates]
+
+        # BATCH FETCH ALL DATA (eliminates N+1 problem)
+        shared_events_map = await self._batch_get_shared_events(user.id, candidate_ids)
+        mutual_friends_map = await self._batch_get_mutual_follows(user.id, candidate_ids)
+        species_map = await self._batch_get_species(candidate_ids)
+        catch_counts_map = await self._batch_get_catch_counts(candidate_ids)
+
+        # Pre-fetch species names for overlap display
+        all_species_ids = set()
+        for species_set in species_map.values():
+            all_species_ids |= species_set
+        all_species_ids |= user_species
+
+        species_names: dict[int, str] = {}
+        if all_species_ids:
+            names_stmt = select(Fish.id, Fish.name).where(Fish.id.in_(all_species_ids))
+            names_result = await self.db.execute(names_stmt)
+            species_names = {row.id: row.name for row in names_result.all()}
+
+        # Score each candidate (NO DB QUERIES - pure computation)
         scored_anglers = []
         for row in candidates:
             candidate = row.UserAccount
             candidate_profile = row.UserProfile
+            cid = candidate.id
 
-            # Skip dismissed or already following
-            if candidate.id in dismissed or candidate.id in already_following:
-                continue
-
-            score, reasons, mutual = await self.calculate_angler_score(
-                user, candidate, candidate_profile,
-                user_species, user_stats, is_pro
+            score, reasons, mutual = self._calculate_angler_score_from_batch(
+                user_id=user.id,
+                candidate_id=cid,
+                candidate_profile=candidate_profile,
+                user_species=user_species,
+                user_catch_count=user_catch_count,
+                shared_events=shared_events_map.get(cid, []),
+                mutual_friends=mutual_friends_map.get(cid, []),
+                candidate_species=species_map.get(cid, set()),
+                candidate_catch_count=catch_counts_map.get(cid, 0),
+                user_city_id=user_city_id,
+                is_pro=is_pro,
+                species_names=species_names,
             )
 
             if score > 0:
                 scored_anglers.append({
                     "user": {
-                        "id": candidate.id,
+                        "id": cid,
                         "name": candidate_profile.full_name,
                         "profile_picture_url": candidate_profile.profile_picture_url,
                     },
