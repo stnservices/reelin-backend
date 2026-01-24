@@ -1065,7 +1065,7 @@ class RecommendationsService:
         following_ids = {row[0] for row in following_result.all()}
 
         # Search users by name (case-insensitive) - search in first_name or last_name
-        from sqlalchemy import or_, concat
+        from sqlalchemy import or_
         stmt = (
             select(UserAccount, UserProfile)
             .join(UserProfile, UserProfile.user_id == UserAccount.id)
