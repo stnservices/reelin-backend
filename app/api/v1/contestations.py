@@ -5,7 +5,7 @@ from math import ceil
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -90,27 +90,32 @@ async def recalculate_rankings(db: AsyncSession, event_id: int) -> None:
     """
     Recalculate rankings for all participants after penalty points change.
     Rankings are ordered by: total_points (desc), total_catches (desc), first_catch_time (asc)
+    Uses batch update for efficiency.
     """
-    # Get all scoreboards for this event
-    query = (
-        select(EventScoreboard)
-        .where(EventScoreboard.event_id == event_id)
-        .order_by(
-            EventScoreboard.total_points.desc(),
-            EventScoreboard.total_catches.desc(),
-            EventScoreboard.species_count.desc(),
-            EventScoreboard.best_catch_length.desc().nulls_last(),
-            EventScoreboard.average_length.desc(),
-            EventScoreboard.first_catch_time.asc().nulls_last(),
-        )
+    # Batch update all ranks in a single SQL statement using window function
+    # Also sets previous_rank to the old rank value
+    await db.execute(
+        text("""
+            UPDATE event_scoreboards es
+            SET previous_rank = es.rank,
+                rank = ranked.new_rank,
+                updated_at = now()
+            FROM (
+                SELECT id, ROW_NUMBER() OVER (
+                    ORDER BY total_points DESC,
+                             total_catches DESC,
+                             species_count DESC,
+                             best_catch_length DESC NULLS LAST,
+                             average_length DESC,
+                             first_catch_time ASC NULLS LAST
+                ) as new_rank
+                FROM event_scoreboards
+                WHERE event_id = :event_id
+            ) ranked
+            WHERE es.id = ranked.id AND es.event_id = :event_id
+        """),
+        {"event_id": event_id}
     )
-    result = await db.execute(query)
-    scoreboards = result.scalars().all()
-
-    # Assign new ranks
-    for rank, scoreboard in enumerate(scoreboards, start=1):
-        scoreboard.previous_rank = scoreboard.rank
-        scoreboard.rank = rank
 
 
 @router.get("/{event_id}/contestations", response_model=ContestationListResponse | ContestationDetailListResponse)

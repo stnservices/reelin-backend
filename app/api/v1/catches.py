@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 POST_EVENT_ACTION_HOURS = 72
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status, BackgroundTasks, UploadFile, File
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -1474,28 +1474,60 @@ async def recalculate_ranks(db: AsyncSession, event_id: int) -> None:
                 if member.is_active and member.enrollment:
                     user_to_team[member.enrollment.user_id] = team.id
 
-    query = (
-        select(EventScoreboard)
+    # Get current ranks before update (for tracking movements)
+    old_ranks_query = (
+        select(EventScoreboard.id, EventScoreboard.user_id, EventScoreboard.rank)
         .where(EventScoreboard.event_id == event_id)
-        .order_by(EventScoreboard.total_points.desc(), EventScoreboard.total_length.desc())
     )
-    result = await db.execute(query)
-    scoreboards = result.scalars().all()
+    old_ranks_result = await db.execute(old_ranks_query)
+    old_ranks_map = {row.id: (row.user_id, row.rank) for row in old_ranks_result}
 
-    for i, scoreboard in enumerate(scoreboards, start=1):
-        old_rank = scoreboard.rank
-        scoreboard.rank = i
+    # Batch update all ranks in a single SQL statement using window function
+    await db.execute(
+        text("""
+            UPDATE event_scoreboards es
+            SET rank = ranked.new_rank, updated_at = now()
+            FROM (
+                SELECT id, ROW_NUMBER() OVER (
+                    ORDER BY total_points DESC, total_length DESC
+                ) as new_rank
+                FROM event_scoreboards
+                WHERE event_id = :event_id
+            ) ranked
+            WHERE es.id = ranked.id AND es.event_id = :event_id
+        """),
+        {"event_id": event_id}
+    )
 
-        # Track significant rank changes
-        if old_rank != 0 and old_rank != i:
-            movement = RankingMovement(
-                event_id=event_id,
-                user_id=scoreboard.user_id,
-                team_id=user_to_team.get(scoreboard.user_id) if is_team_event else None,
-                old_rank=old_rank,
-                new_rank=i,
-            )
-            db.add(movement)
+    # Get new ranks after update
+    new_ranks_query = (
+        select(EventScoreboard.id, EventScoreboard.rank)
+        .where(EventScoreboard.event_id == event_id)
+    )
+    new_ranks_result = await db.execute(new_ranks_query)
+    new_ranks_map = {row.id: row.rank for row in new_ranks_result}
+
+    # Batch insert ranking movements for significant changes
+    movements_to_insert = []
+    for scoreboard_id, (user_id, old_rank) in old_ranks_map.items():
+        new_rank = new_ranks_map.get(scoreboard_id, 0)
+        if old_rank != 0 and old_rank != new_rank:
+            movements_to_insert.append({
+                "event_id": event_id,
+                "user_id": user_id,
+                "team_id": user_to_team.get(user_id) if is_team_event else None,
+                "old_rank": old_rank,
+                "new_rank": new_rank,
+            })
+
+    if movements_to_insert:
+        await db.execute(
+            text("""
+                INSERT INTO ranking_movements (event_id, user_id, team_id, old_rank, new_rank)
+                VALUES (:event_id, :user_id, :team_id, :old_rank, :new_rank)
+            """),
+            movements_to_insert
+        )
 
 
 async def broadcast_catch_submitted(event_id: int, catch_id: int, user_id: int) -> None:
