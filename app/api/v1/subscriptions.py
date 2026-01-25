@@ -161,13 +161,20 @@ async def get_pro_status(
     """
     logger.info(f"get_pro_status: Request from user {current_user.id} ({current_user.email})")
 
-    # Check for active Stripe subscription
+    now = datetime.now(timezone.utc)
+
+    # Check for active Stripe subscription (must have valid status AND not expired)
     subscription_query = select(ProSubscription).where(
         ProSubscription.user_id == current_user.id,
         ProSubscription.status.in_([
             SubscriptionStatus.ACTIVE.value,
             SubscriptionStatus.TRIALING.value,
         ]),
+        # Ensure subscription period hasn't expired
+        or_(
+            ProSubscription.current_period_end.is_(None),
+            ProSubscription.current_period_end > now,
+        ),
     )
     result = await db.execute(subscription_query)
     subscription = result.scalar_one_or_none()
@@ -186,7 +193,6 @@ async def get_pro_status(
         )
 
     # Check for active manual grant
-    now = datetime.now(timezone.utc)
     grant_query = select(ProGrant).where(
         ProGrant.user_id == current_user.id,
         ProGrant.is_active == True,

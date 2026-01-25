@@ -30,13 +30,20 @@ router = APIRouter(prefix="/pro", tags=["pro"])
 
 async def is_user_pro(user_id: int, db: AsyncSession) -> bool:
     """Check if user has active Pro access (subscription or grant)."""
-    # Check for active Stripe subscription
+    now = datetime.now(timezone.utc)
+
+    # Check for active Stripe subscription (must have valid status AND not expired)
     subscription_query = select(ProSubscription).where(
         ProSubscription.user_id == user_id,
         ProSubscription.status.in_([
             SubscriptionStatus.ACTIVE.value,
             SubscriptionStatus.TRIALING.value,
         ]),
+        # Ensure subscription period hasn't expired
+        or_(
+            ProSubscription.current_period_end.is_(None),
+            ProSubscription.current_period_end > now,
+        ),
     )
     result = await db.execute(subscription_query)
     subscription = result.scalar_one_or_none()
@@ -52,7 +59,6 @@ async def is_user_pro(user_id: int, db: AsyncSession) -> bool:
         logger.info(f"is_user_pro: User {user_id} has subscriptions but none active: {[(s.id, s.status) for s in all_subs]}")
 
     # Check for active manual grant
-    now = datetime.now(timezone.utc)
     grant_query = select(ProGrant).where(
         ProGrant.user_id == user_id,
         ProGrant.is_active == True,
