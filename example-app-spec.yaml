@@ -1,0 +1,165 @@
+# DigitalOcean App Platform Deployment Specification
+#
+# IMPORTANT: This is a TEMPLATE file. Do NOT add real credentials here.
+# Instead, set environment variables in DigitalOcean App Platform UI:
+# Apps -> Settings -> Environment Variables
+#
+# Copy this file to app-spec.yaml and use it for reference only.
+# app-spec.yaml is gitignored and should never be committed with real values.
+
+name: reelin
+region: fra
+features:
+  - buildpack-stack=ubuntu-22
+
+services:
+  - name: reelin-backend
+    github:
+      repo: stnservices/reelin-backend
+      branch: main
+      deploy_on_push: true
+    source_dir: /
+    dockerfile_path: docker/Dockerfile
+    http_port: 8000
+    instance_size_slug: apps-d-1vcpu-4gb
+    instance_count: 1
+    envs:
+      # App Settings
+      - key: SECRET_KEY
+        value: "<generate-a-strong-random-key>"
+        scope: RUN_AND_BUILD_TIME
+      - key: DEBUG
+        value: "false"
+        scope: RUN_AND_BUILD_TIME
+      - key: CORS_ORIGINS
+        value: "https://reelin.ro,https://www.reelin.ro"
+        scope: RUN_AND_BUILD_TIME
+      - key: FRONTEND_URL
+        value: "https://www.reelin.ro"
+        scope: RUN_AND_BUILD_TIME
+
+      # Email (AWS SES)
+      - key: EMAIL_HOST
+        value: "email-smtp.eu-central-1.amazonaws.com"
+        scope: RUN_AND_BUILD_TIME
+      - key: EMAIL_PORT
+        value: "587"
+        scope: RUN_AND_BUILD_TIME
+      - key: EMAIL_USE_TLS
+        value: "true"
+        scope: RUN_AND_BUILD_TIME
+      - key: EMAIL_HOST_USER
+        value: "<aws-ses-smtp-username>"
+        scope: RUN_AND_BUILD_TIME
+      - key: EMAIL_HOST_PASSWORD
+        value: "<aws-ses-smtp-password>"
+        scope: RUN_AND_BUILD_TIME
+      - key: DEFAULT_FROM_EMAIL
+        value: "ReelIn Notifications <noreply@reelin.ro>"
+        scope: RUN_AND_BUILD_TIME
+
+      # OAuth Providers
+      - key: GOOGLE_CLIENT_ID
+        value: "<google-oauth-client-id>"
+        scope: RUN_AND_BUILD_TIME
+      - key: GOOGLE_CLIENT_SECRET
+        value: "<google-oauth-client-secret>"
+        scope: RUN_AND_BUILD_TIME
+      - key: FACEBOOK_CLIENT_ID
+        value: "<facebook-app-id>"
+        scope: RUN_AND_BUILD_TIME
+      - key: FACEBOOK_CLIENT_SECRET
+        value: "<facebook-app-secret>"
+        scope: RUN_AND_BUILD_TIME
+      - key: APPLE_BUNDLE_ID
+        value: "com.stnservices.reelin"
+        scope: RUN_AND_BUILD_TIME
+
+      # Stripe Payments
+      - key: STRIPE_SECRET_KEY
+        value: "<stripe-secret-key>"
+        scope: RUN_AND_BUILD_TIME
+      - key: STRIPE_PUBLISHABLE_KEY
+        value: "<stripe-publishable-key>"
+        scope: RUN_AND_BUILD_TIME
+      - key: STRIPE_WEBHOOK_SECRET
+        value: "<stripe-webhook-secret>"
+        scope: RUN_AND_BUILD_TIME
+
+      # External APIs
+      - key: OPENWEATHERMAP_API_KEY
+        value: "<openweathermap-api-key>"
+        scope: RUN_AND_BUILD_TIME
+      - key: RECAPTCHA_SECRET_KEY
+        value: "<recaptcha-secret-key>"
+        scope: RUN_AND_BUILD_TIME
+
+      # Database (use DigitalOcean managed database)
+      - key: DATABASE_URL
+        value: "<postgresql-connection-string>"
+        scope: RUN_AND_BUILD_TIME
+
+      # Redis/Valkey (use DigitalOcean managed database)
+      - key: REDIS_URL
+        value: "<redis-connection-string>"
+        scope: RUN_AND_BUILD_TIME
+      - key: CELERY_BROKER_URL
+        value: "<redis-connection-string>"
+        scope: RUN_AND_BUILD_TIME
+      - key: CELERY_RESULT_BACKEND
+        value: "<redis-connection-string>"
+        scope: RUN_AND_BUILD_TIME
+
+      # Firebase (for push notifications and realtime features)
+      - key: FIREBASE_CREDENTIALS
+        value: "<firebase-service-account-json>"
+        scope: RUN_AND_BUILD_TIME
+      - key: FIREBASE_DATABASE_URL
+        value: "https://<project-id>-default-rtdb.firebaseio.com"
+        scope: RUN_AND_BUILD_TIME
+
+      # DigitalOcean Spaces (S3-compatible storage)
+      - key: DO_SPACES_KEY
+        value: "<spaces-access-key>"
+        scope: RUN_AND_BUILD_TIME
+      - key: DO_SPACES_SECRET
+        value: "<spaces-secret-key>"
+        scope: RUN_AND_BUILD_TIME
+      - key: DO_SPACES_BUCKET
+        value: "reelin"
+        scope: RUN_AND_BUILD_TIME
+      - key: DO_SPACES_REGION
+        value: "fra1"
+        scope: RUN_AND_BUILD_TIME
+      - key: DO_SPACES_ENDPOINT
+        value: "https://fra1.digitaloceanspaces.com"
+        scope: RUN_AND_BUILD_TIME
+
+  - name: reelin-worker
+    github:
+      repo: stnservices/reelin-backend
+      branch: main
+      deploy_on_push: true
+    source_dir: /
+    dockerfile_path: docker/Dockerfile.worker
+    instance_size_slug: apps-d-1vcpu-2gb
+    instance_count: 1
+    envs:
+      # Worker uses the same environment variables as the backend
+      # Copy all variables from above, or use DigitalOcean's shared env vars feature
+      - key: SECRET_KEY
+        value: "<same-as-backend>"
+        scope: RUN_AND_BUILD_TIME
+      - key: DATABASE_URL
+        value: "<same-as-backend>"
+        scope: RUN_AND_BUILD_TIME
+      - key: REDIS_URL
+        value: "<same-as-backend>"
+        scope: RUN_AND_BUILD_TIME
+      - key: CELERY_BROKER_URL
+        value: "<same-as-backend>"
+        scope: RUN_AND_BUILD_TIME
+      - key: CELERY_RESULT_BACKEND
+        value: "<same-as-backend>"
+        scope: RUN_AND_BUILD_TIME
+      # ... add other required variables for worker
