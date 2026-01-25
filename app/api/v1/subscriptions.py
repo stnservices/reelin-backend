@@ -159,6 +159,8 @@ async def get_pro_status(
 
     Returns whether user is Pro and subscription details.
     """
+    logger.info(f"get_pro_status: Request from user {current_user.id} ({current_user.email})")
+
     # Check for active Stripe subscription
     subscription_query = select(ProSubscription).where(
         ProSubscription.user_id == current_user.id,
@@ -171,6 +173,7 @@ async def get_pro_status(
     subscription = result.scalar_one_or_none()
 
     if subscription:
+        logger.info(f"get_pro_status: User {current_user.id} has active subscription (status={subscription.status})")
         return ProStatusResponse(
             is_pro=True,
             source="stripe",
@@ -196,6 +199,7 @@ async def get_pro_status(
     grant = result.scalar_one_or_none()
 
     if grant:
+        logger.info(f"get_pro_status: User {current_user.id} has active grant (id={grant.id}, type={grant.grant_type})")
         return ProStatusResponse(
             is_pro=True,
             source="manual",
@@ -206,6 +210,7 @@ async def get_pro_status(
         )
 
     # Not Pro
+    logger.info(f"get_pro_status: User {current_user.id} is NOT pro")
     return ProStatusResponse(
         is_pro=False,
         source=None,

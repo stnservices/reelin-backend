@@ -39,8 +39,17 @@ async def is_user_pro(user_id: int, db: AsyncSession) -> bool:
         ]),
     )
     result = await db.execute(subscription_query)
-    if result.scalar_one_or_none():
+    subscription = result.scalar_one_or_none()
+    if subscription:
+        logger.info(f"is_user_pro: User {user_id} has active subscription (status={subscription.status})")
         return True
+
+    # Log all subscriptions for this user for debugging
+    all_subs_query = select(ProSubscription).where(ProSubscription.user_id == user_id)
+    all_subs_result = await db.execute(all_subs_query)
+    all_subs = all_subs_result.scalars().all()
+    if all_subs:
+        logger.info(f"is_user_pro: User {user_id} has subscriptions but none active: {[(s.id, s.status) for s in all_subs]}")
 
     # Check for active manual grant
     now = datetime.now(timezone.utc)
@@ -53,9 +62,19 @@ async def is_user_pro(user_id: int, db: AsyncSession) -> bool:
         ),
     )
     result = await db.execute(grant_query)
-    if result.scalar_one_or_none():
+    grant = result.scalar_one_or_none()
+    if grant:
+        logger.info(f"is_user_pro: User {user_id} has active grant (id={grant.id}, expires_at={grant.expires_at})")
         return True
 
+    # Log all grants for this user for debugging
+    all_grants_query = select(ProGrant).where(ProGrant.user_id == user_id)
+    all_grants_result = await db.execute(all_grants_query)
+    all_grants = all_grants_result.scalars().all()
+    if all_grants:
+        logger.info(f"is_user_pro: User {user_id} has grants but none valid: {[(g.id, g.is_active, g.expires_at) for g in all_grants]}")
+
+    logger.info(f"is_user_pro: User {user_id} is NOT pro (no active subscription or grant)")
     return False
 
 
@@ -123,6 +142,8 @@ async def get_event_catch_map(
 
     Requires event to be completed. Returns catches with location data only.
     """
+    logger.info(f"catch_map: Request for event {event_id} by user {current_user.id} ({current_user.email})")
+
     # Check event exists
     event_query = select(Event).where(Event.id == event_id)
     result = await db.execute(event_query)
@@ -143,6 +164,7 @@ async def get_event_catch_map(
 
     # Check if user is Pro
     is_pro = await is_user_pro(current_user.id, db)
+    logger.info(f"catch_map: User {current_user.id} is_pro = {is_pro}")
 
     # Build query for catches with location data
     query = (
