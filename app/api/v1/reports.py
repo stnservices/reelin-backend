@@ -52,6 +52,10 @@ async def get_event_public_stats(
     - Averages (catches per participant, length per catch)
     - Top performers (most catches, biggest catch, most species)
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"public-stats: Request for event {event_id} by user {current_user.id}")
+
     # Verify event exists
     event_query = (
         select(Event)
@@ -71,7 +75,9 @@ async def get_event_public_stats(
         )
 
     # Public stats only available for completed events
+    logger.info(f"public-stats: Event {event_id} status is '{event.status}', expected '{EventStatus.COMPLETED.value}'")
     if event.status != EventStatus.COMPLETED.value:
+        logger.warning(f"public-stats: Event {event_id} not completed, returning 403")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Statistics are only available for completed events",
