@@ -162,6 +162,14 @@ async def get_pro_status(
     logger.info(f"get_pro_status: Request from user {current_user.id} ({current_user.email})")
 
     now = datetime.now(timezone.utc)
+    logger.info(f"get_pro_status: Current time is {now.isoformat()}")
+
+    # First, log all subscriptions for this user (for debugging)
+    all_subs_query = select(ProSubscription).where(ProSubscription.user_id == current_user.id)
+    all_subs_result = await db.execute(all_subs_query)
+    all_subs = all_subs_result.scalars().all()
+    for sub in all_subs:
+        logger.info(f"get_pro_status: Found subscription id={sub.id}, status={sub.status}, current_period_end={sub.current_period_end}")
 
     # Check for active Stripe subscription (must have valid status AND not expired)
     subscription_query = select(ProSubscription).where(
@@ -191,6 +199,13 @@ async def get_pro_status(
             stripe_subscription_id=subscription.stripe_subscription_id,
             stripe_customer_id=subscription.stripe_customer_id,
         )
+
+    # Log all grants for this user (for debugging)
+    all_grants_query = select(ProGrant).where(ProGrant.user_id == current_user.id)
+    all_grants_result = await db.execute(all_grants_query)
+    all_grants = all_grants_result.scalars().all()
+    for g in all_grants:
+        logger.info(f"get_pro_status: Found grant id={g.id}, is_active={g.is_active}, expires_at={g.expires_at}, grant_type={g.grant_type}")
 
     # Check for active manual grant
     grant_query = select(ProGrant).where(
