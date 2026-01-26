@@ -827,6 +827,9 @@ def send_catch_like_notification(
                 last = liker.profile.last_name or ""
                 liker_name = f"{first} {last}".strip() or liker_name
 
+            # Store values we need after session closes (to avoid DetachedInstanceError)
+            owner_user_id = catch.user_id
+            event_id = catch.event_id
             fish_name = catch.fish.name if catch.fish else "fish"
 
             # Build notification content
@@ -835,13 +838,13 @@ def send_catch_like_notification(
 
             # Create in-app notification
             notification = Notification(
-                user_id=catch.user_id,
+                user_id=owner_user_id,
                 type="catch_like",
                 title=title,
                 message=body,
                 data={
                     "catch_id": catch_id,
-                    "event_id": catch.event_id,
+                    "event_id": event_id,
                     "liker_id": liker_user_id,
                 },
             )
@@ -852,10 +855,10 @@ def send_catch_like_notification(
             db.commit()
 
         # Send push notification (outside transaction)
-        tokens = _get_user_tokens([catch.user_id])
+        tokens = _get_user_tokens([owner_user_id])
 
         if not tokens:
-            logger.info(f"No FCM tokens for catch owner {catch.user_id}")
+            logger.info(f"No FCM tokens for catch owner {owner_user_id}")
             return {"status": "no_tokens", "notification_created": True}
 
         result = send_push_notification(
@@ -865,9 +868,9 @@ def send_catch_like_notification(
             data={
                 "type": "catch_like",
                 "catch_id": str(catch_id),
-                "event_id": str(catch.event_id),
+                "event_id": str(event_id),
             },
-            click_action=f"/events/{catch.event_id}",
+            click_action=f"/events/{event_id}",
         )
 
         if result.get("failed_tokens"):
