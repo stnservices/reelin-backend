@@ -21,6 +21,7 @@ from app.models.event import Event, EventStatus, EventFishScoring
 from app.models.event_validator import EventValidator
 from app.models.enrollment import EventEnrollment, EnrollmentStatus
 from app.models.catch import Catch, CatchStatus, EventScoreboard, RankingMovement
+from app.models.catch_reaction import CatchReaction, ReactionType
 from app.models.fish import Fish
 from app.models.team import Team, TeamMember
 from app.models.club import Club, ClubMembership, MembershipStatus
@@ -35,6 +36,9 @@ from app.schemas.catch import (
     ScoreboardEntry,
     CatchSearchItem,
     CatchSearchResponse,
+    CatchReactionRequest,
+    CatchReactionCounts,
+    CatchReactionResponse,
 )
 from app.schemas.common import MessageResponse
 from app.core.permissions import ValidatorOrAdmin, check_is_event_validator
@@ -1745,3 +1749,151 @@ async def upload_catch_photo(
     photo_url = await storage_service.upload_catch_photo(file, event_id, current_user.id)
 
     return {"photo_url": photo_url}
+
+
+# ============== Catch Reactions (Likes/Dislikes) ==============
+
+
+async def get_reaction_counts(db: AsyncSession, catch_id: int, user_id: int | None = None) -> CatchReactionCounts:
+    """Get reaction counts for a catch, optionally including user's reaction."""
+    # Count likes
+    likes_query = select(func.count()).select_from(CatchReaction).where(
+        CatchReaction.catch_id == catch_id,
+        CatchReaction.reaction_type == ReactionType.LIKE.value,
+    )
+    likes_result = await db.execute(likes_query)
+    likes = likes_result.scalar() or 0
+
+    # Count dislikes
+    dislikes_query = select(func.count()).select_from(CatchReaction).where(
+        CatchReaction.catch_id == catch_id,
+        CatchReaction.reaction_type == ReactionType.DISLIKE.value,
+    )
+    dislikes_result = await db.execute(dislikes_query)
+    dislikes = dislikes_result.scalar() or 0
+
+    # Get user's reaction if logged in
+    user_reaction = None
+    if user_id:
+        user_reaction_query = select(CatchReaction).where(
+            CatchReaction.catch_id == catch_id,
+            CatchReaction.user_id == user_id,
+        )
+        user_reaction_result = await db.execute(user_reaction_query)
+        reaction = user_reaction_result.scalar_one_or_none()
+        if reaction:
+            user_reaction = reaction.reaction_type
+
+    return CatchReactionCounts(likes=likes, dislikes=dislikes, user_reaction=user_reaction)
+
+
+@router.get("/{catch_id}/reactions")
+async def get_catch_reactions(
+    catch_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(get_current_user),
+) -> CatchReactionCounts:
+    """
+    Get reaction counts for a catch.
+    Returns likes, dislikes, and current user's reaction (if any).
+    """
+    # Verify catch exists
+    catch_query = select(Catch).where(Catch.id == catch_id)
+    catch_result = await db.execute(catch_query)
+    catch = catch_result.scalar_one_or_none()
+
+    if not catch:
+        raise HTTPException(status_code=404, detail="Catch not found")
+
+    return await get_reaction_counts(db, catch_id, current_user.id)
+
+
+@router.post("/{catch_id}/react")
+async def add_catch_reaction(
+    catch_id: int,
+    reaction: CatchReactionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(get_current_user),
+) -> CatchReactionResponse:
+    """
+    Add or change a reaction on a catch photo.
+    Users cannot react to their own catches.
+    """
+    # Verify catch exists
+    catch_query = select(Catch).where(Catch.id == catch_id)
+    catch_result = await db.execute(catch_query)
+    catch = catch_result.scalar_one_or_none()
+
+    if not catch:
+        raise HTTPException(status_code=404, detail="Catch not found")
+
+    # Users cannot react to their own catches
+    if catch.user_id == current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="You cannot react to your own catches"
+        )
+
+    # Check if user already has a reaction
+    existing_query = select(CatchReaction).where(
+        CatchReaction.catch_id == catch_id,
+        CatchReaction.user_id == current_user.id,
+    )
+    existing_result = await db.execute(existing_query)
+    existing = existing_result.scalar_one_or_none()
+
+    if existing:
+        # Update existing reaction
+        existing.reaction_type = reaction.reaction_type
+    else:
+        # Create new reaction
+        new_reaction = CatchReaction(
+            catch_id=catch_id,
+            user_id=current_user.id,
+            reaction_type=reaction.reaction_type,
+        )
+        db.add(new_reaction)
+
+    await db.commit()
+
+    # Get updated counts
+    counts = await get_reaction_counts(db, catch_id, current_user.id)
+
+    return CatchReactionResponse(
+        catch_id=catch_id,
+        reaction_type=reaction.reaction_type,
+        counts=counts,
+    )
+
+
+@router.delete("/{catch_id}/react")
+async def remove_catch_reaction(
+    catch_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(get_current_user),
+) -> CatchReactionCounts:
+    """
+    Remove user's reaction from a catch.
+    """
+    # Verify catch exists
+    catch_query = select(Catch).where(Catch.id == catch_id)
+    catch_result = await db.execute(catch_query)
+    catch = catch_result.scalar_one_or_none()
+
+    if not catch:
+        raise HTTPException(status_code=404, detail="Catch not found")
+
+    # Find and delete the reaction
+    reaction_query = select(CatchReaction).where(
+        CatchReaction.catch_id == catch_id,
+        CatchReaction.user_id == current_user.id,
+    )
+    reaction_result = await db.execute(reaction_query)
+    reaction = reaction_result.scalar_one_or_none()
+
+    if reaction:
+        await db.delete(reaction)
+        await db.commit()
+
+    # Return updated counts
+    return await get_reaction_counts(db, catch_id, current_user.id)

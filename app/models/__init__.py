@@ -44,6 +44,7 @@ from app.models.achievement import (
 )
 from app.models.statistics import UserEventTypeStats
 from app.models.follow import UserFollow
+from app.models.catch_reaction import CatchReaction, ReactionType
 from app.models.waypoint import UserWaypoint, WaypointIcon, WaypointCategory
 from app.models.recommendation import RecommendationDismissal
 from app.models.app_settings import AppSettings
@@ -172,6 +173,9 @@ __all__ = [
     "UserEventTypeStats",
     # Follow
     "UserFollow",
+    # Catch Reactions
+    "CatchReaction",
+    "ReactionType",
     # Waypoints
     "UserWaypoint",
     "WaypointIcon",

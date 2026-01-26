@@ -354,3 +354,28 @@ class CatchMapResponse(BaseModel):
     is_pro_user: bool
     showing_own_catches_only: bool
     cluster_hints: Optional[list[ClusterHint]] = None
+
+
+# ============== Catch Reaction Schemas ==============
+
+
+class CatchReactionRequest(BaseModel):
+    """Request to add/change a reaction on a catch."""
+
+    reaction_type: str = Field(..., pattern="^(like|dislike)$", description="Either 'like' or 'dislike'")
+
+
+class CatchReactionCounts(BaseModel):
+    """Reaction counts for a catch."""
+
+    likes: int = 0
+    dislikes: int = 0
+    user_reaction: Optional[str] = None  # 'like', 'dislike', or None
+
+
+class CatchReactionResponse(BaseModel):
+    """Response after adding/changing a reaction."""
+
+    catch_id: int
+    reaction_type: str
+    counts: CatchReactionCounts
