@@ -93,6 +93,11 @@ class Catch(Base):
         DateTime(timezone=True), nullable=True
     )  # Actual catch time from EXIF or user input
 
+    # Like notification tracking (for rate limiting)
+    last_like_notification_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Relationships
     event: Mapped["Event"] = relationship("Event", back_populates="catches")
     user: Mapped["UserAccount"] = relationship(

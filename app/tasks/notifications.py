@@ -7,6 +7,7 @@ Implements fan-out pattern for scalable notification delivery to many users.
 """
 
 import logging
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
 from sqlalchemy import select, and_, delete
@@ -18,9 +19,15 @@ from app.models.notification import (
     UserDeviceToken,
     UserNotificationPreferences,
     CatchNotificationLevel,
+    Notification,
 )
 from app.models.enrollment import EventEnrollment, EnrollmentStatus
+from app.models.catch import Catch
+from app.models.user import UserAccount, UserProfile
 from app.services.push_notifications import send_push_notification, send_silent_push
+
+# Rate limit for like notifications (1 hour cooldown per catch)
+LIKE_NOTIFICATION_COOLDOWN = timedelta(hours=1)
 
 logger = logging.getLogger(__name__)
 
@@ -760,4 +767,115 @@ def send_event_stopped_notifications(
 
     except Exception as e:
         logger.error(f"Error sending event stopped notification: {e}")
+        raise self.retry(exc=e, countdown=10 * (2 ** self.request.retries))
+
+
+# =============================================================================
+# CATCH LIKE NOTIFICATIONS
+# =============================================================================
+
+
+@celery_app.task(bind=True, max_retries=3)
+def send_catch_like_notification(
+    self,
+    catch_id: int,
+    liker_user_id: int,
+):
+    """Send notification to catch owner when someone likes their photo.
+
+    Implements rate limiting: only one notification per catch per hour.
+
+    Args:
+        catch_id: The catch that was liked
+        liker_user_id: The user who liked the catch
+    """
+    try:
+        with SyncSessionLocal() as db:
+            # Get catch with owner info
+            catch = db.execute(
+                select(Catch)
+                .options(selectinload(Catch.user).selectinload(UserAccount.profile))
+                .options(selectinload(Catch.fish))
+                .where(Catch.id == catch_id)
+            ).scalar_one_or_none()
+
+            if not catch:
+                logger.warning(f"Catch {catch_id} not found for like notification")
+                return {"status": "catch_not_found"}
+
+            # Check rate limit
+            now = datetime.now(timezone.utc)
+            if catch.last_like_notification_at:
+                cooldown_expires = catch.last_like_notification_at + LIKE_NOTIFICATION_COOLDOWN
+                if now < cooldown_expires:
+                    logger.info(
+                        f"Like notification for catch {catch_id} rate limited "
+                        f"(cooldown expires at {cooldown_expires})"
+                    )
+                    return {"status": "rate_limited"}
+
+            # Get liker's name
+            liker = db.execute(
+                select(UserAccount)
+                .options(selectinload(UserAccount.profile))
+                .where(UserAccount.id == liker_user_id)
+            ).scalar_one_or_none()
+
+            liker_name = "Someone"
+            if liker and liker.profile:
+                first = liker.profile.first_name or ""
+                last = liker.profile.last_name or ""
+                liker_name = f"{first} {last}".strip() or liker_name
+
+            fish_name = catch.fish.name if catch.fish else "fish"
+
+            # Build notification content
+            title = "Someone liked your catch!"
+            body = f"{liker_name} liked your {fish_name} catch"
+
+            # Create in-app notification
+            notification = Notification(
+                user_id=catch.user_id,
+                type="catch_like",
+                title=title,
+                message=body,
+                data={
+                    "catch_id": catch_id,
+                    "event_id": catch.event_id,
+                    "liker_id": liker_user_id,
+                },
+            )
+            db.add(notification)
+
+            # Update rate limit timestamp
+            catch.last_like_notification_at = now
+            db.commit()
+
+        # Send push notification (outside transaction)
+        tokens = _get_user_tokens([catch.user_id])
+
+        if not tokens:
+            logger.info(f"No FCM tokens for catch owner {catch.user_id}")
+            return {"status": "no_tokens", "notification_created": True}
+
+        result = send_push_notification(
+            tokens=tokens,
+            title=title,
+            body=body,
+            data={
+                "type": "catch_like",
+                "catch_id": str(catch_id),
+                "event_id": str(catch.event_id),
+            },
+            click_action=f"/events/{catch.event_id}",
+        )
+
+        if result.get("failed_tokens"):
+            _cleanup_invalid_tokens(result["failed_tokens"])
+
+        logger.info(f"Like notification sent for catch {catch_id}: {result}")
+        return {"status": "sent", **result}
+
+    except Exception as e:
+        logger.error(f"Error sending catch like notification: {e}")
         raise self.retry(exc=e, countdown=10 * (2 ** self.request.retries))

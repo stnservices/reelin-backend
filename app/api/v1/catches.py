@@ -48,6 +48,7 @@ from app.tasks.leaderboard import queue_leaderboard_recalculation
 from app.tasks.notifications import send_catch_notification, send_catch_response_notification
 from app.tasks.achievements import process_achievements_for_catch
 from app.tasks.ai_analysis import queue_catch_analysis
+from app.tasks.notifications import send_catch_like_notification
 from app.models.ai_analysis import CatchAiAnalysis
 from app.services.statistics_service import statistics_service
 
@@ -1842,6 +1843,8 @@ async def add_catch_reaction(
     existing_result = await db.execute(existing_query)
     existing = existing_result.scalar_one_or_none()
 
+    is_new_like = False
+
     if existing:
         # Update existing reaction
         existing.reaction_type = reaction.reaction_type
@@ -1853,8 +1856,15 @@ async def add_catch_reaction(
             reaction_type=reaction.reaction_type,
         )
         db.add(new_reaction)
+        # Track if this is a new like for notification
+        if reaction.reaction_type == ReactionType.LIKE.value:
+            is_new_like = True
 
     await db.commit()
+
+    # Send notification for new likes (rate-limited in the task)
+    if is_new_like:
+        send_catch_like_notification.delay(catch_id, current_user.id)
 
     # Get updated counts
     counts = await get_reaction_counts(db, catch_id, current_user.id)
