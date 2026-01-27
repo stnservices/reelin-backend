@@ -103,6 +103,7 @@ async def create_rule(
     """
     Create a new rule.
     Rule must have at least one of: content, external_url, or document_url.
+    For file uploads, use the /rules/upload endpoint or upload after creation.
     """
     # Validate that at least one content source is provided
     if not rule_data.content and not rule_data.external_url and not rule_data.document_url:
@@ -131,6 +132,52 @@ async def create_rule(
         content=rule_data.content,
         external_url=rule_data.external_url,
         document_url=rule_data.document_url,
+    )
+    db.add(rule)
+    await db.commit()
+    await db.refresh(rule)
+
+    return rule_to_response(rule)
+
+
+@router.post("/upload", response_model=RuleResponse, status_code=status.HTTP_201_CREATED)
+async def create_rule_with_document(
+    name: str = Query(..., min_length=1, max_length=100),
+    file: UploadFile = File(...),
+    description: str = Query(None, max_length=255),
+    content: str = Query(None),
+    external_url: str = Query(None, max_length=500),
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(get_current_user),
+):
+    """
+    Create a new rule with a document upload.
+    This endpoint accepts multipart/form-data with the document file.
+    """
+    # Check for duplicate name
+    existing_query = select(OrganizerRule).where(
+        OrganizerRule.owner_id == current_user.id,
+        OrganizerRule.name == name,
+        OrganizerRule.is_active == True,
+    )
+    existing_result = await db.execute(existing_query)
+    if existing_result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=409,
+            detail="A rule with this name already exists",
+        )
+
+    # Upload the document
+    document_url = await storage_service.upload_rule_document(file, current_user.id)
+
+    # Create the rule
+    rule = OrganizerRule(
+        owner_id=current_user.id,
+        name=name,
+        description=description,
+        content=content,
+        external_url=external_url,
+        document_url=document_url,
     )
     db.add(rule)
     await db.commit()
