@@ -15,6 +15,40 @@ logger = logging.getLogger(__name__)
 # Track if Firebase has been initialized
 _firebase_initialized = False
 
+# Connection pool size for Firebase HTTP requests
+# Increase to avoid "Connection pool is full" warnings when sending many notifications
+FIREBASE_POOL_SIZE = 100
+
+# Configure larger connection pool at module load time
+# This affects all HTTP requests using the requests library
+def _configure_connection_pool():
+    """Configure larger connection pool for HTTP requests.
+
+    Firebase SDK uses google-auth which uses requests/urllib3.
+    By default urllib3 has pool_maxsize=10 which causes warnings
+    when sending many concurrent notifications.
+
+    We monkey-patch HTTPAdapter's __init__ to use larger pool sizes.
+    """
+    try:
+        from requests.adapters import HTTPAdapter
+
+        _original_init = HTTPAdapter.__init__
+
+        def _patched_init(self, pool_connections=FIREBASE_POOL_SIZE,
+                         pool_maxsize=FIREBASE_POOL_SIZE, max_retries=0, pool_block=False):
+            _original_init(self, pool_connections=pool_connections,
+                          pool_maxsize=pool_maxsize, max_retries=max_retries,
+                          pool_block=pool_block)
+
+        HTTPAdapter.__init__ = _patched_init
+        logger.info(f"Configured HTTP connection pool size: {FIREBASE_POOL_SIZE}")
+    except Exception as e:
+        logger.warning(f"Could not configure connection pool: {e}")
+
+# Configure on module load
+_configure_connection_pool()
+
 
 def initialize_firebase() -> bool:
     """Initialize Firebase Admin SDK.
@@ -47,6 +81,7 @@ def initialize_firebase() -> bool:
         cred = credentials.Certificate(firebase_credentials)
 
         firebase_admin.initialize_app(cred)
+
         _firebase_initialized = True
         logger.info("Firebase Admin SDK initialized successfully (FCM only)")
         return True
