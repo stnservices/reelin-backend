@@ -126,6 +126,8 @@ class AnalyticsService:
                 {
                     "id": c.id,
                     "species_name": c.fish.name if c.fish else "Unknown",
+                    "species_name_en": c.fish.name_en if c.fish else None,
+                    "species_name_ro": c.fish.name_ro if c.fish else None,
                     "length_cm": c.length,
                     "catch_date": c.submitted_at.date().isoformat(),
                     "event_name": c.event.name if c.event else None,
@@ -268,6 +270,8 @@ class AnalyticsService:
                 "id": biggest.id,
                 "species_id": biggest.fish_id,
                 "species_name": biggest.fish.name if biggest.fish else "Unknown",
+                "species_name_en": biggest.fish.name_en if biggest.fish else None,
+                "species_name_ro": biggest.fish.name_ro if biggest.fish else None,
                 "length_cm": biggest.length,
                 "weight_kg": biggest.weight,
                 "catch_date": biggest.submitted_at.date().isoformat(),
@@ -290,6 +294,8 @@ class AnalyticsService:
             select(
                 Catch.fish_id,
                 Fish.name,
+                Fish.name_en,
+                Fish.name_ro,
                 func.count(Catch.id).label("count"),
                 func.avg(Catch.length).label("avg_length"),
                 func.max(Catch.length).label("max_length"),
@@ -297,7 +303,7 @@ class AnalyticsService:
             .join(Event, Catch.event_id == Event.id)
             .join(Fish, Catch.fish_id == Fish.id)
             .where(and_(*base_filter))
-            .group_by(Catch.fish_id, Fish.name)
+            .group_by(Catch.fish_id, Fish.name, Fish.name_en, Fish.name_ro)
             .order_by(func.count(Catch.id).desc())
         )
         result = await db.execute(stmt)
@@ -308,6 +314,8 @@ class AnalyticsService:
             {
                 "species_id": r.fish_id,
                 "species_name": r.name,
+                "species_name_en": r.name_en,
+                "species_name_ro": r.name_ro,
                 "count": r.count,
                 "percentage": round(r.count * 100 / total, 1) if total > 0 else 0,
                 "average_length": round(float(r.avg_length), 1) if r.avg_length else 0,
@@ -353,6 +361,8 @@ class AnalyticsService:
                 personal_bests.append({
                     "species_id": c.fish_id,
                     "species_name": c.fish.name if c.fish else "Unknown",
+                    "species_name_en": c.fish.name_en if c.fish else None,
+                    "species_name_ro": c.fish.name_ro if c.fish else None,
                     "length_cm": c.length,
                     "weight_kg": c.weight,
                     "catch_date": c.submitted_at.date().isoformat(),
