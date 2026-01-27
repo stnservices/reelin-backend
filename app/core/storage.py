@@ -24,33 +24,34 @@ class StorageService:
     def client(self):
         """Lazy initialization of S3 client."""
         if self._client is None:
-            if not self.settings.aws_access_key_id or not self.settings.aws_secret_access_key:
+            if not self.settings.storage_access_key or not self.settings.storage_secret_key:
                 raise HTTPException(
                     status_code=500,
                     detail="Storage service not configured"
                 )
             self._client = boto3.client(
                 "s3",
-                endpoint_url=self.settings.aws_s3_endpoint_url,
-                aws_access_key_id=self.settings.aws_access_key_id,
-                aws_secret_access_key=self.settings.aws_secret_access_key,
-                region_name=self.settings.aws_s3_region_name,
+                endpoint_url=self.settings.storage_endpoint_url,
+                aws_access_key_id=self.settings.storage_access_key,
+                aws_secret_access_key=self.settings.storage_secret_key,
+                region_name=self.settings.storage_region,
             )
         return self._client
 
     @property
     def bucket_name(self) -> str:
-        return self.settings.aws_s3_bucket_name
+        return self.settings.storage_bucket_name
 
     @property
     def cdn_base_url(self) -> str:
         """Get the CDN base URL for serving files."""
         # Digital Ocean Spaces CDN format
-        if self.settings.aws_s3_endpoint_url:
+        endpoint = self.settings.storage_endpoint_url
+        if endpoint and "digitaloceanspaces.com" in endpoint:
             # Convert endpoint to CDN URL
             # e.g., https://fra1.digitaloceanspaces.com -> https://bucket.fra1.cdn.digitaloceanspaces.com
-            endpoint = self.settings.aws_s3_endpoint_url.replace("https://", "")
-            region = endpoint.split(".")[0]
+            endpoint_host = endpoint.replace("https://", "")
+            region = endpoint_host.split(".")[0]
             return f"https://{self.bucket_name}.{region}.cdn.digitaloceanspaces.com"
         return f"https://{self.bucket_name}.s3.amazonaws.com"
 

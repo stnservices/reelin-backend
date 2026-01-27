@@ -38,11 +38,47 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
 
     # Storage (S3/DigitalOcean Spaces)
+    # Supports both AWS_* and DO_SPACES_* naming conventions
     aws_access_key_id: str = ""
     aws_secret_access_key: str = ""
     aws_s3_bucket_name: str = ""
     aws_s3_endpoint_url: str = ""
     aws_s3_region_name: str = ""
+    # DigitalOcean Spaces alternative names
+    do_spaces_key: str = ""
+    do_spaces_secret: str = ""
+    do_spaces_bucket: str = ""
+    do_spaces_region: str = ""
+
+    @property
+    def storage_access_key(self) -> str:
+        """Get storage access key (supports both AWS and DO naming)."""
+        return self.do_spaces_key or self.aws_access_key_id
+
+    @property
+    def storage_secret_key(self) -> str:
+        """Get storage secret key (supports both AWS and DO naming)."""
+        return self.do_spaces_secret or self.aws_secret_access_key
+
+    @property
+    def storage_bucket_name(self) -> str:
+        """Get storage bucket name (supports both AWS and DO naming)."""
+        return self.do_spaces_bucket or self.aws_s3_bucket_name
+
+    @property
+    def storage_region(self) -> str:
+        """Get storage region (supports both AWS and DO naming)."""
+        return self.do_spaces_region or self.aws_s3_region_name
+
+    @property
+    def storage_endpoint_url(self) -> str:
+        """Get storage endpoint URL (auto-generates for DO Spaces if not set)."""
+        if self.aws_s3_endpoint_url:
+            return self.aws_s3_endpoint_url
+        region = self.storage_region
+        if region:
+            return f"https://{region}.digitaloceanspaces.com"
+        return ""
 
     # Email (AWS SES SMTP)
     email_host: str = ""
