@@ -76,6 +76,27 @@ async def randomize_draw_numbers(db: AsyncSession, event_id: int) -> None:
         enrollment.draw_number = i
 
 
+async def reassign_enrollment_numbers(db: AsyncSession, event_id: int) -> None:
+    """
+    Reassign enrollment numbers sequentially (1, 2, 3...) for all active enrollments.
+    Orders by current enrollment_number to maintain relative order.
+    Called after a user is removed/rejected to eliminate gaps.
+    """
+    query = select(EventEnrollment).where(
+        EventEnrollment.event_id == event_id,
+        EventEnrollment.status.in_([
+            EnrollmentStatus.APPROVED.value,
+            EnrollmentStatus.PENDING.value,
+        ]),
+    ).order_by(EventEnrollment.enrollment_number.asc().nulls_last())
+
+    result = await db.execute(query)
+    enrollments = list(result.scalars().all())
+
+    for i, enrollment in enumerate(enrollments, start=1):
+        enrollment.enrollment_number = i
+
+
 def is_within_post_event_window(event: Event) -> bool:
     """
     Check if we're within the allowed time window for post-event actions.
@@ -211,9 +232,10 @@ async def ban_user_from_event(
     )
     db.add(ban)
 
-    # Randomize draw numbers if an enrollment was removed
+    # Randomize draw numbers and reassign enrollment numbers if an enrollment was removed
     if had_enrollment:
         await randomize_draw_numbers(db, event_id)
+        await reassign_enrollment_numbers(db, event_id)
 
     await db.commit()
 
@@ -810,8 +832,9 @@ async def update_enrollment(
         # Delete the enrollment
         await db.delete(enrollment)
 
-        # Randomize draw numbers for remaining enrollments
+        # Randomize draw numbers and reassign enrollment numbers for remaining enrollments
         await randomize_draw_numbers(db, event_id)
+        await reassign_enrollment_numbers(db, event_id)
 
         await db.commit()
 
@@ -953,8 +976,9 @@ async def delete_enrollment(
         # Organizers/admins can fully delete the enrollment
         event_id = enrollment.event_id
         await db.delete(enrollment)
-        # Randomize draw numbers for remaining active enrollments
+        # Randomize draw numbers and reassign enrollment numbers for remaining active enrollments
         await randomize_draw_numbers(db, event_id)
+        await reassign_enrollment_numbers(db, event_id)
         await db.commit()
         return {"message": "Enrollment removed successfully"}
     elif is_own_enrollment:
@@ -965,8 +989,9 @@ async def delete_enrollment(
                 detail="Can only cancel pending enrollments",
             )
         enrollment.status = EnrollmentStatus.CANCELLED.value
-        # Randomize draw numbers for remaining active enrollments
+        # Randomize draw numbers and reassign enrollment numbers for remaining active enrollments
         await randomize_draw_numbers(db, enrollment.event_id)
+        await reassign_enrollment_numbers(db, enrollment.event_id)
         await db.commit()
         return {"message": "Enrollment cancelled successfully"}
     else:
