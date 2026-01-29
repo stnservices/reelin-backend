@@ -222,6 +222,7 @@ async def ban_user_from_event(
     had_enrollment = enrollment is not None
     if enrollment:
         await db.delete(enrollment)
+        await db.flush()  # Ensure deletion is processed before reassigning numbers
 
     # Create ban
     ban = EventBan(
@@ -831,6 +832,7 @@ async def update_enrollment(
 
         # Delete the enrollment
         await db.delete(enrollment)
+        await db.flush()  # Ensure deletion is processed before reassigning numbers
 
         # Randomize draw numbers and reassign enrollment numbers for remaining enrollments
         await randomize_draw_numbers(db, event_id)
@@ -976,6 +978,7 @@ async def delete_enrollment(
         # Organizers/admins can fully delete the enrollment
         event_id = enrollment.event_id
         await db.delete(enrollment)
+        await db.flush()  # Ensure deletion is processed before reassigning numbers
         # Randomize draw numbers and reassign enrollment numbers for remaining active enrollments
         await randomize_draw_numbers(db, event_id)
         await reassign_enrollment_numbers(db, event_id)
@@ -989,6 +992,7 @@ async def delete_enrollment(
                 detail="Can only cancel pending enrollments",
             )
         enrollment.status = EnrollmentStatus.CANCELLED.value
+        await db.flush()  # Ensure status change is processed before reassigning numbers
         # Randomize draw numbers and reassign enrollment numbers for remaining active enrollments
         await randomize_draw_numbers(db, enrollment.event_id)
         await reassign_enrollment_numbers(db, enrollment.event_id)
