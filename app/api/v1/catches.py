@@ -1049,8 +1049,8 @@ async def revalidate_catch(
             detail="Only the event owner, assigned validator, or administrator can revalidate catches"
         )
 
-    # Check 72-hour window for finished events
-    if not is_within_post_event_window(event):
+    # Check 72-hour window for finished events (admins can bypass this)
+    if not is_admin and not is_within_post_event_window(event):
         deadline = get_post_event_deadline(event)
         raise HTTPException(
             status_code=400,
