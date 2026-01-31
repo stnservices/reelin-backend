@@ -93,14 +93,18 @@ def get_post_event_deadline(event: Event) -> datetime | None:
 async def list_catches(
     event_id: int,
     status_filter: CatchStatus | None = Query(None, alias="status"),
+    user_id: int | None = Query(None),
+    user_search: str | None = Query(None, description="Search by user name or email"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(get_current_user),
 ):
     """
-    List current user's catches for an event (for "My Catches" screen on mobile).
-    Validators use /catches/search endpoint for validation.
+    List catches for an event.
+    Validators see all catches.
+    Regular users see only approved catches (or their own).
+    Supports searching by user name or email (validators only).
     """
     # Check event exists
     event_query = select(Event).where(Event.id == event_id)
@@ -109,42 +113,114 @@ async def list_catches(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    # Build query - only current user's catches
+    # Check permissions
+    user_roles = set(current_user.profile.roles or []) if current_user.profile else set()
+    is_validator = bool(user_roles.intersection({"administrator", "validator", "organizer"}))
+
+    # Build base query - include AI analysis for validators
     query = (
         select(Catch)
         .options(
             selectinload(Catch.user).selectinload(UserAccount.profile),
             selectinload(Catch.fish),
             selectinload(Catch.validated_by),
+            selectinload(Catch.ai_analysis).selectinload(CatchAiAnalysis.detected_species),
         )
         .where(Catch.event_id == event_id)
-        .where(Catch.user_id == current_user.id)
     )
 
-    # Filter by status if provided
+    # Non-validators only see approved catches (or their own)
+    if not is_validator:
+        query = query.where(
+            (Catch.status == CatchStatus.APPROVED.value) |
+            (Catch.user_id == current_user.id)
+        )
+
+    # Filter by status (validators only)
     if status_filter:
-        query = query.where(Catch.status == status_filter.value)
+        if is_validator:
+            query = query.where(Catch.status == status_filter.value)
+        elif status_filter != CatchStatus.APPROVED:
+            # Non-validators can only filter their own non-approved catches
+            query = query.where(Catch.user_id == current_user.id)
+
+    # Filter by user ID
+    if user_id:
+        query = query.where(Catch.user_id == user_id)
+
+    # Filter by user name/email search (validators only)
+    # This is done in-memory after fetching due to joined table complexity
+    user_search_filter = None
+    if user_search and is_validator:
+        user_search_filter = user_search.lower()
 
     # Get total count
-    count_query = (
-        select(func.count(Catch.id))
-        .where(Catch.event_id == event_id)
-        .where(Catch.user_id == current_user.id)
-    )
-    if status_filter:
+    count_query = select(func.count(Catch.id)).where(Catch.event_id == event_id)
+    if not is_validator:
+        count_query = count_query.where(
+            (Catch.status == CatchStatus.APPROVED.value) |
+            (Catch.user_id == current_user.id)
+        )
+    if status_filter and is_validator:
         count_query = count_query.where(Catch.status == status_filter.value)
+    if user_id:
+        count_query = count_query.where(Catch.user_id == user_id)
 
     total_result = await db.execute(count_query)
     total = total_result.scalar()
 
-    # Paginate and fetch
-    offset = (page - 1) * page_size
-    query = query.order_by(Catch.submitted_at.desc()).offset(offset).limit(page_size)
-    result = await db.execute(query)
-    catches = result.scalars().all()
+    # Pagination - when using user_search, we need to fetch more and filter in-memory
+    if user_search_filter:
+        # Fetch all matching catches for in-memory filtering
+        query = query.order_by(Catch.submitted_at.desc())
+        result = await db.execute(query)
+        all_catches = result.scalars().all()
 
-    # Build response
-    items = [CatchDetailResponse.from_catch(c) for c in catches]
+        # Filter by user name/email
+        filtered_catches = []
+        for c in all_catches:
+            user_name = ""
+            user_email = c.user.email.lower() if c.user else ""
+            if c.user and c.user.profile:
+                user_name = f"{c.user.profile.first_name or ''} {c.user.profile.last_name or ''}".lower()
+            if user_search_filter in user_name or user_search_filter in user_email:
+                filtered_catches.append(c)
+
+        # Apply pagination to filtered results
+        total = len(filtered_catches)
+        offset = (page - 1) * page_size
+        catches = filtered_catches[offset : offset + page_size]
+    else:
+        # Standard pagination
+        offset = (page - 1) * page_size
+        query = query.order_by(Catch.submitted_at.desc()).offset(offset).limit(page_size)
+        result = await db.execute(query)
+        catches = result.scalars().all()
+
+    # Fetch enrollment info for all users in the catch list (for validators)
+    user_enrollment_map: dict[int, tuple[int | None, int | None]] = {}  # user_id -> (enrollment_id, draw_number)
+    if is_validator and catches:
+        user_ids = list(set(c.user_id for c in catches))
+        enrollment_query = select(EventEnrollment).where(
+            EventEnrollment.event_id == event_id,
+            EventEnrollment.user_id.in_(user_ids),
+        )
+        enrollment_result = await db.execute(enrollment_query)
+        enrollments = enrollment_result.scalars().all()
+        for e in enrollments:
+            # Map user to their enrollment_number and draw_number
+            user_enrollment_map[e.user_id] = (e.enrollment_number, e.draw_number)
+
+    # Build response items with enrollment info and AI analysis for validators
+    items = []
+    for c in catches:
+        enrollment_info = user_enrollment_map.get(c.user_id, (None, None))
+        items.append(CatchDetailResponse.from_catch(
+            c,
+            enrollment_number=enrollment_info[0],
+            draw_number=enrollment_info[1],
+            include_ai_analysis=is_validator,
+        ))
 
     return CatchListResponse(
         items=items,
