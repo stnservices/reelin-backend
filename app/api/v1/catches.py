@@ -94,6 +94,7 @@ async def list_catches(
     event_id: int,
     status_filter: CatchStatus | None = Query(None, alias="status"),
     user_id: int | None = Query(None),
+    only_mine: bool = Query(False, description="If true, only return current user's catches (for My Catches screen)"),
     user_search: str | None = Query(None, description="Search by user name or email"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -102,8 +103,9 @@ async def list_catches(
 ):
     """
     List catches for an event.
-    - Validators/admins/organizers see all catches (for web validation page).
-    - Regular users see only their own catches (for mobile My Catches screen).
+    - Use only_mine=true to get only the current user's catches (for My Catches screen).
+    - Validators/admins/organizers see all catches by default (for web validation page).
+    - Regular users see only their own catches.
     """
     # Check event exists
     event_query = select(Event).where(Event.id == event_id)
@@ -138,8 +140,12 @@ async def list_catches(
         .where(Catch.event_id == event_id)
     )
 
+    # only_mine=true overrides permissions - show only current user's catches
+    # This is used by mobile "My Catches" screen for validators who want to see their own catches
+    if only_mine:
+        query = query.where(Catch.user_id == current_user.id)
     # Regular users only see their own catches
-    if not can_see_all:
+    elif not can_see_all:
         query = query.where(Catch.user_id == current_user.id)
 
     # Filter by status
@@ -163,8 +169,10 @@ async def list_catches(
 
     # Get total count
     count_query = select(func.count(Catch.id)).where(Catch.event_id == event_id)
-    # Regular users only see their own catches
-    if not can_see_all:
+    # Apply same filtering as main query
+    if only_mine:
+        count_query = count_query.where(Catch.user_id == current_user.id)
+    elif not can_see_all:
         count_query = count_query.where(Catch.user_id == current_user.id)
     if status_filter:
         count_query = count_query.where(Catch.status == status_filter.value)
