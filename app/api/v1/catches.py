@@ -93,8 +93,7 @@ def get_post_event_deadline(event: Event) -> datetime | None:
 async def list_catches(
     event_id: int,
     status_filter: CatchStatus | None = Query(None, alias="status"),
-    user_id: int | None = Query(None),
-    only_mine: bool = Query(False, description="If true, only return current user's catches (for My Catches screen)"),
+    user_id: str | None = Query(None, description="Filter by user ID. Use 'me' for current user's catches only."),
     user_search: str | None = Query(None, description="Search by user name or email"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -103,7 +102,7 @@ async def list_catches(
 ):
     """
     List catches for an event.
-    - Use only_mine=true to get only the current user's catches (for My Catches screen).
+    - Use user_id=me to get only the current user's catches (for My Catches screen).
     - Validators/admins/organizers see all catches by default (for web validation page).
     - Regular users see only their own catches.
     """
@@ -128,6 +127,17 @@ async def list_catches(
     # Can see all catches if admin, event owner, or assigned validator
     can_see_all = is_admin or is_event_owner or is_assigned_validator
 
+    # Parse user_id parameter: "me" means current user, numeric string means specific user
+    filter_user_id: int | None = None
+    if user_id:
+        if user_id.lower() == "me":
+            filter_user_id = current_user.id
+        else:
+            try:
+                filter_user_id = int(user_id)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid user_id. Use 'me' or a numeric ID.")
+
     # Build base query - include AI analysis for validators
     query = (
         select(Catch)
@@ -140,10 +150,9 @@ async def list_catches(
         .where(Catch.event_id == event_id)
     )
 
-    # only_mine=true overrides permissions - show only current user's catches
-    # This is used by mobile "My Catches" screen for validators who want to see their own catches
-    if only_mine:
-        query = query.where(Catch.user_id == current_user.id)
+    # user_id filter takes priority (e.g., user_id=me for My Catches screen)
+    if filter_user_id:
+        query = query.where(Catch.user_id == filter_user_id)
     # Regular users only see their own catches
     elif not can_see_all:
         query = query.where(Catch.user_id == current_user.id)
@@ -170,8 +179,8 @@ async def list_catches(
     # Get total count
     count_query = select(func.count(Catch.id)).where(Catch.event_id == event_id)
     # Apply same filtering as main query
-    if only_mine:
-        count_query = count_query.where(Catch.user_id == current_user.id)
+    if filter_user_id:
+        count_query = count_query.where(Catch.user_id == filter_user_id)
     elif not can_see_all:
         count_query = count_query.where(Catch.user_id == current_user.id)
     if status_filter:
