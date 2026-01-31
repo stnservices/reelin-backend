@@ -206,8 +206,10 @@ class ContentModerationService:
         """
         from google.cloud import vision
 
-        # Create fresh client each time to avoid event loop issues in Celery
-        client = vision.ImageAnnotatorClient()
+        # Reuse cached client to avoid memory accumulation from creating new gRPC clients
+        client = self._get_vision_client()
+        if client is None:
+            raise Exception("Vision client not available")
 
         image = vision.Image()
         image.source.image_uri = image_url
