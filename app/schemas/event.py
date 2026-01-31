@@ -406,7 +406,7 @@ class EventResponse(BaseModel):
     slug: str
     description: Optional[str] = None
     event_type: EventTypeResponse
-    scoring_config: ScoringConfigResponse
+    scoring_config: Optional[ScoringConfigResponse] = None  # Optional for TA events
     start_date: datetime
     end_date: datetime
     registration_deadline: Optional[datetime] = None
