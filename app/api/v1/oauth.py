@@ -436,12 +436,20 @@ async def facebook_mobile_auth(
     Supports two modes:
     - Regular login: access_token verified via Graph API
     - Limited Login (iOS): OIDC token (JWT) decoded for user info
+
+    Auto-detection: If the token looks like a JWT, try decoding it first.
+    This handles cases where iOS forces Limited Login even if the app
+    didn't explicitly request it.
     """
     try:
         user_info = {}
         avatar_url = None
 
-        if request_body.is_limited_login:
+        # Auto-detect if token is a JWT (has 3 dot-separated parts)
+        token_parts = request_body.access_token.split('.')
+        is_jwt_token = len(token_parts) == 3 and all(part for part in token_parts)
+
+        if request_body.is_limited_login or is_jwt_token:
             # iOS Limited Login: token is an OIDC JWT
             # Decode the JWT to extract user info (without verification since it comes from Facebook SDK)
             import jwt
@@ -468,12 +476,12 @@ async def facebook_mobile_auth(
                 logger.info(f"Facebook Limited Login: decoded JWT for user {user_info.get('id')}")
 
             except jwt.DecodeError as e:
-                logger.error(f"Failed to decode Facebook OIDC token: {e}")
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid Facebook authentication token",
-                )
-        else:
+                logger.warning(f"Failed to decode Facebook token as JWT: {e}, falling back to Graph API")
+                # Fall through to Graph API verification
+                user_info = {}
+
+        # If we don't have user info yet (not JWT or JWT decode failed), try Graph API
+        if not user_info.get("id"):
             # Regular login: verify access token with Facebook Graph API
             async with httpx.AsyncClient() as client:
                 response = await client.get(
