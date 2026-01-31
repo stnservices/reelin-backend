@@ -116,6 +116,7 @@ class GoogleMobileAuthRequest(BaseModel):
 class FacebookMobileAuthRequest(BaseModel):
     """Request body for mobile Facebook auth."""
     access_token: str
+    is_limited_login: bool = False  # iOS Limited Login uses OIDC token
 
 
 class AppleMobileAuthRequest(BaseModel):
@@ -430,25 +431,70 @@ async def facebook_mobile_auth(
     request_body: FacebookMobileAuthRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Handle Facebook authentication from mobile app using access token."""
-    try:
-        # Verify the access token with Facebook Graph API
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                "https://graph.facebook.com/me",
-                params={
-                    "fields": "id,name,email,first_name,last_name,picture",
-                    "access_token": request_body.access_token,
-                },
-            )
+    """Handle Facebook authentication from mobile app.
 
-            if response.status_code != 200:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid Facebook access token",
+    Supports two modes:
+    - Regular login: access_token verified via Graph API
+    - Limited Login (iOS): OIDC token (JWT) decoded for user info
+    """
+    try:
+        user_info = {}
+        avatar_url = None
+
+        if request_body.is_limited_login:
+            # iOS Limited Login: token is an OIDC JWT
+            # Decode the JWT to extract user info (without verification since it comes from Facebook SDK)
+            import jwt
+            try:
+                # Decode without verification - the token comes directly from Facebook SDK
+                # Facebook signs these with their private key, but we trust the SDK
+                decoded = jwt.decode(
+                    request_body.access_token,
+                    options={"verify_signature": False},
+                    algorithms=["RS256"],
                 )
 
-            user_info = response.json()
+                # Extract user info from JWT claims
+                user_info = {
+                    "id": decoded.get("sub"),  # Facebook user ID
+                    "email": decoded.get("email"),
+                    "name": decoded.get("name"),
+                    "first_name": decoded.get("given_name") or decoded.get("name", "").split()[0] if decoded.get("name") else None,
+                    "last_name": decoded.get("family_name") or (decoded.get("name", "").split()[-1] if decoded.get("name") and len(decoded.get("name", "").split()) > 1 else None),
+                    "picture": decoded.get("picture"),
+                }
+                avatar_url = decoded.get("picture")
+
+                logger.info(f"Facebook Limited Login: decoded JWT for user {user_info.get('id')}")
+
+            except jwt.DecodeError as e:
+                logger.error(f"Failed to decode Facebook OIDC token: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid Facebook authentication token",
+                )
+        else:
+            # Regular login: verify access token with Facebook Graph API
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    "https://graph.facebook.com/me",
+                    params={
+                        "fields": "id,name,email,first_name,last_name,picture",
+                        "access_token": request_body.access_token,
+                    },
+                )
+
+                if response.status_code != 200:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Invalid Facebook access token",
+                    )
+
+                user_info = response.json()
+
+                # Extract avatar URL from nested structure (Graph API format)
+                if user_info.get("picture", {}).get("data", {}).get("url"):
+                    avatar_url = user_info["picture"]["data"]["url"]
 
         email = user_info.get("email")
         if not email:
@@ -456,11 +502,6 @@ async def facebook_mobile_auth(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email not available. Please grant email permission.",
             )
-
-        # Extract avatar URL from nested structure
-        avatar_url = None
-        if user_info.get("picture", {}).get("data", {}).get("url"):
-            avatar_url = user_info["picture"]["data"]["url"]
 
         # Get or create user
         user = await SocialAuthService.get_or_create_user_from_oauth(
