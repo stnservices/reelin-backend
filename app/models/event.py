@@ -134,9 +134,9 @@ class Event(Base):
     event_type_id: Mapped[int] = mapped_column(
         ForeignKey("event_types.id", ondelete="RESTRICT"), nullable=False, index=True
     )
-    scoring_config_id: Mapped[int] = mapped_column(
-        ForeignKey("scoring_configs.id", ondelete="RESTRICT"), nullable=False, index=True
-    )
+    scoring_config_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("scoring_configs.id", ondelete="RESTRICT"), nullable=True, index=True
+    )  # Required for SF events, optional for TA events
 
     # Schedule
     start_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

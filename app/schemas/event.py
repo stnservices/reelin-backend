@@ -217,7 +217,7 @@ class EventCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     description: Optional[str] = None
     event_type_id: int
-    scoring_config_id: int
+    scoring_config_id: Optional[int] = None  # Required for SF, optional for TA
     start_date: datetime
     end_date: datetime
     registration_deadline: Optional[datetime] = None

@@ -993,27 +993,38 @@ async def create_event(
                     detail="You don't have permission to create national events. Contact the platform administrator for access.",
                 )
 
-    # Verify scoring config exists
-    scoring_config_query = select(ScoringConfig).where(
-        ScoringConfig.id == event_data.scoring_config_id
-    )
-    scoring_config_result = await db.execute(scoring_config_query)
-    scoring_config = scoring_config_result.scalar_one_or_none()
-    if not scoring_config:
+    # Verify scoring config (required for SF events, optional for TA)
+    scoring_config = None
+    is_sf_event = event_type.format_code == "sf"
+
+    if event_data.scoring_config_id:
+        scoring_config_query = select(ScoringConfig).where(
+            ScoringConfig.id == event_data.scoring_config_id
+        )
+        scoring_config_result = await db.execute(scoring_config_query)
+        scoring_config = scoring_config_result.scalar_one_or_none()
+        if not scoring_config:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Invalid scoring configuration",
+            )
+    elif is_sf_event:
+        # SF events require a scoring config
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST,
-            detail="Invalid scoring configuration",
+            detail="Scoring configuration is required for Street Fishing events",
         )
 
-    # Validate top_x_overall is required for "Top X Overall" scoring types
-    is_top_x_overall_scoring = (
-        "top_x_overall" in scoring_config.code or "top_n_overall" in scoring_config.code
-    )
-    if is_top_x_overall_scoring and not event_data.top_x_overall:
-        raise HTTPException(
-            status_code=http_status.HTTP_400_BAD_REQUEST,
-            detail="Top X value is required for this scoring type",
+    # Validate top_x_overall is required for "Top X Overall" scoring types (SF only)
+    if scoring_config:
+        is_top_x_overall_scoring = (
+            "top_x_overall" in scoring_config.code or "top_n_overall" in scoring_config.code
         )
+        if is_top_x_overall_scoring and not event_data.top_x_overall:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Top X value is required for this scoring type",
+            )
 
     # Determine rule_id (use provided or auto-apply default)
     rule_id = event_data.rule_id
