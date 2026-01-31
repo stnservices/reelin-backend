@@ -26,8 +26,14 @@ celery_app = Celery(
 
 # Celery configuration
 celery_app.conf.update(
-    # Connection settings
+    # Connection settings (from Django config)
     broker_connection_retry_on_startup=True,
+    broker_heartbeat=30,  # Connection health checks
+    broker_pool_limit=None,  # Unlimited connections
+    broker_transport_options={
+        "visibility_timeout": 3600,  # 1 hour - task re-queue timeout
+        "health_check_interval": 30,
+    },
 
     # Task settings
     task_serializer="json",
@@ -39,6 +45,8 @@ celery_app.conf.update(
     # Task execution settings
     task_acks_late=True,
     task_reject_on_worker_lost=True,
+    task_time_limit=300,  # 5 min hard limit per task (from Django)
+    task_soft_time_limit=240,  # 4 min soft limit - allows graceful shutdown
 
     # Retry settings
     task_default_retry_delay=5,
