@@ -166,10 +166,6 @@ async def list_catches(
             query = query.where(Catch.user_id == current_user.id)
             query = query.where(Catch.status == status_filter.value)
 
-    # Filter by user ID
-    if user_id:
-        query = query.where(Catch.user_id == user_id)
-
     # Filter by user name/email search (admin/owner/validator only)
     # This is done in-memory after fetching due to joined table complexity
     user_search_filter = None
@@ -185,8 +181,6 @@ async def list_catches(
         count_query = count_query.where(Catch.user_id == current_user.id)
     if status_filter:
         count_query = count_query.where(Catch.status == status_filter.value)
-    if user_id:
-        count_query = count_query.where(Catch.user_id == user_id)
 
     total_result = await db.execute(count_query)
     total = total_result.scalar()
