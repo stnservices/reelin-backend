@@ -94,7 +94,6 @@ async def list_catches(
     event_id: int,
     status_filter: CatchStatus | None = Query(None, alias="status"),
     user_id: int | None = Query(None),
-    only_mine: bool = Query(False, description="If true, only return current user's catches (for My Catches screen)"),
     user_search: str | None = Query(None, description="Search by user name or email"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -103,9 +102,8 @@ async def list_catches(
 ):
     """
     List catches for an event.
-    - Use only_mine=true to get only the current user's catches (for My Catches screen).
-    - Validators see all catches by default (for validation page).
-    - Regular users see approved catches + their own.
+    - Validators/admins/organizers see all catches (for web validation page).
+    - Regular users see only their own catches (for mobile My Catches screen).
     """
     # Check event exists
     event_query = select(Event).where(Event.id == event_id)
@@ -130,15 +128,9 @@ async def list_catches(
         .where(Catch.event_id == event_id)
     )
 
-    # only_mine=true overrides all other filters - show only current user's catches
-    if only_mine:
+    # Non-validators (mobile users) only see their own catches
+    if not is_validator:
         query = query.where(Catch.user_id == current_user.id)
-    # Non-validators only see approved catches (or their own)
-    elif not is_validator:
-        query = query.where(
-            (Catch.status == CatchStatus.APPROVED.value) |
-            (Catch.user_id == current_user.id)
-        )
 
     # Filter by status (validators only)
     if status_filter:
@@ -160,13 +152,9 @@ async def list_catches(
 
     # Get total count
     count_query = select(func.count(Catch.id)).where(Catch.event_id == event_id)
-    if only_mine:
+    # Non-validators only see their own catches
+    if not is_validator:
         count_query = count_query.where(Catch.user_id == current_user.id)
-    elif not is_validator:
-        count_query = count_query.where(
-            (Catch.status == CatchStatus.APPROVED.value) |
-            (Catch.user_id == current_user.id)
-        )
     if status_filter:
         count_query = count_query.where(Catch.status == status_filter.value)
     if user_id:
