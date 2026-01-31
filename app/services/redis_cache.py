@@ -49,6 +49,8 @@ class RedisCache:
                 settings.redis_url,
                 encoding="utf-8",
                 decode_responses=True,
+                socket_timeout=5.0,  # 5 second timeout for operations
+                socket_connect_timeout=5.0,  # 5 second timeout for connection
             )
             self._event_loop_id = current_loop_id
         return self._redis
