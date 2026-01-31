@@ -112,9 +112,19 @@ async def list_catches(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    # Check permissions
+    # Check permissions - must be admin, event owner, or assigned validator
     user_roles = set(current_user.profile.roles or []) if current_user.profile else set()
-    is_validator = bool(user_roles.intersection({"administrator", "validator", "organizer"}))
+
+    is_admin = "administrator" in user_roles
+    is_event_owner = event.created_by_id == current_user.id
+
+    # Check if user is an assigned validator for this specific event
+    is_assigned_validator = False
+    if "validator" in user_roles:
+        is_assigned_validator = await check_is_event_validator(event_id, current_user.id, db)
+
+    # Can see all catches if admin, event owner, or assigned validator
+    can_see_all = is_admin or is_event_owner or is_assigned_validator
 
     # Build base query - include AI analysis for validators
     query = (
@@ -128,32 +138,33 @@ async def list_catches(
         .where(Catch.event_id == event_id)
     )
 
-    # Non-validators (mobile users) only see their own catches
-    if not is_validator:
+    # Regular users only see their own catches
+    if not can_see_all:
         query = query.where(Catch.user_id == current_user.id)
 
-    # Filter by status (validators only)
+    # Filter by status
     if status_filter:
-        if is_validator:
+        if can_see_all:
             query = query.where(Catch.status == status_filter.value)
-        elif status_filter != CatchStatus.APPROVED:
-            # Non-validators can only filter their own non-approved catches
+        else:
+            # Regular users can only filter their own catches
             query = query.where(Catch.user_id == current_user.id)
+            query = query.where(Catch.status == status_filter.value)
 
     # Filter by user ID
     if user_id:
         query = query.where(Catch.user_id == user_id)
 
-    # Filter by user name/email search (validators only)
+    # Filter by user name/email search (admin/owner/validator only)
     # This is done in-memory after fetching due to joined table complexity
     user_search_filter = None
-    if user_search and is_validator:
+    if user_search and can_see_all:
         user_search_filter = user_search.lower()
 
     # Get total count
     count_query = select(func.count(Catch.id)).where(Catch.event_id == event_id)
-    # Non-validators only see their own catches
-    if not is_validator:
+    # Regular users only see their own catches
+    if not can_see_all:
         count_query = count_query.where(Catch.user_id == current_user.id)
     if status_filter:
         count_query = count_query.where(Catch.status == status_filter.value)
@@ -191,9 +202,9 @@ async def list_catches(
         result = await db.execute(query)
         catches = result.scalars().all()
 
-    # Fetch enrollment info for all users in the catch list (for validators)
+    # Fetch enrollment info for all users in the catch list (for admin/owner/validator)
     user_enrollment_map: dict[int, tuple[int | None, int | None]] = {}  # user_id -> (enrollment_id, draw_number)
-    if is_validator and catches:
+    if can_see_all and catches:
         user_ids = list(set(c.user_id for c in catches))
         enrollment_query = select(EventEnrollment).where(
             EventEnrollment.event_id == event_id,
@@ -205,7 +216,7 @@ async def list_catches(
             # Map user to their enrollment_number and draw_number
             user_enrollment_map[e.user_id] = (e.enrollment_number, e.draw_number)
 
-    # Build response items with enrollment info and AI analysis for validators
+    # Build response items with enrollment info and AI analysis
     items = []
     for c in catches:
         enrollment_info = user_enrollment_map.get(c.user_id, (None, None))
@@ -213,7 +224,7 @@ async def list_catches(
             c,
             enrollment_number=enrollment_info[0],
             draw_number=enrollment_info[1],
-            include_ai_analysis=is_validator,
+            include_ai_analysis=can_see_all,
         ))
 
     return CatchListResponse(
