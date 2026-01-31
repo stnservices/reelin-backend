@@ -484,7 +484,7 @@ async def get_event_stats(
             "start_date": event.start_date.isoformat(),
             "end_date": event.end_date.isoformat(),
             "event_type": event.event_type.name,
-            "scoring_method": event.scoring_config.code,  # Use code as scoring method identifier
+            "scoring_method": event.scoring_config.code if event.scoring_config else None,
             "top_x_overall": event.top_x_overall,
             "has_bonus_points": event.has_bonus_points,
         },
