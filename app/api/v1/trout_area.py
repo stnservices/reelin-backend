@@ -2152,6 +2152,12 @@ async def list_matches(
     """
     await get_ta_event(event_id, db, request)
 
+    # Short-lived cache to prevent API loops from mobile clients
+    cache_key = f"ta:matches:{event_id}:{phase.value if phase else 'all'}:{leg_number or 'all'}:{status_filter or 'all'}"
+    cached = await redis_cache.get(cache_key)
+    if cached:
+        return cached
+
     query = (
         select(TAMatch)
         .options(
@@ -2223,11 +2229,17 @@ async def list_matches(
             by_leg[leg_num] = []
         by_leg[leg_num].append(item)
 
-    return {
-        "items": items,
+    # Build response
+    response = {
+        "items": [item.model_dump() for item in items],
         "total": len(items),
-        "by_leg": by_leg,
+        "by_leg": {k: [m.model_dump() for m in v] for k, v in by_leg.items()},
     }
+
+    # Cache for 5 seconds to prevent API loops
+    await redis_cache.set(cache_key, response, ttl=5)
+
+    return response
 
 
 # NOTE: This export route MUST be defined before /matches/{match_id} to avoid
