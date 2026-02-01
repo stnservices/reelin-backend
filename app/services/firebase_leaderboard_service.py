@@ -60,9 +60,11 @@ def sync_leaderboard_to_firebase(
         True if synced successfully, False otherwise.
     """
     if not _ensure_firebase_ready():
+        logger.warning(f"Firebase not ready, skipping leaderboard sync for event {event_id}")
         return False
 
     try:
+        logger.info(f"Syncing leaderboard to Firebase for event {event_id} ({len(leaderboard_data.get('entries', []))} entries)")
         ref = firebase_db.reference(f'events/{event_id}')
         now_ms = int(time.time() * 1000)
 
@@ -106,7 +108,7 @@ def sync_leaderboard_to_firebase(
 
         # Write leaderboard
         ref.child("leaderboard").set(firebase_leaderboard)
-        logger.debug(f"Leaderboard synced to Firebase for event {event_id}")
+        logger.info(f"Leaderboard synced to Firebase for event {event_id}")
 
         # Write movements (keep last 10)
         if movements:
