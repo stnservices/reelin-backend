@@ -1127,6 +1127,10 @@ async def create_event(
         registration_deadline=event_data.registration_deadline,
         location_id=event_data.location_id,
         location_name=event_data.location_name,
+        # Meeting point
+        meeting_point_lat=event_data.meeting_point_lat,
+        meeting_point_lng=event_data.meeting_point_lng,
+        meeting_point_address=event_data.meeting_point_address,
         max_participants=event_data.max_participants,
         requires_approval=event_data.requires_approval,
         top_x_overall=event_data.top_x_overall,
@@ -1138,9 +1142,19 @@ async def create_event(
         max_team_size=event_data.max_team_size,
         rule_id=rule_id,
         rules=event_data.rules,
+        image_url=event_data.image_url,
         allow_gallery_upload=event_data.allow_gallery_upload,
         allowed_media_type=event_data.allowed_media_type,
         max_video_duration=event_data.max_video_duration,
+        # AI Analysis settings
+        use_ai_analysis=event_data.use_ai_analysis,
+        use_ml_auto_validation=event_data.use_ml_auto_validation,
+        ml_confidence_threshold=event_data.ml_confidence_threshold,
+        # Participation fee
+        participation_fee=event_data.participation_fee,
+        participation_fee_currency_id=event_data.participation_fee_currency_id,
+        # Test event flag
+        is_test=event_data.is_test,
         created_by_id=current_user.id,
         billing_profile_id=billing_profile_id,
         status=EventStatus.DRAFT.value,

@@ -253,6 +253,8 @@ class EventCreate(BaseModel):
     ml_confidence_threshold: float = Field(0.85, ge=0.0, le=1.0)
     # Test event flag - test events are excluded from stats, achievements, rankings
     is_test: bool = False
+    # Event image URL (uploaded via /v1/uploads endpoint first)
+    image_url: Optional[str] = None
     prizes: Optional[List[EventPrizeCreate]] = None
     scoring_rules: Optional[List[EventScoringRuleCreate]] = None
     fish_scoring: Optional[List[EventFishScoringCreate]] = None  # Fish species config
