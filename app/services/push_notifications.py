@@ -87,10 +87,18 @@ def initialize_firebase() -> bool:
         firebase_credentials = json.loads(settings.firebase_credentials)
         cred = credentials.Certificate(firebase_credentials)
 
-        firebase_admin.initialize_app(cred)
+        # Initialize with database URL if configured (for Realtime Database)
+        options = {}
+        if settings.firebase_database_url:
+            options['databaseURL'] = settings.firebase_database_url
+
+        firebase_admin.initialize_app(cred, options if options else None)
 
         _firebase_initialized = True
-        logger.info("Firebase Admin SDK initialized successfully (FCM only)")
+        if settings.firebase_database_url:
+            logger.info("Firebase Admin SDK initialized (FCM + Realtime Database)")
+        else:
+            logger.info("Firebase Admin SDK initialized (FCM only)")
         return True
 
     except json.JSONDecodeError as e:
