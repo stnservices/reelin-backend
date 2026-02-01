@@ -1250,8 +1250,12 @@ async def update_event_settings(
     update_data = data.model_dump(exclude_unset=True)
 
     # Guard: has_knockout_bracket can only be modified in DRAFT status
+    # Only enforce if the value is actually changing (not just present in request)
     if "has_knockout_bracket" in update_data:
-        require_draft_status(event, action="modify knockout bracket setting")
+        current_value = settings.has_knockout_stage if settings else None
+        new_value = update_data["has_knockout_bracket"]
+        if current_value != new_value:
+            require_draft_status(event, action="modify knockout bracket setting")
 
     # Field mappings: API field name -> model field name
     field_mappings = {
@@ -1863,6 +1867,25 @@ async def generate_lineups(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=get_error_message("ta_not_enough_participants", request, min=2),
         )
+
+    # Validate participant count for knockout bracket requirements
+    if settings and settings.has_knockout_stage:
+        if settings.has_requalification:
+            # Standard 6-player bracket: 1st, 2nd go to semis, 3rd-6th play requalification
+            min_participants = 6
+            if len(enrollments) < min_participants:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Knockout bracket with requalification requires at least {min_participants} approved participants. Currently have {len(enrollments)}.",
+                )
+        else:
+            # Simple knockout without requalification needs at least 4
+            min_participants = 4
+            if len(enrollments) < min_participants:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Knockout bracket requires at least {min_participants} approved participants. Currently have {len(enrollments)}.",
+                )
 
     # Prepare participants for pairing service
     participants = []
