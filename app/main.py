@@ -34,19 +34,20 @@ from app.api.admin import router as admin_router
 
 settings = get_settings()
 
-# Initialize Sentry for error monitoring
-sentry_sdk.init(
-    dsn="https://0ea62bf0923d361649015dfab40dcac0@o4507476114800640.ingest.de.sentry.io/4510609416192080",
-    send_default_pii=True,
-    traces_sample_rate=0.1,
-    profiles_sample_rate=0.1,
-    environment="production",
-    release=f"reelin-backend@{settings.app_version}",
-    integrations=[
-        FastApiIntegration(),
-        SqlalchemyIntegration(),
-    ],
-)
+# Initialize Sentry for error monitoring (only if DSN is configured)
+if settings.sentry_dsn:
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        send_default_pii=True,
+        traces_sample_rate=0.1,
+        profiles_sample_rate=0.1,
+        environment=settings.sentry_environment,
+        release=f"reelin-backend@{settings.app_version}",
+        integrations=[
+            FastApiIntegration(),
+            SqlalchemyIntegration(),
+        ],
+    )
 
 
 @asynccontextmanager

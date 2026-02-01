@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     debug: bool = True
     cors_origins: str = "http://localhost:3000"
 
+    # Monitoring
+    sentry_dsn: str = ""  # Sentry DSN for error tracking
+    sentry_environment: str = "development"  # development, staging, production
+
     # Storage (S3/DigitalOcean Spaces)
     # Supports both AWS_* and DO_SPACES_* naming conventions
     aws_access_key_id: str = ""
