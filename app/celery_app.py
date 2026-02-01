@@ -3,11 +3,7 @@
 import os
 import ssl
 
-# For gevent pool: Celery handles monkey patching automatically with -P gevent
-# We just need nest_asyncio to allow asyncio.run() inside tasks
-if os.getenv("CELERY_WORKER"):
-    import nest_asyncio
-    nest_asyncio.apply()
+# Solo pool (-P solo) works with async code without patching
 
 from celery import Celery
 
