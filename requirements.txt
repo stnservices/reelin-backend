@@ -53,6 +53,7 @@ slowapi==0.1.9
 redis==5.2.1
 celery[redis]==5.4.0
 gevent==24.2.1
+nest-asyncio==1.6.0
 
 # Payments
 stripe==11.3.0

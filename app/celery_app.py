@@ -8,6 +8,9 @@ import ssl
 if os.getenv("CELERY_WORKER"):
     from gevent import monkey
     monkey.patch_all()
+    # Allow nested asyncio event loops (required for async tasks with gevent)
+    import nest_asyncio
+    nest_asyncio.apply()
 
 from celery import Celery
 
