@@ -7,7 +7,9 @@ import ssl
 # Only patch when running as Celery worker with gevent pool
 if os.getenv("CELERY_WORKER"):
     from gevent import monkey
-    monkey.patch_all()
+    # Exclude queue and thread to avoid breaking FastAPI/asyncio
+    # See: https://github.com/apache/airflow/issues/60144
+    monkey.patch_all(queue=False, thread=False)
     # Allow nested asyncio event loops (required for async tasks with gevent)
     import nest_asyncio
     nest_asyncio.apply()
