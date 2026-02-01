@@ -19,8 +19,10 @@ _firebase_initialized = False
 # Increase to avoid "Connection pool is full" warnings when sending many notifications
 FIREBASE_POOL_SIZE = 100
 
-# Configure larger connection pool at module load time
-# This affects all HTTP requests using the requests library
+# Track if connection pool has been configured
+_pool_configured = False
+
+
 def _configure_connection_pool():
     """Configure larger connection pool for HTTP requests.
 
@@ -30,6 +32,10 @@ def _configure_connection_pool():
 
     We monkey-patch HTTPAdapter's __init__ to use larger pool sizes.
     """
+    global _pool_configured
+    if _pool_configured:
+        return
+
     try:
         from requests.adapters import HTTPAdapter
 
@@ -42,12 +48,10 @@ def _configure_connection_pool():
                           pool_block=pool_block)
 
         HTTPAdapter.__init__ = _patched_init
+        _pool_configured = True
         logger.info(f"Configured HTTP connection pool size: {FIREBASE_POOL_SIZE}")
     except Exception as e:
         logger.warning(f"Could not configure connection pool: {e}")
-
-# Configure on module load
-_configure_connection_pool()
 
 
 def initialize_firebase() -> bool:
@@ -57,6 +61,9 @@ def initialize_firebase() -> bool:
         True if initialized successfully, False otherwise.
     """
     global _firebase_initialized
+
+    # Configure connection pool on first use (lazy loading)
+    _configure_connection_pool()
 
     if _firebase_initialized:
         return True

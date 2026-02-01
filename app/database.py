@@ -32,26 +32,32 @@ sync_engine = create_engine(
     max_overflow=DB_SYNC_MAX_OVERFLOW,
 )
 
-# Create async engine
-# With PgBouncer transaction pooling, SQLAlchemy pool is a secondary buffer
-# Connections are quickly returned to PgBouncer after each request
-engine = create_async_engine(
-    settings.database_url,
-    echo=settings.debug,
-    pool_pre_ping=True,
-    pool_size=DB_POOL_SIZE,
-    max_overflow=DB_MAX_OVERFLOW,
-    pool_timeout=DB_POOL_TIMEOUT,
-)
+# Create async engine only if NOT in Celery worker
+# Celery uses sync_engine and CelerySessionContext, not the global async engine
+# This saves ~20MB of memory in Celery workers
+if not os.getenv("CELERY_WORKER"):
+    # With PgBouncer transaction pooling, SQLAlchemy pool is a secondary buffer
+    # Connections are quickly returned to PgBouncer after each request
+    engine = create_async_engine(
+        settings.database_url,
+        echo=settings.debug,
+        pool_pre_ping=True,
+        pool_size=DB_POOL_SIZE,
+        max_overflow=DB_MAX_OVERFLOW,
+        pool_timeout=DB_POOL_TIMEOUT,
+    )
 
-# Create async session factory
-async_session_maker = async_sessionmaker(
-    engine,
-    class_=AsyncSession,
-    expire_on_commit=False,
-    autocommit=False,
-    autoflush=False,
-)
+    # Create async session factory
+    async_session_maker = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autocommit=False,
+        autoflush=False,
+    )
+else:
+    engine = None
+    async_session_maker = None
 
 
 class Base(DeclarativeBase):
