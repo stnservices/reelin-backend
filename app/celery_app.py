@@ -3,14 +3,9 @@
 import os
 import ssl
 
-# Monkey-patch for gevent compatibility (must be done before other imports)
-# Only patch when running as Celery worker with gevent pool
+# For gevent pool: Celery handles monkey patching automatically with -P gevent
+# We just need nest_asyncio to allow asyncio.run() inside tasks
 if os.getenv("CELERY_WORKER"):
-    from gevent import monkey
-    # Exclude queue and thread to avoid breaking FastAPI/asyncio
-    # See: https://github.com/apache/airflow/issues/60144
-    monkey.patch_all(queue=False, thread=False)
-    # Allow nested asyncio event loops (required for async tasks with gevent)
     import nest_asyncio
     nest_asyncio.apply()
 
