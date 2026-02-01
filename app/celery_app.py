@@ -41,13 +41,6 @@ celery_app.conf.update(
     broker_transport_options={
         "visibility_timeout": 3600,  # 1 hour - task re-queue timeout
         "health_check_interval": 30,
-        # Socket keepalive to prevent DigitalOcean managed Redis from closing idle connections
-        "socket_keepalive": True,
-        "socket_keepalive_options": {
-            1: 60,   # TCP_KEEPIDLE: Start keepalive after 60 seconds idle
-            2: 15,   # TCP_KEEPINTVL: Interval between keepalive probes
-            3: 4,    # TCP_KEEPCNT: Number of failed probes before disconnect
-        },
     },
 
     # Task settings
