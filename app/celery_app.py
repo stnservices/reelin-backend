@@ -3,12 +3,6 @@
 import os
 import ssl
 
-# Monkey-patch for gevent compatibility (must be done before other imports)
-# Only patch when running as Celery worker with gevent pool
-if os.getenv("CELERY_WORKER"):
-    from gevent import monkey
-    monkey.patch_all()
-
 from celery import Celery
 
 from app.config import get_settings
