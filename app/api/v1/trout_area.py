@@ -39,6 +39,7 @@ from app.core.permissions import OrganizerOrAdmin, EventOwnerOrAdmin
 from app.core.i18n import get_error_message
 from app.core.exceptions import NotFoundError, ValidationError, ConflictError
 from app.services.redis_cache import redis_cache
+from app.services.firebase_leaderboard_service import sync_ta_standings_to_firebase
 from app.utils.lifecycle_guards import require_modifiable_status, require_draft_status
 
 from app.models.user import UserAccount, UserProfile
@@ -643,6 +644,77 @@ def map_pairing_algorithm(api_algo: PairingAlgorithmAPI) -> PairingAlgorithm:
     return mapping[api_algo]
 
 
+async def _sync_ta_standings_to_firebase(db: AsyncSession, event_id: int) -> None:
+    """Sync TA standings to Firebase for real-time web updates."""
+    try:
+        # Get standings
+        standings_query = select(TAQualifierStanding).where(
+            TAQualifierStanding.event_id == event_id
+        ).order_by(TAQualifierStanding.rank)
+        result = await db.execute(standings_query)
+        standings_rows = result.scalars().all()
+
+        # Get TA settings
+        settings_query = select(TAEventSettings).where(TAEventSettings.event_id == event_id)
+        settings_result = await db.execute(settings_query)
+        settings = settings_result.scalar_one_or_none()
+
+        current_phase = settings.current_phase if settings else "qualifier"
+        total_legs = settings.total_legs if settings else 0
+        has_knockout = settings.has_knockout_bracket if settings else False
+
+        # Count completed legs
+        completed_query = select(func.count(func.distinct(TAGameCard.leg_number))).where(
+            TAGameCard.event_id == event_id,
+            TAGameCard.status == TAGameCardStatus.COMPLETED.value,
+        )
+        completed_result = await db.execute(completed_query)
+        completed_legs = completed_result.scalar() or 0
+
+        # Current leg
+        current_leg_query = select(func.max(TAGameCard.leg_number)).where(
+            TAGameCard.event_id == event_id,
+            TAGameCard.phase == current_phase,
+        )
+        current_leg_result = await db.execute(current_leg_query)
+        current_leg = current_leg_result.scalar() or 1
+
+        # Build standings list with display names
+        standings_list = []
+        for standing in standings_rows:
+            profile_query = select(UserProfile).where(UserProfile.user_id == standing.user_id)
+            profile_result = await db.execute(profile_query)
+            profile = profile_result.scalar_one_or_none()
+
+            display_name = profile.display_name if profile else f"User {standing.user_id}"
+
+            standings_list.append({
+                "rank": standing.rank,
+                "user_id": standing.user_id,
+                "display_name": display_name,
+                "points": float(standing.total_points),
+                "total_catches": standing.total_fish_caught,
+                "victories": standing.total_victories,
+                "ties": (standing.ties_with_fish or 0) + (standing.ties_without_fish or 0),
+                "losses": (standing.losses_with_fish or 0) + (standing.losses_without_fish or 0),
+                "position_change": 0,  # Calculated on frontend from previous state
+            })
+
+        # Sync to Firebase
+        sync_ta_standings_to_firebase(
+            event_id=event_id,
+            standings=standings_list,
+            current_phase=current_phase,
+            current_leg=current_leg,
+            total_legs=total_legs,
+            completed_legs=completed_legs,
+            has_knockout_bracket=has_knockout,
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to sync TA standings to Firebase for event {event_id}: {e}")
+
+
 async def update_standings_for_match(
     db: AsyncSession,
     match: TAMatch,
@@ -816,6 +888,9 @@ async def update_standings_for_match(
                 })
             except Exception as e:
                 logger.error(f"Failed to broadcast ta_leg_complete SSE: {e}")
+
+            # Sync to Firebase for web real-time updates
+            await _sync_ta_standings_to_firebase(db, match.event_id)
 
     return {
         "leg_complete": leg_complete,

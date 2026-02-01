@@ -218,6 +218,84 @@ def get_viewer_count(event_id: int) -> int:
         return 0
 
 
+def sync_ta_standings_to_firebase(
+    event_id: int,
+    standings: list,
+    current_phase: str,
+    current_leg: int,
+    total_legs: int,
+    completed_legs: int,
+    has_knockout_bracket: bool = False,
+    bracket_data: Optional[dict] = None,
+) -> bool:
+    """Sync Trout Area standings to Firebase Realtime Database.
+
+    Writes to /events/{event_id}/taStandings for TA live view.
+
+    Args:
+        event_id: The event ID
+        standings: List of TAStanding dicts
+        current_phase: Current phase (qualifier, semifinal, etc.)
+        current_leg: Current leg number
+        total_legs: Total legs in event
+        completed_legs: Number of completed legs
+        has_knockout_bracket: Whether knockout bracket exists
+        bracket_data: Optional bracket data dict
+
+    Returns:
+        True if synced successfully, False otherwise.
+    """
+    if not _ensure_firebase_ready():
+        return False
+
+    try:
+        ref = firebase_db.reference(f'events/{event_id}')
+        now_ms = int(time.time() * 1000)
+
+        # Build standings entries (NO avatar URLs)
+        firebase_standings = []
+        for entry in standings:
+            firebase_standings.append({
+                "rank": entry.get("rank"),
+                "odUserId": entry.get("user_id"),
+                "displayName": entry.get("display_name", ""),
+                "points": entry.get("points", 0),
+                "totalCatches": entry.get("total_catches", 0),
+                "victories": entry.get("victories", 0),
+                "ties": entry.get("ties", 0),
+                "losses": entry.get("losses", 0),
+                "positionChange": entry.get("position_change", 0),
+            })
+
+        # Write TA standings data
+        ta_data = {
+            "lastUpdated": now_ms,
+            "currentPhase": current_phase,
+            "currentLeg": current_leg,
+            "totalLegs": total_legs,
+            "completedLegs": completed_legs,
+            "hasKnockoutBracket": has_knockout_bracket,
+            "standings": firebase_standings,
+        }
+
+        ref.child("taStandings").set(ta_data)
+        logger.debug(f"TA standings synced to Firebase for event {event_id}")
+
+        # Write bracket data if provided
+        if bracket_data:
+            ref.child("taBracket").set({
+                "lastUpdated": now_ms,
+                **bracket_data,
+            })
+            logger.debug(f"TA bracket synced to Firebase for event {event_id}")
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Error syncing TA standings to Firebase for event {event_id}: {e}")
+        return False
+
+
 def cleanup_event_data(event_id: int) -> bool:
     """Clean up Firebase data for an event.
 
@@ -239,6 +317,8 @@ def cleanup_event_data(event_id: int) -> bool:
         ref.child("movements").delete()
         ref.child("recentCatches").delete()
         ref.child("presence").delete()
+        ref.child("taStandings").delete()
+        ref.child("taBracket").delete()
 
         logger.info(f"Firebase real-time data cleaned up for event {event_id}")
         return True
