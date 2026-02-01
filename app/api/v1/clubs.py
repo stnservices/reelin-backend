@@ -134,16 +134,25 @@ async def get_my_memberships(
     result = await db.execute(query)
     clubs = result.scalars().all()
 
-    # Get member counts
-    items = []
-    for club in clubs:
-        member_count_query = select(func.count(ClubMembership.id)).where(
-            ClubMembership.club_id == club.id,
-            ClubMembership.status == MembershipStatus.ACTIVE.value,
+    # Get member counts in ONE batch query (avoid N+1)
+    fetched_club_ids = [c.id for c in clubs]
+    member_counts_map = {}
+    if fetched_club_ids:
+        counts_query = (
+            select(ClubMembership.club_id, func.count(ClubMembership.id).label("count"))
+            .where(
+                ClubMembership.club_id.in_(fetched_club_ids),
+                ClubMembership.status == MembershipStatus.ACTIVE.value,
+            )
+            .group_by(ClubMembership.club_id)
         )
-        member_count_result = await db.execute(member_count_query)
-        member_count = member_count_result.scalar()
-        items.append(ClubDetailResponse.from_club(club, member_count))
+        counts_result = await db.execute(counts_query)
+        member_counts_map = {row.club_id: row.count for row in counts_result}
+
+    items = [
+        ClubDetailResponse.from_club(club, member_counts_map.get(club.id, 0))
+        for club in clubs
+    ]
 
     return ClubListResponse(
         items=items,
@@ -219,16 +228,25 @@ async def list_clubs(
     result = await db.execute(query)
     clubs = result.scalars().all()
 
-    # Get member counts
-    items = []
-    for club in clubs:
-        member_count_query = select(func.count(ClubMembership.id)).where(
-            ClubMembership.club_id == club.id,
-            ClubMembership.status == MembershipStatus.ACTIVE.value,
+    # Get member counts in ONE batch query (avoid N+1)
+    club_ids = [c.id for c in clubs]
+    member_counts_map = {}
+    if club_ids:
+        counts_query = (
+            select(ClubMembership.club_id, func.count(ClubMembership.id).label("count"))
+            .where(
+                ClubMembership.club_id.in_(club_ids),
+                ClubMembership.status == MembershipStatus.ACTIVE.value,
+            )
+            .group_by(ClubMembership.club_id)
         )
-        member_count_result = await db.execute(member_count_query)
-        member_count = member_count_result.scalar()
-        items.append(ClubDetailResponse.from_club(club, member_count))
+        counts_result = await db.execute(counts_query)
+        member_counts_map = {row.club_id: row.count for row in counts_result}
+
+    items = [
+        ClubDetailResponse.from_club(club, member_counts_map.get(club.id, 0))
+        for club in clubs
+    ]
 
     return ClubListResponse(
         items=items,
