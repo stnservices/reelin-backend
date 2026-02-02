@@ -2724,6 +2724,9 @@ async def edit_match_results(
             winner_id=winner_id,
         )
 
+        # Update qualifier standings (ties, losses breakdown)
+        await update_standings_for_match(db, match, point_config)
+
         # Trigger stats recalculation for both players
         if match.competitor_a_id:
             await statistics_service.update_user_stats_for_event(db, match.competitor_a_id, event_id)
