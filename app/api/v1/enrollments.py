@@ -308,6 +308,7 @@ async def unban_user_from_event(
 async def list_enrollments(
     event_id: int,
     status_filter: EnrollmentStatus | None = Query(None, alias="status"),
+    search: str | None = Query(None, description="Search by user name"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
@@ -349,6 +350,14 @@ async def list_enrollments(
     if status_filter:
         query = query.where(EventEnrollment.status == status_filter.value)
 
+    # Filter by search (user name)
+    if search:
+        from app.models.user import UserProfile
+        search_pattern = f"%{search}%"
+        query = query.join(EventEnrollment.user).join(UserAccount.profile).where(
+            func.concat(UserProfile.first_name, ' ', UserProfile.last_name).ilike(search_pattern)
+        )
+
     # Get total count
     count_query = select(func.count(EventEnrollment.id)).where(
         EventEnrollment.event_id == event_id
@@ -358,6 +367,12 @@ async def list_enrollments(
         count_query = count_query.where(EventEnrollment.user_id == current_user.id)
     if status_filter:
         count_query = count_query.where(EventEnrollment.status == status_filter.value)
+    if search:
+        from app.models.user import UserProfile
+        search_pattern = f"%{search}%"
+        count_query = count_query.join(EventEnrollment.user).join(UserAccount.profile).where(
+            func.concat(UserProfile.first_name, ' ', UserProfile.last_name).ilike(search_pattern)
+        )
 
     total_result = await db.execute(count_query)
     total = total_result.scalar()
