@@ -301,7 +301,7 @@ async def get_public_standings(
 
         if profile:
             display_name = profile.full_name or f"User {standing.user_id}"
-            avatar_url = profile.avatar_url
+            avatar_url = profile.profile_picture_url
 
         # Calculate position change
         prev_rank = previous_positions.get(standing.user_id)
@@ -415,7 +415,7 @@ async def get_public_bracket(
     event = await verify_public_event(db, event_id)
     ta_settings = await get_ta_settings(db, event_id)
 
-    if not ta_settings or not ta_settings.has_knockout_bracket:
+    if not ta_settings or not ta_settings.has_knockout_stage:
         raise HTTPException(
             status_code=404,
             detail="No knockout bracket for this event"
@@ -477,7 +477,7 @@ async def get_public_bracket(
                 profile_a = profile_a.scalar_one_or_none()
                 participant_a = PublicBracketParticipant(
                     user_id=match.player_a_id,
-                    display_name=profile_a.display_name if profile_a else f"User {match.player_a_id}",
+                    display_name=profile_a.full_name if profile_a else f"User {match.player_a_id}",
                     catches=match.player_a_catches,
                     is_winner=match.winner_id == match.player_a_id if match.winner_id else False,
                 )
@@ -489,7 +489,7 @@ async def get_public_bracket(
                 profile_b = profile_b.scalar_one_or_none()
                 participant_b = PublicBracketParticipant(
                     user_id=match.player_b_id,
-                    display_name=profile_b.display_name if profile_b else f"User {match.player_b_id}",
+                    display_name=profile_b.full_name if profile_b else f"User {match.player_b_id}",
                     catches=match.player_b_catches,
                     is_winner=match.winner_id == match.player_b_id if match.winner_id else False,
                 )
@@ -521,7 +521,7 @@ async def get_public_bracket(
     return PublicBracketResponse(
         event_id=event_id,
         event_name=event.name,
-        current_phase=ta_settings.current_phase or "qualifier",
+        current_phase="qualifier",  # Default phase
         qualifier_top_6=qualifier_top_6,
         requalification_matches=requalification_matches,
         semifinal_matches=semifinal_matches,
