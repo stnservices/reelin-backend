@@ -28,7 +28,6 @@ from app.models.fish import Fish
 from app.models.team import Team, TeamMember
 from app.models.user import UserAccount
 from app.models.enrollment import EventEnrollment, EnrollmentStatus
-from app.services.redis_cache import redis_cache
 from app.services.firebase_leaderboard_service import sync_leaderboard_to_firebase
 
 logger = logging.getLogger(__name__)
@@ -248,7 +247,6 @@ async def _async_recalculate(event_id: int) -> dict:
                     catch_id=m.get("catch_id"),
                 )
                 db.add(db_movement)
-                await redis_cache.add_movement(event_id, m)
 
         await db.commit()
 
