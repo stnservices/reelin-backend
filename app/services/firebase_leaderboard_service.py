@@ -330,7 +330,7 @@ def sync_validator_event(
             **data,
         })
 
-        logger.debug(f"Validator event {event_type} synced to Firebase for event {event_id}")
+        logger.info(f"Firebase: Validator event {event_type} synced for event {event_id}")
         return True
 
     except Exception as e:
