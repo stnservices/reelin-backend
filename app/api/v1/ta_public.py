@@ -463,28 +463,28 @@ async def get_public_bracket(
             participant_a = None
             participant_b = None
 
-            if match.player_a_id:
+            if match.competitor_a_id:
                 profile_a = await db.execute(
-                    select(UserProfile).where(UserProfile.user_id == match.player_a_id)
+                    select(UserProfile).where(UserProfile.user_id == match.competitor_a_id)
                 )
                 profile_a = profile_a.scalar_one_or_none()
                 participant_a = PublicBracketParticipant(
-                    user_id=match.player_a_id,
-                    display_name=profile_a.full_name if profile_a else f"User {match.player_a_id}",
-                    catches=match.player_a_catches,
-                    is_winner=match.winner_id == match.player_a_id if match.winner_id else False,
+                    user_id=match.competitor_a_id,
+                    display_name=profile_a.full_name if profile_a else f"User {match.competitor_a_id}",
+                    catches=match.competitor_a_catches,
+                    is_winner=match.winner_id == match.competitor_a_id if match.winner_id else False,
                 )
 
-            if match.player_b_id:
+            if match.competitor_b_id:
                 profile_b = await db.execute(
-                    select(UserProfile).where(UserProfile.user_id == match.player_b_id)
+                    select(UserProfile).where(UserProfile.user_id == match.competitor_b_id)
                 )
                 profile_b = profile_b.scalar_one_or_none()
                 participant_b = PublicBracketParticipant(
-                    user_id=match.player_b_id,
-                    display_name=profile_b.full_name if profile_b else f"User {match.player_b_id}",
-                    catches=match.player_b_catches,
-                    is_winner=match.winner_id == match.player_b_id if match.winner_id else False,
+                    user_id=match.competitor_b_id,
+                    display_name=profile_b.full_name if profile_b else f"User {match.competitor_b_id}",
+                    catches=match.competitor_b_catches,
+                    is_winner=match.winner_id == match.competitor_b_id if match.winner_id else False,
                 )
 
             # Determine status
