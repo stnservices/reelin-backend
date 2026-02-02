@@ -463,11 +463,13 @@ async def get_public_bracket(
             participant_a = None
             participant_b = None
 
-            # Determine winner_id from is_winner fields
+            # Determine winner from outcome_code ("V" = Victory)
+            a_is_winner = match.competitor_a_outcome_code == "V"
+            b_is_winner = match.competitor_b_outcome_code == "V"
             winner_id = None
-            if match.competitor_a_is_winner:
+            if a_is_winner:
                 winner_id = match.competitor_a_id
-            elif match.competitor_b_is_winner:
+            elif b_is_winner:
                 winner_id = match.competitor_b_id
 
             if match.competitor_a_id:
@@ -479,7 +481,7 @@ async def get_public_bracket(
                     user_id=match.competitor_a_id,
                     display_name=profile_a.full_name if profile_a else f"User {match.competitor_a_id}",
                     catches=match.competitor_a_catches,
-                    is_winner=match.competitor_a_is_winner or False,
+                    is_winner=a_is_winner,
                 )
 
             if match.competitor_b_id:
@@ -491,7 +493,7 @@ async def get_public_bracket(
                     user_id=match.competitor_b_id,
                     display_name=profile_b.full_name if profile_b else f"User {match.competitor_b_id}",
                     catches=match.competitor_b_catches,
-                    is_winner=match.competitor_b_is_winner or False,
+                    is_winner=b_is_winner,
                 )
 
             # Determine status
