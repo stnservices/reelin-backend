@@ -94,6 +94,7 @@ class PublicBracketParticipant(BaseModel):
     """Participant in bracket match."""
     user_id: Optional[int] = None
     display_name: Optional[str] = None
+    avatar_url: Optional[str] = None
     position: Optional[int] = None  # Qualifier position or seed
     catches: Optional[int] = None
     is_winner: bool = False
@@ -231,7 +232,51 @@ async def get_public_event_status(
         has_knockout = ta_settings.has_knockout_stage or False
         total_legs = ta_settings.number_of_legs or 0
 
-    completed_legs = await get_completed_legs_count(db, event_id, phase=current_phase)
+    # Determine actual current phase from knockout matches
+    if has_knockout:
+        # Check if knockout matches exist and their status
+        knockout_query = select(TAMatch).where(
+            TAMatch.event_id == event_id,
+            TAMatch.phase.in_([
+                TATournamentPhase.REQUALIFICATION.value,
+                TATournamentPhase.SEMIFINAL.value,
+                TATournamentPhase.FINAL_GRAND.value,
+                TATournamentPhase.FINAL_SMALL.value,
+            ])
+        )
+        knockout_result = await db.execute(knockout_query)
+        knockout_matches = knockout_result.scalars().all()
+
+        if knockout_matches:
+            # Group by phase
+            by_phase = {}
+            for m in knockout_matches:
+                if m.phase not in by_phase:
+                    by_phase[m.phase] = []
+                by_phase[m.phase].append(m)
+
+            # Check completion status
+            def all_completed(matches):
+                return len(matches) > 0 and all(m.status == TAMatchStatus.COMPLETED.value for m in matches)
+
+            finals = by_phase.get(TATournamentPhase.FINAL_GRAND.value, []) + by_phase.get(TATournamentPhase.FINAL_SMALL.value, [])
+            semifinals = by_phase.get(TATournamentPhase.SEMIFINAL.value, [])
+            requalifications = by_phase.get(TATournamentPhase.REQUALIFICATION.value, [])
+
+            if finals and all_completed(finals):
+                current_phase = "completed"
+            elif finals:
+                current_phase = "finals"
+            elif semifinals and all_completed(semifinals):
+                current_phase = "finals"
+            elif semifinals:
+                current_phase = "semifinal"
+            elif requalifications and all_completed(requalifications):
+                current_phase = "semifinal"
+            elif requalifications:
+                current_phase = "requalification"
+
+    completed_legs = await get_completed_legs_count(db, event_id, phase="qualifier")
 
     # Get event type from event_type relationship
     event_type_code = "trout_area"  # Default
@@ -480,6 +525,7 @@ async def get_public_bracket(
                 participant_a = PublicBracketParticipant(
                     user_id=match.competitor_a_id,
                     display_name=profile_a.full_name if profile_a else f"User {match.competitor_a_id}",
+                    avatar_url=profile_a.profile_picture_url if profile_a else None,
                     catches=match.competitor_a_catches,
                     is_winner=a_is_winner,
                 )
@@ -492,6 +538,7 @@ async def get_public_bracket(
                 participant_b = PublicBracketParticipant(
                     user_id=match.competitor_b_id,
                     display_name=profile_b.full_name if profile_b else f"User {match.competitor_b_id}",
+                    avatar_url=profile_b.profile_picture_url if profile_b else None,
                     catches=match.competitor_b_catches,
                     is_winner=b_is_winner,
                 )
