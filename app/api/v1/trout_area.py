@@ -2665,6 +2665,8 @@ async def edit_match_results(
     if match.competitor_a_catches is not None and match.competitor_b_catches is not None:
         match.calculate_outcome(point_config)  # This modifies the match object in place
         match.status = TAMatchStatus.COMPLETED.value
+        match.is_valid_a = True  # Admin validated
+        match.is_valid_b = True  # Admin validated
         if not match.completed_at:
             match.completed_at = datetime.now(timezone.utc)
 
