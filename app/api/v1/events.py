@@ -1981,23 +1981,13 @@ async def delete_bonus_points(
 
 
 async def broadcast_event_started(event_id: int, event_name: str) -> None:
-    """Broadcast event started to live scoring subscribers via SSE."""
-    from app.api.v1.live import live_scoring_service
-    await live_scoring_service.broadcast(event_id, {
-        "type": "event_started",
-        "event_id": event_id,
-        "event_name": event_name,
-    })
+    """Legacy SSE broadcast - now handled by Firebase push notifications."""
+    pass
 
 
 async def broadcast_event_stopped(event_id: int, event_name: str) -> None:
-    """Broadcast event stopped to live scoring subscribers via SSE."""
-    from app.api.v1.live import live_scoring_service
-    await live_scoring_service.broadcast(event_id, {
-        "type": "event_stopped",
-        "event_id": event_id,
-        "event_name": event_name,
-    })
+    """Legacy SSE broadcast - now handled by Firebase push notifications."""
+    pass
 
 
 @router.post("/{event_id}/start", response_model=EventListResponse, deprecated=True)

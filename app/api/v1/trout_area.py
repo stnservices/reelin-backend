@@ -120,7 +120,6 @@ from app.schemas.trout_area import (
 from app.schemas.common import MessageResponse
 from app.services.ta_pairing import TAPairingService, PairingAlgorithm
 from app.models.club import ClubMembership, MembershipStatus
-from app.api.v1.live import live_scoring_service
 from app.services.statistics_service import statistics_service
 
 router = APIRouter()
@@ -132,7 +131,7 @@ router = APIRouter()
 
 
 # =============================================================================
-# SSE Broadcast Functions for Live Public Leaderboard
+# Legacy SSE Broadcast Functions (now no-ops, kept for API compatibility)
 # =============================================================================
 
 async def broadcast_ta_leg_complete(
@@ -141,14 +140,8 @@ async def broadcast_ta_leg_complete(
     phase: str,
     standings_updated: bool = True,
 ) -> None:
-    """Broadcast leg completion to live scoring subscribers."""
-    await live_scoring_service.broadcast(event_id, {
-        "type": "ta_leg_complete",
-        "event_id": event_id,
-        "leg_number": leg_number,
-        "phase": phase,
-        "standings_updated": standings_updated,
-    })
+    """Legacy SSE broadcast - now handled by Firebase."""
+    pass
 
 
 async def broadcast_ta_standings_update(
@@ -156,13 +149,8 @@ async def broadcast_ta_standings_update(
     phase: str,
     top_changes: list[dict] | None = None,
 ) -> None:
-    """Broadcast standings update after recalculation."""
-    await live_scoring_service.broadcast(event_id, {
-        "type": "ta_standings_update",
-        "event_id": event_id,
-        "phase": phase,
-        "top_changes": top_changes or [],
-    })
+    """Legacy SSE broadcast - now handled by Firebase."""
+    pass
 
 
 async def broadcast_ta_phase_advanced(
@@ -170,13 +158,8 @@ async def broadcast_ta_phase_advanced(
     from_phase: str,
     to_phase: str,
 ) -> None:
-    """Broadcast phase advancement (e.g., qualifier → semifinals)."""
-    await live_scoring_service.broadcast(event_id, {
-        "type": "ta_phase_advanced",
-        "event_id": event_id,
-        "from_phase": from_phase,
-        "to_phase": to_phase,
-    })
+    """Legacy SSE broadcast - now handled by Firebase."""
+    pass
 
 
 async def broadcast_ta_bracket_generated(
@@ -184,13 +167,8 @@ async def broadcast_ta_bracket_generated(
     semifinalists: list[int],
     requalification_participants: list[int] | None = None,
 ) -> None:
-    """Broadcast knockout bracket generation."""
-    await live_scoring_service.broadcast(event_id, {
-        "type": "ta_bracket_generated",
-        "event_id": event_id,
-        "semifinalists": semifinalists,
-        "requalification_participants": requalification_participants or [],
-    })
+    """Legacy SSE broadcast - now handled by Firebase."""
+    pass
 
 
 async def broadcast_ta_match_result(
@@ -204,19 +182,8 @@ async def broadcast_ta_match_result(
     competitor_b_catches: int,
     winner_id: int | None,
 ) -> None:
-    """Broadcast individual match result completion."""
-    await live_scoring_service.broadcast(event_id, {
-        "type": "ta_match_result",
-        "event_id": event_id,
-        "match_id": match_id,
-        "phase": phase,
-        "leg_number": leg_number,
-        "competitor_a_id": competitor_a_id,
-        "competitor_b_id": competitor_b_id,
-        "competitor_a_catches": competitor_a_catches,
-        "competitor_b_catches": competitor_b_catches,
-        "winner_id": winner_id,
-    })
+    """Legacy SSE broadcast - now handled by Firebase."""
+    pass
 
 
 async def _cascade_knockout_update(db: AsyncSession, event_id: int, match: "TAMatch") -> dict | None:
