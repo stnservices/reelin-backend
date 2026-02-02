@@ -212,7 +212,7 @@ class EventStatusService:
             # Warning: Check for incomplete matches from previous run (non-blocking)
             incomplete_query = select(func.count(TAMatch.id)).where(
                 TAMatch.event_id == event.id,
-                TAMatch.status.notin_([TAMatchStatus.COMPLETED.value, TAMatchStatus.CANCELLED.value]),
+                TAMatch.status != TAMatchStatus.COMPLETED.value,
             )
             incomplete_result = await self.db.execute(incomplete_query)
             incomplete_count = incomplete_result.scalar() or 0
