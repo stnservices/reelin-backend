@@ -230,9 +230,8 @@ async def get_public_event_status(
     total_legs = 0
 
     if ta_settings:
-        current_phase = ta_settings.current_phase or "qualifier"
-        has_knockout = ta_settings.has_knockout_bracket or False
-        total_legs = ta_settings.total_legs or 0
+        has_knockout = ta_settings.has_knockout_stage or False
+        total_legs = ta_settings.number_of_legs or 0
 
     completed_legs = await get_completed_legs_count(db, event_id, phase=current_phase)
 
@@ -355,8 +354,7 @@ async def get_public_schedule(
     total_legs = 0
 
     if ta_settings:
-        current_phase = ta_settings.current_phase or "qualifier"
-        total_legs = ta_settings.total_legs or 0
+        total_legs = ta_settings.number_of_legs or 0
 
     # Get completion stats per phase
     phases = ["qualifier", "requalification", "semifinal", "final_grand", "final_small"]
@@ -440,7 +438,7 @@ async def get_public_bracket(
         profile_result = await db.execute(profile_query)
         profile = profile_result.scalar_one_or_none()
 
-        display_name = profile.display_name if profile else f"User {standing.user_id}"
+        display_name = profile.full_name if profile else f"User {standing.user_id}"
 
         advances_to = "eliminated"
         if standing.rank <= 2:
