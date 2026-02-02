@@ -59,7 +59,7 @@ class PublicEventStatusResponse(BaseModel):
 
 class PublicStandingEntry(BaseModel):
     """Single standing entry for public display."""
-    rank: int
+    rank: Optional[int] = None  # None for users with no validated cards
     user_id: int
     display_name: str
     avatar_url: Optional[str] = None
