@@ -187,7 +187,10 @@ class TARankingService:
         )
 
         if phase:
-            query = query.where(TAGameCard.phase == phase)
+            # Join with TAMatch to filter by phase
+            query = query.join(TAMatch, TAGameCard.match_id == TAMatch.id).where(
+                TAMatch.phase == phase
+            )
 
         result = await self.db.execute(query)
         incomplete_count = result.scalar() or 0
@@ -198,7 +201,9 @@ class TARankingService:
             TAGameCard.leg_number == leg_number,
         )
         if phase:
-            total_query = total_query.where(TAGameCard.phase == phase)
+            total_query = total_query.join(TAMatch, TAGameCard.match_id == TAMatch.id).where(
+                TAMatch.phase == phase
+            )
 
         total_result = await self.db.execute(total_query)
         total_count = total_result.scalar() or 0
