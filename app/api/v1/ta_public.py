@@ -520,10 +520,34 @@ async def get_public_bracket(
     grand_final_matches = await get_matches_for_phase(TATournamentPhase.FINAL_GRAND.value)
     small_final_matches = await get_matches_for_phase(TATournamentPhase.FINAL_SMALL.value)
 
+    # Determine current phase based on match statuses
+    def all_completed(matches: list) -> bool:
+        return len(matches) > 0 and all(m.status == "completed" for m in matches)
+
+    def any_exists(matches: list) -> bool:
+        return len(matches) > 0
+
+    current_phase = "qualifier"
+    if any_exists(grand_final_matches) or any_exists(small_final_matches):
+        if all_completed(grand_final_matches) and all_completed(small_final_matches):
+            current_phase = "completed"
+        else:
+            current_phase = "finals"
+    elif any_exists(semifinal_matches):
+        if all_completed(semifinal_matches):
+            current_phase = "finals"
+        else:
+            current_phase = "semifinal"
+    elif any_exists(requalification_matches):
+        if all_completed(requalification_matches):
+            current_phase = "semifinal"
+        else:
+            current_phase = "requalification"
+
     return PublicBracketResponse(
         event_id=event_id,
         event_name=event.name,
-        current_phase="qualifier",  # Default phase
+        current_phase=current_phase,
         qualifier_top_6=qualifier_top_6,
         requalification_matches=requalification_matches,
         semifinal_matches=semifinal_matches,
