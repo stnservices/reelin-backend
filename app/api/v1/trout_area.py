@@ -1965,6 +1965,10 @@ async def generate_lineups(
     total_legs = pairing_result.total_rounds
     matches_per_leg = pairing_result.matches_per_round
 
+    # Update settings with calculated number of legs
+    if settings:
+        settings.number_of_legs = total_legs
+
     # Build participant lookup by name for later use
     # The pairing service assigns IDs 1-N to participants
     participant_lookup = {}
