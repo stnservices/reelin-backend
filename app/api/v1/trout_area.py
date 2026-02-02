@@ -629,14 +629,14 @@ async def _sync_ta_standings_to_firebase(db: AsyncSession, event_id: int) -> Non
         settings_result = await db.execute(settings_query)
         settings = settings_result.scalar_one_or_none()
 
-        current_phase = settings.current_phase if settings else "qualifier"
-        total_legs = settings.total_legs if settings else 0
-        has_knockout = settings.has_knockout_bracket if settings else False
+        current_phase = "qualifier"  # Default phase
+        total_legs = settings.number_of_legs if settings else 0
+        has_knockout = settings.has_knockout_stage if settings else False
 
         # Count completed legs
         completed_query = select(func.count(func.distinct(TAGameCard.leg_number))).where(
             TAGameCard.event_id == event_id,
-            TAGameCard.status == TAGameCardStatus.COMPLETED.value,
+            TAGameCard.status == TAGameCardStatus.VALIDATED.value,
         )
         completed_result = await db.execute(completed_query)
         completed_legs = completed_result.scalar() or 0
@@ -656,7 +656,7 @@ async def _sync_ta_standings_to_firebase(db: AsyncSession, event_id: int) -> Non
             profile_result = await db.execute(profile_query)
             profile = profile_result.scalar_one_or_none()
 
-            display_name = profile.display_name if profile else f"User {standing.user_id}"
+            display_name = profile.full_name if profile else f"User {standing.user_id}"
 
             standings_list.append({
                 "rank": standing.rank,
