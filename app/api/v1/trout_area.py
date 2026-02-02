@@ -13,6 +13,7 @@ Key features:
 - Real-time ranking updates
 """
 
+import logging
 import re
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -121,6 +122,8 @@ from app.schemas.common import MessageResponse
 from app.services.ta_pairing import TAPairingService, PairingAlgorithm
 from app.models.club import ClubMembership, MembershipStatus
 from app.services.statistics_service import statistics_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
