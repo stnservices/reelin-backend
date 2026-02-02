@@ -1,4 +1,4 @@
-"""Redis cache service for leaderboard data."""
+"""Redis cache service for chat and live tracking."""
 
 import json
 from datetime import datetime
@@ -10,16 +10,9 @@ from app.config import get_settings
 
 
 class RedisCache:
-    """Async Redis cache for leaderboard and scoring data."""
+    """Async Redis cache for chat and live tracking data."""
 
-    # Cache key prefixes
-    LEADERBOARD = "leaderboard"
-    USER_DETAILS = "user"
-    TEAM_DETAILS = "team"
-    MOVEMENTS = "movements"
-    UPDATED_AT = "updated_at"
-
-    # Default TTL: 1 hour (leaderboard recalculated on each change anyway)
+    # Default TTL: 1 hour
     DEFAULT_TTL = 3600
 
     def __init__(self):
@@ -60,32 +53,6 @@ class RedisCache:
             await self._redis.close()
             self._redis = None
 
-    # === Key builders ===
-
-    def _key(self, *parts: str) -> str:
-        """Build a cache key from parts."""
-        return ":".join(parts)
-
-    def leaderboard_key(self, event_id: int) -> str:
-        """Key for full leaderboard JSON."""
-        return self._key(self.LEADERBOARD, str(event_id))
-
-    def user_details_key(self, event_id: int, user_id: int) -> str:
-        """Key for user catch details."""
-        return self._key(self.LEADERBOARD, str(event_id), self.USER_DETAILS, str(user_id))
-
-    def team_details_key(self, event_id: int, team_id: int) -> str:
-        """Key for team catch details."""
-        return self._key(self.LEADERBOARD, str(event_id), self.TEAM_DETAILS, str(team_id))
-
-    def movements_key(self, event_id: int) -> str:
-        """Key for recent ranking movements."""
-        return self._key(self.LEADERBOARD, str(event_id), self.MOVEMENTS)
-
-    def updated_at_key(self, event_id: int) -> str:
-        """Key for last calculation timestamp."""
-        return self._key(self.LEADERBOARD, str(event_id), self.UPDATED_AT)
-
     # === Generic cache operations ===
 
     async def get(self, key: str) -> Optional[Any]:
@@ -109,150 +76,6 @@ class RedisCache:
         client = await self.get_client()
         await client.delete(key)
 
-    # === Leaderboard operations ===
-
-    async def get_leaderboard(self, event_id: int) -> Optional[dict]:
-        """Get cached leaderboard data."""
-        client = await self.get_client()
-        data = await client.get(self.leaderboard_key(event_id))
-        if data:
-            return json.loads(data)
-        return None
-
-    async def set_leaderboard(self, event_id: int, data: dict, ttl: int = DEFAULT_TTL):
-        """Cache leaderboard data."""
-        client = await self.get_client()
-        await client.setex(
-            self.leaderboard_key(event_id),
-            ttl,
-            json.dumps(data, default=str),
-        )
-        # Update timestamp
-        await client.set(
-            self.updated_at_key(event_id),
-            datetime.utcnow().isoformat(),
-        )
-
-    async def get_updated_at(self, event_id: int) -> Optional[datetime]:
-        """Get last calculation timestamp."""
-        client = await self.get_client()
-        data = await client.get(self.updated_at_key(event_id))
-        if data:
-            return datetime.fromisoformat(data)
-        return None
-
-    # === User/Team details ===
-
-    async def get_user_details(self, event_id: int, user_id: int) -> Optional[dict]:
-        """Get cached user catch details."""
-        client = await self.get_client()
-        data = await client.get(self.user_details_key(event_id, user_id))
-        if data:
-            return json.loads(data)
-        return None
-
-    async def set_user_details(
-        self, event_id: int, user_id: int, data: dict, ttl: int = DEFAULT_TTL
-    ):
-        """Cache user catch details."""
-        client = await self.get_client()
-        await client.setex(
-            self.user_details_key(event_id, user_id),
-            ttl,
-            json.dumps(data, default=str),
-        )
-
-    async def get_team_details(self, event_id: int, team_id: int) -> Optional[dict]:
-        """Get cached team catch details."""
-        client = await self.get_client()
-        data = await client.get(self.team_details_key(event_id, team_id))
-        if data:
-            return json.loads(data)
-        return None
-
-    async def set_team_details(
-        self, event_id: int, team_id: int, data: dict, ttl: int = DEFAULT_TTL
-    ):
-        """Cache team catch details."""
-        client = await self.get_client()
-        await client.setex(
-            self.team_details_key(event_id, team_id),
-            ttl,
-            json.dumps(data, default=str),
-        )
-
-    # === Batch operations ===
-
-    async def set_all_user_details(
-        self, event_id: int, user_details: dict[int, dict], ttl: int = DEFAULT_TTL
-    ):
-        """Cache all user details at once (pipeline for efficiency)."""
-        client = await self.get_client()
-        async with client.pipeline() as pipe:
-            for user_id, data in user_details.items():
-                pipe.setex(
-                    self.user_details_key(event_id, user_id),
-                    ttl,
-                    json.dumps(data, default=str),
-                )
-            await pipe.execute()
-
-    async def set_all_team_details(
-        self, event_id: int, team_details: dict[int, dict], ttl: int = DEFAULT_TTL
-    ):
-        """Cache all team details at once (pipeline for efficiency)."""
-        client = await self.get_client()
-        async with client.pipeline() as pipe:
-            for team_id, data in team_details.items():
-                pipe.setex(
-                    self.team_details_key(event_id, team_id),
-                    ttl,
-                    json.dumps(data, default=str),
-                )
-            await pipe.execute()
-
-    # === Movements ===
-
-    async def get_movements(self, event_id: int, limit: int = 20) -> list[dict]:
-        """Get recent ranking movements."""
-        client = await self.get_client()
-        data = await client.lrange(self.movements_key(event_id), 0, limit - 1)
-        return [json.loads(item) for item in data]
-
-    async def add_movement(self, event_id: int, movement: dict, max_size: int = 100):
-        """Add a ranking movement and trim list."""
-        client = await self.get_client()
-        key = self.movements_key(event_id)
-        await client.lpush(key, json.dumps(movement, default=str))
-        await client.ltrim(key, 0, max_size - 1)
-
-    async def set_movements(self, event_id: int, movements: list[dict]):
-        """Replace all movements (used during recalculation)."""
-        client = await self.get_client()
-        key = self.movements_key(event_id)
-        await client.delete(key)
-        if movements:
-            async with client.pipeline() as pipe:
-                for m in movements:
-                    pipe.rpush(key, json.dumps(m, default=str))
-                await pipe.execute()
-
-    # === Cache invalidation ===
-
-    async def invalidate_event(self, event_id: int):
-        """Invalidate all cached data for an event."""
-        client = await self.get_client()
-        # Find all keys for this event
-        pattern = f"{self.LEADERBOARD}:{event_id}:*"
-        keys = []
-        async for key in client.scan_iter(match=pattern):
-            keys.append(key)
-        # Also include the main leaderboard key
-        keys.append(self.leaderboard_key(event_id))
-
-        if keys:
-            await client.delete(*keys)
-
     # === Chat Pub/Sub (Event Chat feature) ===
 
     CHAT_CHANNEL_PREFIX = "chat"
@@ -262,19 +85,13 @@ class RedisCache:
         return f"{self.CHAT_CHANNEL_PREFIX}:event_{event_id}"
 
     async def publish_chat_message(self, event_id: int, data: dict):
-        """
-        Publish a chat event to Redis Pub/Sub.
-        Used to notify SSE clients and sync with Firebase.
-        """
+        """Publish a chat event to Redis Pub/Sub."""
         client = await self.get_client()
         channel = self.chat_channel(event_id)
         await client.publish(channel, json.dumps(data, default=str))
 
     async def subscribe_chat_channel(self, event_id: int):
-        """
-        Subscribe to chat events for a specific event.
-        Returns a PubSub object that can be iterated for messages.
-        """
+        """Subscribe to chat events for a specific event."""
         client = await self.get_client()
         pubsub = client.pubsub()
         await pubsub.subscribe(self.chat_channel(event_id))
