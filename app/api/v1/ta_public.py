@@ -274,13 +274,10 @@ async def get_public_standings(
     """
     await verify_public_event(db, event_id)
 
-    # Get standings from database
+    # Get standings from database (TAQualifierStanding is only for qualifier phase)
     query = select(TAQualifierStanding).where(
         TAQualifierStanding.event_id == event_id
     ).order_by(TAQualifierStanding.rank)
-
-    if phase:
-        query = query.where(TAQualifierStanding.phase == phase)
 
     result = await db.execute(query)
     standings_rows = result.scalars().all()
@@ -314,9 +311,9 @@ async def get_public_standings(
             "user_id": standing.user_id,
             "display_name": display_name,
             "avatar_url": avatar_url,
-            "points": float(standing.points),
-            "total_catches": standing.total_catches,
-            "victories": standing.victories,
+            "points": float(standing.total_points),
+            "total_catches": standing.total_fish_caught,
+            "victories": standing.total_victories,
             "ties": (standing.ties_with_fish or 0) + (standing.ties_without_fish or 0),
             "losses": (standing.losses_with_fish or 0) + (standing.losses_without_fish or 0),
             "position_change": position_change,
@@ -424,7 +421,6 @@ async def get_public_bracket(
     # Get top 6 from qualifier standings
     qualifier_query = select(TAQualifierStanding).where(
         TAQualifierStanding.event_id == event_id,
-        TAQualifierStanding.phase == "qualifier",
         TAQualifierStanding.rank <= 6,
     ).order_by(TAQualifierStanding.rank)
 
