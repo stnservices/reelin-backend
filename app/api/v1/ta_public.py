@@ -446,7 +446,7 @@ async def get_public_bracket(
             "position": standing.rank,
             "user_id": standing.user_id,
             "display_name": display_name,
-            "points": float(standing.points),
+            "points": float(standing.total_points),
             "advances_to": advances_to,
         })
 
