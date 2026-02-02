@@ -18,7 +18,6 @@ from sqlalchemy.orm import selectinload
 from app.celery_app import celery_app
 from app.database import create_celery_session_maker
 from app.services.ai_analysis_service import ai_analysis_service
-from app.services.redis_cache import redis_cache
 from app.services.firebase_leaderboard_service import sync_validator_event
 
 logger = logging.getLogger(__name__)
@@ -109,14 +108,7 @@ async def _broadcast_ai_analysis_complete(db, catch_id: int) -> None:
         if analysis.species_alternatives:
             ai_analysis_data["species_alternatives"] = analysis.species_alternatives
 
-        # Publish to Redis for SSE bridge (legacy, can be removed after Firebase migration)
-        await redis_cache.publish_sse_event(catch.event_id, {
-            "type": "ai_analysis_complete",
-            "catch_id": catch_id,
-            "ai_analysis": ai_analysis_data,
-        })
-
-        # Firebase sync for reliable real-time updates
+        # Firebase sync for real-time updates
         sync_validator_event(catch.event_id, "ai_analysis_complete", {
             "catchId": catch_id,
             "aiAnalysis": ai_analysis_data,

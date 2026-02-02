@@ -17,7 +17,6 @@ from app.models.catch import Catch, CatchStatus, EventScoreboard, RankingMovemen
 from app.models.fish import Fish
 from app.models.team import Team, TeamMember
 from app.models.enrollment import EventEnrollment, EnrollmentStatus
-from app.services.redis_cache import redis_cache
 from app.tasks.leaderboard import queue_leaderboard_recalculation
 
 router = APIRouter()
@@ -377,12 +376,6 @@ async def get_event_leaderboard(
         result = await _get_individual_leaderboard(
             db, event, calculator, all_catches, limit, include_breakdown, following_user_ids
         )
-
-    # Add viewer count from Redis (still useful for live view)
-    try:
-        result["viewer_count"] = await redis_cache.get_viewer_count(event_id)
-    except Exception:
-        result["viewer_count"] = 0
 
     return result
 

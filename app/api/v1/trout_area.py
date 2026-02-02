@@ -844,18 +844,6 @@ async def update_standings_for_match(
             await recalculate_event_ranks(db, match.event_id)
             ranks_updated = True
 
-            # Broadcast SSE event for leg completion
-            try:
-                await redis_cache.publish_sse_event(match.event_id, {
-                    "type": "ta_leg_complete",
-                    "event_id": match.event_id,
-                    "leg_number": match.leg_number,
-                    "phase": match.phase,
-                    "message": f"Leg {match.leg_number} completed - standings updated",
-                })
-            except Exception as e:
-                logger.error(f"Failed to broadcast ta_leg_complete SSE: {e}")
-
             # Sync to Firebase for web real-time updates
             await _sync_ta_standings_to_firebase(db, match.event_id)
 
@@ -2986,19 +2974,6 @@ async def submit_game_card(
     await db.commit()
     await db.refresh(card)
 
-    # Broadcast SSE event to notify opponent
-    try:
-        await redis_cache.publish_sse_event(event_id, {
-            "type": "game_card_submitted",
-            "match_id": card.match_id,
-            "leg_number": card.leg_number,
-            "user_id": card.user_id,
-            "opponent_id": card.opponent_id,
-        })
-    except Exception:
-        # Don't fail the request if SSE broadcast fails
-        pass
-
     return {
         "id": card.id,
         "event_id": card.event_id,
@@ -3171,21 +3146,6 @@ async def validate_opponent_card(
 
     await db.commit()
     await db.refresh(opponent_card)
-
-    # Broadcast SSE event to notify the card owner (whose card was validated)
-    try:
-        await redis_cache.publish_sse_event(event_id, {
-            "type": "game_card_validated",
-            "match_id": opponent_card.match_id,
-            "leg_number": opponent_card.leg_number,
-            "card_id": opponent_card.id,
-            "user_id": opponent_card.user_id,
-            "validated_by": current_user.id,
-            "is_disputed": opponent_card.is_disputed,
-        })
-    except Exception:
-        # Don't fail the request if SSE broadcast fails
-        pass
 
     return {
         "id": opponent_card.id,
