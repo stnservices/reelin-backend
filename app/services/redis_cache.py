@@ -18,7 +18,6 @@ class RedisCache:
     TEAM_DETAILS = "team"
     MOVEMENTS = "movements"
     UPDATED_AT = "updated_at"
-    VIEWER_COUNT = "viewers"
 
     # Default TTL: 1 hour (leaderboard recalculated on each change anyway)
     DEFAULT_TTL = 3600
@@ -86,10 +85,6 @@ class RedisCache:
     def updated_at_key(self, event_id: int) -> str:
         """Key for last calculation timestamp."""
         return self._key(self.LEADERBOARD, str(event_id), self.UPDATED_AT)
-
-    def viewer_count_key(self, event_id: int) -> str:
-        """Key for live viewer count."""
-        return self._key(self.LEADERBOARD, str(event_id), self.VIEWER_COUNT)
 
     # === Generic cache operations ===
 
@@ -242,30 +237,6 @@ class RedisCache:
                     pipe.rpush(key, json.dumps(m, default=str))
                 await pipe.execute()
 
-    # === Viewer count ===
-
-    async def increment_viewers(self, event_id: int) -> int:
-        """Increment viewer count when SSE client connects."""
-        client = await self.get_client()
-        return await client.incr(self.viewer_count_key(event_id))
-
-    async def decrement_viewers(self, event_id: int) -> int:
-        """Decrement viewer count when SSE client disconnects."""
-        client = await self.get_client()
-        key = self.viewer_count_key(event_id)
-        count = await client.decr(key)
-        # Don't go below 0
-        if count < 0:
-            await client.set(key, 0)
-            return 0
-        return count
-
-    async def get_viewer_count(self, event_id: int) -> int:
-        """Get current viewer count."""
-        client = await self.get_client()
-        count = await client.get(self.viewer_count_key(event_id))
-        return int(count) if count else 0
-
     # === Cache invalidation ===
 
     async def invalidate_event(self, event_id: int):
@@ -281,38 +252,6 @@ class RedisCache:
 
         if keys:
             await client.delete(*keys)
-
-    # === Pub/Sub for SSE bridge (Celery -> FastAPI) ===
-
-    SSE_CHANNEL_PREFIX = "sse_broadcast"
-
-    def sse_channel(self, event_id: int) -> str:
-        """Get the Pub/Sub channel name for SSE broadcasts."""
-        return f"{self.SSE_CHANNEL_PREFIX}:event_{event_id}"
-
-    async def publish_sse_event(self, event_id: int, data: dict):
-        """
-        Publish an SSE event to Redis Pub/Sub.
-        Used by Celery tasks to notify FastAPI to broadcast to SSE clients.
-        """
-        client = await self.get_client()
-        channel = self.sse_channel(event_id)
-        await client.publish(channel, json.dumps(data, default=str))
-
-    async def subscribe_sse_channel(self, event_id: int):
-        """
-        Subscribe to SSE events for a specific event.
-        Returns a PubSub object that can be iterated for messages.
-        """
-        client = await self.get_client()
-        pubsub = client.pubsub()
-        await pubsub.subscribe(self.sse_channel(event_id))
-        return pubsub
-
-    async def get_pubsub(self):
-        """Get a PubSub client for pattern subscriptions."""
-        client = await self.get_client()
-        return client.pubsub()
 
     # === Chat Pub/Sub (Event Chat feature) ===
 
