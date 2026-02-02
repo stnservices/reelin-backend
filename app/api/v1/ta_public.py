@@ -157,7 +157,7 @@ async def get_completed_legs_count(db: AsyncSession, event_id: int, phase: Optio
     """Count completed legs for an event."""
     query = select(func.count(func.distinct(TAGameCard.leg_number))).where(
         TAGameCard.event_id == event_id,
-        TAGameCard.status == TAGameCardStatus.COMPLETED.value,
+        TAGameCard.status == TAGameCardStatus.VALIDATED.value,
     )
     if phase:
         query = query.where(TAGameCard.phase == phase)
