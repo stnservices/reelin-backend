@@ -48,6 +48,7 @@ from app.schemas.common import MessageResponse
 from app.core.permissions import OrganizerOrAdmin
 from app.api.v1.catches import recalculate_user_score
 from app.services.push_notifications import send_push_notification
+from app.tasks.leaderboard import queue_leaderboard_recalculation
 
 router = APIRouter()
 
@@ -1153,6 +1154,9 @@ async def disqualify_participant(
 
     await db.commit()
 
+    # Queue full leaderboard recalculation to sync to Firebase
+    queue_leaderboard_recalculation(enrollment.event_id, "disqualification")
+
     # Reload relationships
     query = (
         select(EventEnrollment)
@@ -1242,6 +1246,9 @@ async def reinstate_participant(
     # The user keeps their original draw number.
 
     await db.commit()
+
+    # Queue full leaderboard recalculation to sync to Firebase
+    queue_leaderboard_recalculation(enrollment.event_id, "reinstatement")
 
     # Reload relationships
     query = (

@@ -2771,6 +2771,9 @@ async def edit_match_results(
         if match.competitor_b_id:
             await statistics_service.update_user_stats_for_event(db, match.competitor_b_id, event_id)
 
+        # Sync to Firebase for web real-time updates
+        await _sync_ta_standings_to_firebase(db, event_id)
+
     await db.commit()
     await db.refresh(match)
 
@@ -3689,6 +3692,9 @@ async def recalculate_standings(
         phase=TATournamentPhase.QUALIFIER.value,
         top_changes=None,  # Full recalculation doesn't track individual changes
     )
+
+    # Sync to Firebase for web real-time updates
+    await _sync_ta_standings_to_firebase(db, event_id)
 
     return {"message": f"Standings recalculated for {len(user_stats)} participants", "details": {"participants_ranked": len(user_stats)}}
 

@@ -353,6 +353,9 @@ async def _calculate_individual_leaderboard(
 
         # Tiebreaker stats
         best_length = max((c["length"] for c in scored_catches), default=0)
+        # Find best catch to get species name
+        best_catch = max(scored_catches, key=lambda c: c["length"]) if scored_catches else None
+        best_catch_species = best_catch["fish_name"] if best_catch else None
         total_length = sum(c["length"] for c in scored_catches)
         avg_catch = round(total_length / len(scored_catches), 2) if scored_catches else 0.0
         first_catch_time = min(
@@ -370,6 +373,7 @@ async def _calculate_individual_leaderboard(
             "species_count": len(species_ids),
             "species_bonus": species_bonus,
             "best_catch_length": best_length,
+            "best_catch_species": best_catch_species,
             "average_catch": avg_catch,
             "first_catch_time": first_catch_time,
             "is_disqualified": False,
@@ -431,6 +435,8 @@ async def _calculate_individual_leaderboard(
         species_ids = set(c["fish_id"] for c in catch_details)
         total_points = sum(c["points"] for c in catch_details)
         best_length = max((c["length"] for c in catch_details), default=0)
+        best_catch = max(catch_details, key=lambda c: c["length"]) if catch_details else None
+        best_catch_species = best_catch["fish_name"] if best_catch else None
         total_length = sum(c["length"] for c in catch_details)
         avg_catch = round(total_length / len(catch_details), 2) if catch_details else 0.0
 
@@ -446,6 +452,7 @@ async def _calculate_individual_leaderboard(
             "species_count": len(species_ids),
             "species_bonus": 0,
             "best_catch_length": best_length,
+            "best_catch_species": best_catch_species,
             "average_catch": avg_catch,
             "first_catch_time": None,
             "rank": None,  # No rank for disqualified
@@ -660,6 +667,8 @@ async def _calculate_team_leaderboard(
 
         # Tiebreaker stats
         best_length = max((c["length"] for c in scored_catches), default=0)
+        best_catch = max(scored_catches, key=lambda c: c["length"]) if scored_catches else None
+        best_catch_species = best_catch["fish_name"] if best_catch else None
         total_length = sum(c["length"] for c in scored_catches)
         avg_catch = round(total_length / len(scored_catches), 2) if scored_catches else 0.0
         first_catch_time = min(
@@ -721,6 +730,7 @@ async def _calculate_team_leaderboard(
             "species_count": len(species_ids),
             "species_bonus": species_bonus,
             "best_catch_length": best_length,
+            "best_catch_species": best_catch_species,
             "average_catch": avg_catch,
             "first_catch_time": first_catch_time,
             "member_count": len(info["members"]),

@@ -298,6 +298,46 @@ def sync_ta_standings_to_firebase(
         return False
 
 
+def sync_validator_event(
+    event_id: int,
+    event_type: str,
+    data: dict,
+) -> bool:
+    """Sync a validator event to Firebase for real-time updates.
+
+    Events are written to /events/{event_id}/validatorEvents/{timestamp}
+    and auto-expire after being read.
+
+    Args:
+        event_id: The event ID
+        event_type: Event type (catch_submitted, catch_validated, ai_analysis_complete)
+        data: Event data dict
+
+    Returns:
+        True if synced successfully, False otherwise.
+    """
+    if not _ensure_firebase_ready():
+        return False
+
+    try:
+        ref = firebase_db.reference(f'events/{event_id}/validatorEvents')
+        now_ms = int(time.time() * 1000)
+
+        # Write event with timestamp as key for ordering
+        ref.child(str(now_ms)).set({
+            "type": event_type,
+            "timestamp": now_ms,
+            **data,
+        })
+
+        logger.debug(f"Validator event {event_type} synced to Firebase for event {event_id}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error syncing validator event to Firebase for event {event_id}: {e}")
+        return False
+
+
 def cleanup_event_data(event_id: int) -> bool:
     """Clean up Firebase data for an event.
 

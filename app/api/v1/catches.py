@@ -51,6 +51,7 @@ from app.tasks.ai_analysis import queue_catch_analysis
 from app.tasks.notifications import send_catch_like_notification
 from app.models.ai_analysis import CatchAiAnalysis
 from app.services.statistics_service import statistics_service
+from app.services.firebase_leaderboard_service import sync_validator_event
 
 router = APIRouter()
 
@@ -1553,10 +1554,16 @@ async def recalculate_ranks(db: AsyncSession, event_id: int) -> None:
 
 async def broadcast_catch_submitted(event_id: int, catch_id: int, user_id: int) -> None:
     """Broadcast new catch submission to live scoring subscribers (for validators)."""
+    # SSE broadcast (legacy, can be removed after Firebase migration is complete)
     await live_scoring_service.broadcast(event_id, {
         "type": "catch_submitted",
         "catch_id": catch_id,
         "user_id": user_id,
+    })
+    # Firebase sync for reliable real-time updates
+    sync_validator_event(event_id, "catch_submitted", {
+        "catchId": catch_id,
+        "userId": user_id,
     })
 
 
@@ -1573,6 +1580,7 @@ async def broadcast_catch_validated(
 ) -> None:
     """Broadcast catch validation to live scoring subscribers with full catch data."""
     logger.info(f"Broadcasting catch_validated for event {event_id}, catch {catch_id}")
+    # SSE broadcast (legacy, can be removed after Firebase migration is complete)
     await live_scoring_service.broadcast(event_id, {
         "type": "catch_validated",
         "catch_id": catch_id,
@@ -1588,6 +1596,15 @@ async def broadcast_catch_validated(
             "is_scored": True,
         }
     })
+    # Firebase sync for reliable real-time updates
+    sync_validator_event(event_id, "catch_validated", {
+        "catchId": catch_id,
+        "userId": user_id,
+        "fishName": fish_name,
+        "length": length,
+        "points": points,
+        "anglerName": angler_name,
+    })
 
 
 async def broadcast_catch_revalidated(
@@ -1598,12 +1615,20 @@ async def broadcast_catch_revalidated(
     new_status: str,
 ) -> None:
     """Broadcast catch revalidation to live scoring subscribers."""
+    # SSE broadcast (legacy, can be removed after Firebase migration is complete)
     await live_scoring_service.broadcast(event_id, {
         "type": "catch_revalidated",
         "catch_id": catch_id,
         "user_id": user_id,
         "old_status": old_status,
         "new_status": new_status,
+    })
+    # Firebase sync for reliable real-time updates
+    sync_validator_event(event_id, "catch_revalidated", {
+        "catchId": catch_id,
+        "userId": user_id,
+        "oldStatus": old_status,
+        "newStatus": new_status,
     })
 
 
