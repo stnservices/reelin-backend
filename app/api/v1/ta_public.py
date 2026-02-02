@@ -154,25 +154,23 @@ async def get_ta_settings(db: AsyncSession, event_id: int) -> Optional[TAEventSe
 
 
 async def get_completed_legs_count(db: AsyncSession, event_id: int, phase: Optional[str] = None) -> int:
-    """Count completed legs for an event."""
+    """Count completed legs for an event (phase filter ignored - TAGameCard has no phase)."""
     query = select(func.count(func.distinct(TAGameCard.leg_number))).where(
         TAGameCard.event_id == event_id,
         TAGameCard.status == TAGameCardStatus.VALIDATED.value,
     )
-    if phase:
-        query = query.where(TAGameCard.phase == phase)
+    # Note: TAGameCard doesn't have phase column, ignoring phase filter
 
     result = await db.execute(query)
     return result.scalar() or 0
 
 
 async def get_total_legs(db: AsyncSession, event_id: int, phase: Optional[str] = None) -> int:
-    """Get total legs for an event phase."""
+    """Get total legs for an event (phase filter ignored - TAGameCard has no phase)."""
     query = select(func.max(TAGameCard.leg_number)).where(
         TAGameCard.event_id == event_id
     )
-    if phase:
-        query = query.where(TAGameCard.phase == phase)
+    # Note: TAGameCard doesn't have phase column, ignoring phase filter
 
     result = await db.execute(query)
     return result.scalar() or 0
@@ -374,10 +372,9 @@ async def get_public_schedule(
     if total_all > 0:
         progress_percent = round((total_completed / total_all) * 100, 1)
 
-    # Current leg (highest incomplete leg in current phase)
+    # Current leg (highest leg number in the event)
     current_leg_query = select(func.max(TAGameCard.leg_number)).where(
         TAGameCard.event_id == event_id,
-        TAGameCard.phase == current_phase,
     )
     result = await db.execute(current_leg_query)
     current_leg = result.scalar() or 1
