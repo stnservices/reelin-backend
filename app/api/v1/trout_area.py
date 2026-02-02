@@ -644,7 +644,6 @@ async def _sync_ta_standings_to_firebase(db: AsyncSession, event_id: int) -> Non
         # Current leg
         current_leg_query = select(func.max(TAGameCard.leg_number)).where(
             TAGameCard.event_id == event_id,
-            TAGameCard.phase == current_phase,
         )
         current_leg_result = await db.execute(current_leg_query)
         current_leg = current_leg_result.scalar() or 1
