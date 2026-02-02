@@ -252,11 +252,33 @@ async def _async_recalculate(event_id: int) -> dict:
 
         await db.commit()
 
+        # Build recent catches list for Firebase (sorted by validated_at desc)
+        recent_catches = []
+        sorted_by_validated = sorted(
+            approved_catches,
+            key=lambda c: c.validated_at or c.submitted_at,
+            reverse=True
+        )[:20]
+        for catch in sorted_by_validated:
+            user_name = ""
+            if catch.user and catch.user.profile:
+                user_name = f"{catch.user.profile.first_name} {catch.user.profile.last_name}"
+            recent_catches.append({
+                "catch_id": catch.id,
+                "fish_name": catch.fish.name if catch.fish else "Unknown",
+                "length": catch.length,
+                "points": int(catch.length),  # Simplified - actual points calculated elsewhere
+                "angler_name": user_name,
+                "validated_at_ms": int(catch.validated_at.timestamp() * 1000) if catch.validated_at else None,
+                "is_scored": True,
+            })
+
         # Sync to Firebase for web real-time updates (with accurate viewer counting)
         sync_leaderboard_to_firebase(
             event_id=event_id,
             leaderboard_data=result["leaderboard"],
             movements=movements[-10:] if movements else [],
+            recent_catches=recent_catches,
         )
 
         logger.info(
