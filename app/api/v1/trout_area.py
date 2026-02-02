@@ -3561,6 +3561,10 @@ async def recalculate_standings(
                     "total_victories": 0,
                     "total_ties": 0,
                     "total_losses": 0,
+                    "ties_with_fish": 0,
+                    "ties_without_fish": 0,
+                    "losses_with_fish": 0,
+                    "losses_without_fish": 0,
                 }
             stats = user_stats[match.competitor_a_id]
             stats["total_points"] += match.competitor_a_points or Decimal("0")
@@ -3568,10 +3572,18 @@ async def recalculate_standings(
             stats["total_matches"] += 1
             if match.competitor_a_outcome_code == "V":
                 stats["total_victories"] += 1
-            elif match.competitor_a_outcome_code in ["T", "T0"]:
+            elif match.competitor_a_outcome_code == "T":
                 stats["total_ties"] += 1
-            else:
+                stats["ties_with_fish"] += 1
+            elif match.competitor_a_outcome_code == "T0":
+                stats["total_ties"] += 1
+                stats["ties_without_fish"] += 1
+            elif match.competitor_a_outcome_code == "L":
                 stats["total_losses"] += 1
+                stats["losses_with_fish"] += 1
+            elif match.competitor_a_outcome_code == "L0":
+                stats["total_losses"] += 1
+                stats["losses_without_fish"] += 1
 
         if match.competitor_b_id:
             if match.competitor_b_id not in user_stats:
@@ -3582,6 +3594,10 @@ async def recalculate_standings(
                     "total_victories": 0,
                     "total_ties": 0,
                     "total_losses": 0,
+                    "ties_with_fish": 0,
+                    "ties_without_fish": 0,
+                    "losses_with_fish": 0,
+                    "losses_without_fish": 0,
                 }
             stats = user_stats[match.competitor_b_id]
             stats["total_points"] += match.competitor_b_points or Decimal("0")
@@ -3589,10 +3605,18 @@ async def recalculate_standings(
             stats["total_matches"] += 1
             if match.competitor_b_outcome_code == "V":
                 stats["total_victories"] += 1
-            elif match.competitor_b_outcome_code in ["T", "T0"]:
+            elif match.competitor_b_outcome_code == "T":
                 stats["total_ties"] += 1
-            else:
+                stats["ties_with_fish"] += 1
+            elif match.competitor_b_outcome_code == "T0":
+                stats["total_ties"] += 1
+                stats["ties_without_fish"] += 1
+            elif match.competitor_b_outcome_code == "L":
                 stats["total_losses"] += 1
+                stats["losses_with_fish"] += 1
+            elif match.competitor_b_outcome_code == "L0":
+                stats["total_losses"] += 1
+                stats["losses_without_fish"] += 1
 
     # Create standing records
     for user_id, stats in user_stats.items():
@@ -3611,6 +3635,10 @@ async def recalculate_standings(
             total_victories=stats["total_victories"],
             total_ties=stats["total_ties"],
             total_losses=stats["total_losses"],
+            ties_with_fish=stats["ties_with_fish"],
+            ties_without_fish=stats["ties_without_fish"],
+            losses_with_fish=stats["losses_with_fish"],
+            losses_without_fish=stats["losses_without_fish"],
         )
         db.add(standing)
 
