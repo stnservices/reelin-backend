@@ -53,21 +53,14 @@ if settings.sentry_dsn:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler for startup/shutdown events."""
-    # Import here to avoid circular imports
-    from app.api.v1.live import start_redis_listener, stop_redis_listener
-
     # Startup
     if settings.debug:
         # In development, create tables automatically
         await init_db()
 
-    # Start Redis Pub/Sub listener for SSE bridge (Celery -> FastAPI)
-    await start_redis_listener()
-
     yield
 
-    # Shutdown
-    await stop_redis_listener()
+    # Shutdown (nothing needed)
 
 
 app = FastAPI(
