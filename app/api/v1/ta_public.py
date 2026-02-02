@@ -301,7 +301,7 @@ async def get_public_standings(
         avatar_url = None
 
         if profile:
-            display_name = profile.display_name or f"User {standing.user_id}"
+            display_name = profile.full_name or f"User {standing.user_id}"
             avatar_url = profile.avatar_url
 
         # Calculate position change
