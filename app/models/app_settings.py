@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -40,6 +40,9 @@ class AppSettings(Base):
 
     # Release notes (optional, shown in update dialog)
     release_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Ads settings
+    ads_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     # Force update message (optional, shown when update is required)
     force_update_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
