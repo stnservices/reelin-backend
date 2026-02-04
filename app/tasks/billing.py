@@ -6,6 +6,7 @@ Handles invoice generation when events are completed.
 import asyncio
 import logging
 import random
+import traceback
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -73,7 +74,7 @@ def generate_event_invoice(self, event_id: int):
             loop.close()
 
     except Exception as e:
-        logger.error(f"Failed to generate invoice for event {event_id}: {e}")
+        logger.error(f"Failed to generate invoice for event {event_id}: {e}\n{traceback.format_exc()}")
         raise self.retry(exc=e, countdown=30)
 
 
