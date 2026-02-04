@@ -334,7 +334,7 @@ async def get_advanced_stats(
     for catch in species_best.values():
         personal_bests.append(PersonalBestItem(
             species_id=catch.fish_id,
-            species_name=catch.fish.name if catch.fish else "Unknown",
+            species_name=catch.fish.name_en if catch.fish else "Unknown",
             length_cm=catch.length,
             weight_kg=catch.weight,
             event_id=catch.event_id,
@@ -349,7 +349,7 @@ async def get_advanced_stats(
     species_counts: dict[int, tuple[str, int]] = {}  # id -> (name, count)
     for catch in catches:
         species_id = catch.fish_id
-        species_name = catch.fish.name if catch.fish else "Unknown"
+        species_name = catch.fish.name_en if catch.fish else "Unknown"
         if species_id in species_counts:
             species_counts[species_id] = (species_name, species_counts[species_id][1] + 1)
         else:
@@ -537,7 +537,7 @@ async def export_catch_data(
         ExportCatchItem(
             catch_id=catch.id,
             event_name=catch.event.name if catch.event else "Unknown",
-            species_name=catch.fish.name if catch.fish else "Unknown",
+            species_name=catch.fish.name_en if catch.fish else "Unknown",
             length_cm=catch.length,
             weight_kg=catch.weight,
             points=catch.points,

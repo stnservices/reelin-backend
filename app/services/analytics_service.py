@@ -125,7 +125,7 @@ class AnalyticsService:
             "last_catches": [
                 {
                     "id": c.id,
-                    "species_name": c.fish.name if c.fish else "Unknown",
+                    "species_name": c.fish.name_en if c.fish else "Unknown",
                     "species_name_en": c.fish.name_en if c.fish else None,
                     "species_name_ro": c.fish.name_ro if c.fish else None,
                     "length_cm": c.length,
@@ -269,7 +269,7 @@ class AnalyticsService:
             biggest_catch = {
                 "id": biggest.id,
                 "species_id": biggest.fish_id,
-                "species_name": biggest.fish.name if biggest.fish else "Unknown",
+                "species_name": biggest.fish.name_en if biggest.fish else "Unknown",
                 "species_name_en": biggest.fish.name_en if biggest.fish else None,
                 "species_name_ro": biggest.fish.name_ro if biggest.fish else None,
                 "length_cm": biggest.length,
@@ -360,7 +360,7 @@ class AnalyticsService:
                 seen_species.add(c.fish_id)
                 personal_bests.append({
                     "species_id": c.fish_id,
-                    "species_name": c.fish.name if c.fish else "Unknown",
+                    "species_name": c.fish.name_en if c.fish else "Unknown",
                     "species_name_en": c.fish.name_en if c.fish else None,
                     "species_name_ro": c.fish.name_ro if c.fish else None,
                     "length_cm": c.length,

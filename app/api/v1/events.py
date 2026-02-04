@@ -627,7 +627,7 @@ async def get_event(
             "fish_id": fs.fish_id,
             "fish": {
                 "id": fs.fish.id,
-                "name": fs.fish.name,
+                "name": fs.fish.name_en or fs.fish.name,
                 "slug": fs.fish.slug,
                 "name_en": getattr(fs.fish, 'name_en', None),
                 "name_ro": getattr(fs.fish, 'name_ro', None),
@@ -841,7 +841,7 @@ async def get_event_by_slug(
             "fish_id": fs.fish_id,
             "fish": {
                 "id": fs.fish.id,
-                "name": fs.fish.name,
+                "name": fs.fish.name_en or fs.fish.name,
                 "slug": fs.fish.slug,
                 "name_en": getattr(fs.fish, 'name_en', None),
                 "name_ro": getattr(fs.fish, 'name_ro', None),

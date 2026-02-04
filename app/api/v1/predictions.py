@@ -265,7 +265,7 @@ async def get_species_forecast(
             if fish:
                 species_predictions.append(SpeciesPrediction(
                     fish_id=fish.id,
-                    fish_name=fish.name,
+                    fish_name=fish.name_en or fish.name,
                     probability=p["probability"],
                     image_url=fish.image_url,
                 ))
@@ -299,7 +299,7 @@ async def get_species_forecast(
                 if fish:
                     species_predictions.append(SpeciesPrediction(
                         fish_id=fish.id,
-                        fish_name=fish.name,
+                        fish_name=fish.name_en or fish.name,
                         probability=0.5,
                         image_url=fish.image_url,
                     ))

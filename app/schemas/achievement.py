@@ -45,7 +45,7 @@ class AchievementDefinitionResponse(BaseModel):
             event_type_name=achievement.event_type.name if achievement.event_type else None,
             applicable_formats=achievement.applicable_formats,
             fish_id=achievement.fish_id,
-            fish_name=achievement.fish.name if achievement.fish else None,
+            fish_name=achievement.fish.name_en if achievement.fish else None,
             fish_name_ro=achievement.fish.name_ro if achievement.fish else None,
             icon_url=achievement.icon_url,
             badge_color=achievement.badge_color,

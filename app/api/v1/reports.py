@@ -295,7 +295,7 @@ async def get_event_public_stats(
         biggest_catch = {
             "user_name": user_name,
             "length": biggest_catch_entry.length,
-            "species": biggest_catch_entry.fish.name if biggest_catch_entry.fish else "Unknown",
+            "species": biggest_catch_entry.fish.name_en if biggest_catch_entry.fish else "Unknown",
             "species_ro": biggest_catch_entry.fish.name_ro if biggest_catch_entry.fish else None,
             "is_accountable": len(accountable_catches) > 0 and biggest_catch_entry in accountable_catches,
         }
@@ -453,7 +453,7 @@ async def get_event_stats(
     fish_scoring_result = await db.execute(fish_scoring_query)
     fish_scoring = [
         {
-            "fish_name": fs.fish.name if fs.fish else "Unknown",
+            "fish_name": fs.fish.name_en if fs.fish else "Unknown",
             "catch_slots": fs.accountable_catch_slots,
             "min_length": fs.accountable_min_length,
             "under_min_points": fs.under_min_length_points,
@@ -669,7 +669,7 @@ async def export_catches(
             catch.id,
             participant_name,
             catch.user.email if catch.user else "",
-            catch.fish.name if catch.fish else "",
+            catch.fish.name_en if catch.fish else "",
             catch.length or "",
             catch.weight or "",
             catch.points or 0,
