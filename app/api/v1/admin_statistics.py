@@ -1034,7 +1034,7 @@ async def recalculate_user_achievements(
 
     new_achievements: List[str] = []
 
-    # Get user's approved catches from non-test events with fish info
+    # Get user's approved catches from completed, non-test events with fish info
     from sqlalchemy.orm import selectinload
     catches_query = (
         select(Catch)
@@ -1043,6 +1043,8 @@ async def recalculate_user_achievements(
         .where(Catch.user_id == user_id)
         .where(Catch.status == CatchStatus.APPROVED.value)
         .where(Event.is_test == False)
+        .where(Event.is_deleted == False)
+        .where(Event.status == "completed")
         .order_by(Catch.submitted_at)
     )
     catches_result = await db.execute(catches_query)
@@ -1279,7 +1281,7 @@ async def recalculate_achievements_sync(
         events_result = await db.execute(events_query)
         user_events = {e.id: e for e in events_result.scalars().all()}
 
-        # Get user's approved catches with fish and event info
+        # Get user's approved catches with fish and event info (completed events only)
         catches_query = (
             select(Catch)
             .join(Event, Event.id == Catch.event_id)
@@ -1287,6 +1289,8 @@ async def recalculate_achievements_sync(
             .where(Catch.user_id == user_id)
             .where(Catch.status == CatchStatus.APPROVED.value)
             .where(Event.is_test == False)
+            .where(Event.is_deleted == False)
+            .where(Event.status == "completed")
             .order_by(Catch.submitted_at)
         )
         catches_result = await db.execute(catches_query)

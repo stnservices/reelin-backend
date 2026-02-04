@@ -363,7 +363,7 @@ class AchievementService:
 
         # Check species-specific achievements (Pike Master, Zander Master, etc.)
         if fish_slug in AchievementService.PREDATOR_FISH_SLUGS:
-            # Count total catches of this species by user (exclude test events)
+            # Count total catches of this species by user (exclude test/deleted/cancelled events)
             species_count_stmt = (
                 select(func.count(Catch.id))
                 .join(Event, Catch.event_id == Event.id)
@@ -371,6 +371,8 @@ class AchievementService:
                 .where(Catch.fish_id == fish_id)
                 .where(Catch.status == CatchStatus.APPROVED.value)
                 .where(Event.is_test == False)
+                .where(Event.is_deleted == False)
+                .where(Event.status.in_(["ongoing", "completed"]))
             )
             result = await db.execute(species_count_stmt)
             species_catch_count = result.scalar() or 0
@@ -397,7 +399,7 @@ class AchievementService:
             result = await db.execute(predator_stmt)
             predator_fish_ids = [row[0] for row in result.fetchall()]
 
-            # Count total predator catches (exclude test events)
+            # Count total predator catches (exclude test/deleted/cancelled events)
             predator_count_stmt = (
                 select(func.count(Catch.id))
                 .join(Event, Catch.event_id == Event.id)
@@ -405,6 +407,8 @@ class AchievementService:
                 .where(Catch.fish_id.in_(predator_fish_ids))
                 .where(Catch.status == CatchStatus.APPROVED.value)
                 .where(Event.is_test == False)
+                .where(Event.is_deleted == False)
+                .where(Event.status.in_(["ongoing", "completed"]))
             )
             result = await db.execute(predator_count_stmt)
             predator_catch_count = result.scalar() or 0
