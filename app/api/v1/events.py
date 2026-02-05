@@ -175,13 +175,13 @@ async def list_events(
         # Only organizers/admins can see deleted events
         if current_user is None:
             raise HTTPException(
-                status_code=http_http_status.HTTP_401_UNAUTHORIZED,
+                status_code=http_status.HTTP_401_UNAUTHORIZED,
                 detail="Authentication required to view deleted events",
             )
         user_roles = current_user.profile.roles if current_user.profile else []
         if "administrator" not in user_roles and "organizer" not in user_roles:
             raise HTTPException(
-                status_code=http_http_status.HTTP_403_FORBIDDEN,
+                status_code=http_status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to view deleted events",
             )
         query = query.where(Event.is_deleted == True)
