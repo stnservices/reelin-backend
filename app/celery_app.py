@@ -1,6 +1,7 @@
 """Celery application configuration."""
 
 import os
+import socket
 import ssl
 
 # Solo pool (-P solo) works with async code without patching
@@ -37,6 +38,15 @@ celery_app.conf.update(
     broker_transport_options={
         "visibility_timeout": 3600,  # 1 hour - task re-queue timeout
         "health_check_interval": 30,
+        "socket_keepalive": True,
+        "socket_keepalive_options": {
+            socket.TCP_KEEPIDLE: 30,
+            socket.TCP_KEEPINTVL: 10,
+            socket.TCP_KEEPCNT: 3,
+        },
+        "retry_on_timeout": True,
+        "socket_connect_timeout": 5,
+        "socket_timeout": 5,
     },
 
     # Task settings
@@ -68,6 +78,9 @@ celery_app.conf.update(
             "rate_limit": "10/s",  # Max 10 recalculations per second
         },
     },
+
+    # Connection loss behavior
+    worker_cancel_long_running_tasks_on_connection_loss=True,
 
     # Result expiration (1 hour)
     result_expires=3600,
