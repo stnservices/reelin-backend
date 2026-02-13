@@ -3913,12 +3913,10 @@ async def generate_knockout_bracket(
         for standing in standings[:direct_count]:
             semifinal_competitors.append(standing.user_id)
         # Requalification winners will be determined later
-        # For now, fill remaining semifinal slots with next ranked from qualifier
-        # (requalification winners will replace these positions when they complete)
+        # Use None placeholders — advance_requalification_to_semifinals will fill them
         requalification_winners = settings.requalification_slots // 2
-        remaining_slots = requalification_winners
-        for standing in standings[direct_count:direct_count + remaining_slots]:
-            semifinal_competitors.append(standing.user_id)
+        for _ in range(requalification_winners):
+            semifinal_competitors.append(None)
     else:
         # Top 4 go directly to semifinals
         for standing in standings[:4]:
@@ -3928,14 +3926,14 @@ async def generate_knockout_bracket(
     # - SF1: Seed 1 vs Winner of Requalification Match 1 (3v5)
     # - SF2: Seed 2 vs Winner of Requalification Match 2 (4v6)
     # When requalification exists, positions 2 and 3 in semifinal_competitors
-    # are placeholders that will be replaced by requalification winners.
+    # are None placeholders — filled by advance_requalification_to_semifinals.
     if len(semifinal_competitors) >= 4:
         sf1 = await create_bracket_match(
             phase=TATournamentPhase.SEMIFINAL.value,
             match_number=1,
             leg_number=next_leg,
             competitor_a_id=semifinal_competitors[0],  # Seed 1
-            competitor_b_id=semifinal_competitors[2],  # Winner of 3v5 (placeholder: seed 3)
+            competitor_b_id=semifinal_competitors[2],  # None when RQ enabled
         )
         matches_created.append(sf1)
 
@@ -3944,7 +3942,7 @@ async def generate_knockout_bracket(
             match_number=2,
             leg_number=next_leg,
             competitor_a_id=semifinal_competitors[1],  # Seed 2
-            competitor_b_id=semifinal_competitors[3],  # Winner of 4v6 (placeholder: seed 4)
+            competitor_b_id=semifinal_competitors[3],  # None when RQ enabled
         )
         matches_created.append(sf2)
 
@@ -4320,7 +4318,7 @@ async def advance_requalification_to_semifinals(
         new_competitor = sf.competitor_b_id
 
         if old_competitor and old_competitor != new_competitor:
-            # Delete old game card for removed competitor
+            # Delete old game card for removed placeholder competitor
             await db.execute(
                 delete(TAGameCard).where(
                     TAGameCard.match_id == sf.id,
@@ -4328,6 +4326,7 @@ async def advance_requalification_to_semifinals(
                 )
             )
 
+        if new_competitor and new_competitor != old_competitor:
             # Update existing game card for competitor_a to point to new opponent
             await db.execute(
                 update(TAGameCard).where(
