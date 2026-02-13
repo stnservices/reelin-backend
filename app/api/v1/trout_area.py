@@ -3822,7 +3822,8 @@ async def generate_knockout_bracket(
             seat_b=1,
             competitor_a_id=competitor_a_id,
             competitor_b_id=competitor_b_id,
-            status=TAMatchStatus.SCHEDULED.value,
+            status=TAMatchStatus.IN_PROGRESS.value if (competitor_a_id and competitor_b_id) else TAMatchStatus.SCHEDULED.value,
+            started_at=datetime.now(timezone.utc) if (competitor_a_id and competitor_b_id) else None,
             is_ghost_match=False,
         )
         db.add(match)
@@ -4127,6 +4128,8 @@ async def advance_to_finals(
     if grand_final:
         grand_final.competitor_a_id = sf_results[0]["winner"]
         grand_final.competitor_b_id = sf_results[1]["winner"]
+        grand_final.status = TAMatchStatus.IN_PROGRESS.value
+        grand_final.started_at = datetime.now(timezone.utc)
 
         # Create game cards for grand final competitors
         for user_id, opponent_id in [
@@ -4158,6 +4161,8 @@ async def advance_to_finals(
     if small_final:
         small_final.competitor_a_id = sf_results[0]["loser"]
         small_final.competitor_b_id = sf_results[1]["loser"]
+        small_final.status = TAMatchStatus.IN_PROGRESS.value
+        small_final.started_at = datetime.now(timezone.utc)
 
         # Create game cards for small final competitors
         for user_id, opponent_id in [
@@ -4352,6 +4357,10 @@ async def advance_requalification_to_semifinals(
                     phase=TATournamentPhase.SEMIFINAL.value,
                 )
                 db.add(card)
+
+        # Both competitors are now known — start the match
+        sf.status = TAMatchStatus.IN_PROGRESS.value
+        sf.started_at = datetime.now(timezone.utc)
 
     await db.commit()
 
