@@ -307,6 +307,12 @@ async def _cascade_knockout_update(db: AsyncSession, event_id: int, match: "TAMa
                 new_sf2_b
             )
 
+        # Auto-start semifinals now that both competitors are known
+        for sf in semifinals:
+            if sf.competitor_a_id and sf.competitor_b_id and sf.status != TAMatchStatus.IN_PROGRESS.value:
+                sf.status = TAMatchStatus.IN_PROGRESS.value
+                sf.started_at = datetime.now(timezone.utc)
+
         return {"cascaded_to": "semifinals", "updated_winners": requalification_winners}
 
     elif phase == TATournamentPhase.SEMIFINAL.value:
@@ -438,6 +444,12 @@ async def _cascade_knockout_update(db: AsyncSession, event_id: int, match: "TAMa
                             is_ghost_opponent=False,
                             status=TAGameCardStatus.DRAFT.value,
                         ))
+
+        # Auto-start finals now that both competitors are known
+        for final_match in [grand_final, small_final]:
+            if final_match and final_match.competitor_a_id and final_match.competitor_b_id and final_match.status != TAMatchStatus.IN_PROGRESS.value:
+                final_match.status = TAMatchStatus.IN_PROGRESS.value
+                final_match.started_at = datetime.now(timezone.utc)
 
         return {
             "cascaded_to": "finals",
@@ -2966,6 +2978,9 @@ async def submit_game_card(
                 if card.user_id:
                     await statistics_service.update_user_stats_for_event(db, card.user_id, event_id)
 
+                # Auto-cascade to next phase if all matches in this phase complete
+                await _cascade_knockout_update(db, event_id, match)
+
     # Check if opponent has already submitted - if so, update opponent_catches
     if card.opponent_id:
         opponent_card_query = select(TAGameCard).where(
@@ -3148,6 +3163,9 @@ async def validate_opponent_card(
                     await statistics_service.update_user_stats_for_event(db, match.competitor_a_id, event_id)
                 if match.competitor_b_id:
                     await statistics_service.update_user_stats_for_event(db, match.competitor_b_id, event_id)
+
+                # Auto-cascade to next phase if all matches in this phase complete
+                await _cascade_knockout_update(db, event_id, match)
     else:
         opponent_card.is_disputed = True
         opponent_card.dispute_reason = data.dispute_reason
@@ -3440,6 +3458,9 @@ async def admin_update_game_card(
             # Trigger stats recalculation for the player (ghost has no user_id)
             if card.user_id:
                 await statistics_service.update_user_stats_for_event(db, card.user_id, card.event_id)
+
+            # Auto-cascade to next phase if all matches in this phase complete
+            await _cascade_knockout_update(db, card.event_id, match)
         else:
             # Regular match - check opponent's card
             opp_card_query = select(TAGameCard).where(
@@ -3472,6 +3493,9 @@ async def admin_update_game_card(
                     await statistics_service.update_user_stats_for_event(db, match.player_a_id, card.event_id)
                 if match.player_b_id:
                     await statistics_service.update_user_stats_for_event(db, match.player_b_id, card.event_id)
+
+                # Auto-cascade to next phase if all matches in this phase complete
+                await _cascade_knockout_update(db, card.event_id, match)
 
     await db.commit()
     await db.refresh(card)
