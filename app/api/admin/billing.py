@@ -617,6 +617,76 @@ async def verify_profile_by_id(
     return MessageResponse(message="Billing profile verified successfully")
 
 
+@router.delete("/profiles/{profile_id}", response_model=MessageResponse)
+async def delete_profile_by_id(
+    profile_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+):
+    """Delete a specific billing profile by ID (admin)."""
+    query = select(OrganizerBillingProfile).where(
+        OrganizerBillingProfile.id == profile_id
+    )
+    result = await db.execute(query)
+    profile = result.scalar_one_or_none()
+
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Billing profile not found",
+        )
+
+    user_id = profile.user_id
+
+    # Check if it's the only profile
+    if profile.is_primary:
+        count_query = select(func.count()).select_from(OrganizerBillingProfile).where(
+            OrganizerBillingProfile.user_id == user_id,
+            OrganizerBillingProfile.id != profile_id,
+        )
+        count_result = await db.execute(count_query)
+        other_count = count_result.scalar()
+
+        if other_count == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot delete the only billing profile. Create another profile first.",
+            )
+
+    # Check for associated invoices
+    invoice_query = select(func.count()).select_from(PlatformInvoice).where(
+        PlatformInvoice.billing_profile_id == profile_id
+    )
+    invoice_result = await db.execute(invoice_query)
+    invoice_count = invoice_result.scalar()
+
+    if invoice_count > 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot delete profile with {invoice_count} associated invoice(s). Deactivate it instead.",
+        )
+
+    was_primary = profile.is_primary
+    await db.delete(profile)
+    await db.commit()
+
+    # If we deleted the primary profile, promote another one
+    if was_primary:
+        first_query = (
+            select(OrganizerBillingProfile)
+            .where(OrganizerBillingProfile.user_id == user_id)
+            .order_by(OrganizerBillingProfile.created_at)
+            .limit(1)
+        )
+        first_result = await db.execute(first_query)
+        first_profile = first_result.scalar_one_or_none()
+        if first_profile:
+            first_profile.is_primary = True
+            await db.commit()
+
+    return MessageResponse(message="Billing profile deleted successfully")
+
+
 @router.post(
     "/organizers/{user_id}/profiles/{profile_id}/set-primary",
     response_model=BillingProfileResponse,
@@ -861,6 +931,35 @@ async def update_pricing_tier(
     await db.refresh(new_tier, ["event_type"])
 
     return tier_to_response(new_tier)
+
+
+@router.delete("/pricing/{tier_id}", response_model=MessageResponse)
+async def delete_pricing_tier(
+    tier_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+):
+    """Soft-delete a pricing tier by setting effective_until to now."""
+    query = select(PricingTier).where(PricingTier.id == tier_id)
+    result = await db.execute(query)
+    tier = result.scalar_one_or_none()
+
+    if not tier:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Pricing tier not found",
+        )
+
+    if tier.effective_until is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Pricing tier is already expired",
+        )
+
+    tier.effective_until = datetime.now(timezone.utc)
+    await db.commit()
+
+    return MessageResponse(message="Pricing tier deleted successfully")
 
 
 # ============== Per-Profile Pricing Endpoints ==============
