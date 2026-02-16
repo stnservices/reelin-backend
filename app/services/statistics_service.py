@@ -5,7 +5,7 @@ from typing import Optional
 
 from sqlalchemy import select, func, distinct, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.statistics import UserEventTypeStats
 from app.models.event import Event, EventType, EventStatus
@@ -489,6 +489,372 @@ class StatisticsService:
         tournament_wins = tournament_wins_result.scalar() or 0
 
         tournament_podiums_result = await db.execute(
+            select(func.count(TAQualifierStanding.id))
+            .join(Event, TAQualifierStanding.event_id == Event.id)
+            .where(TAQualifierStanding.user_id == user_id)
+            .where(TAQualifierStanding.rank <= 3)
+            .where(Event.status == EventStatus.COMPLETED.value)
+            .where(Event.is_test == False)
+        )
+        tournament_podiums = tournament_podiums_result.scalar() or 0
+
+        return {
+            "ta_total_matches": total_matches,
+            "ta_match_wins": total_wins,
+            "ta_match_losses": total_losses,
+            "ta_match_ties": total_ties,
+            "ta_total_catches": total_catches,
+            "ta_tournament_wins": tournament_wins,
+            "ta_tournament_podiums": tournament_podiums,
+        }
+
+    # ── Sync versions for Celery tasks (psycopg2) ──────────────────────
+
+    @staticmethod
+    def update_user_stats_for_event_sync(
+        db: Session,
+        user_id: int,
+        event_id: int,
+    ) -> None:
+        """Sync version of update_user_stats_for_event for Celery tasks."""
+        event = db.get(Event, event_id)
+        if not event:
+            return
+        StatisticsService._recalculate_stats_sync(db, user_id, None)
+        StatisticsService._recalculate_stats_sync(db, user_id, event.event_type_id)
+
+    @staticmethod
+    def recalculate_all_stats_sync(
+        db: Session,
+        user_id: int,
+    ) -> None:
+        """Sync version of recalculate_all_stats for Celery tasks."""
+        stmt = (
+            select(distinct(Event.event_type_id))
+            .join(EventEnrollment, EventEnrollment.event_id == Event.id)
+            .where(EventEnrollment.user_id == user_id)
+            .where(EventEnrollment.status == "approved")
+        )
+        result = db.execute(stmt)
+        event_type_ids = [row[0] for row in result.fetchall()]
+
+        StatisticsService._recalculate_stats_sync(db, user_id, None)
+        for event_type_id in event_type_ids:
+            StatisticsService._recalculate_stats_sync(db, user_id, event_type_id)
+
+    @staticmethod
+    def _recalculate_stats_sync(
+        db: Session,
+        user_id: int,
+        event_type_id: Optional[int],
+    ) -> UserEventTypeStats:
+        """Sync version of _recalculate_stats for Celery tasks."""
+        stmt = select(UserEventTypeStats).where(
+            and_(
+                UserEventTypeStats.user_id == user_id,
+                UserEventTypeStats.event_type_id == event_type_id
+                if event_type_id is not None
+                else UserEventTypeStats.event_type_id.is_(None),
+            )
+        )
+        result = db.execute(stmt)
+        stats = result.scalar_one_or_none()
+
+        if stats is None:
+            stats = UserEventTypeStats(user_id=user_id, event_type_id=event_type_id)
+            db.add(stats)
+
+        event_filter = [
+            EventEnrollment.user_id == user_id,
+            EventEnrollment.status == "approved",
+            Event.is_test == False,
+        ]
+        if event_type_id is not None:
+            event_filter.append(Event.event_type_id == event_type_id)
+
+        events_stmt = (
+            select(func.count(distinct(Event.id)))
+            .join(EventEnrollment, EventEnrollment.event_id == Event.id)
+            .where(and_(*event_filter))
+            .where(Event.status.in_([EventStatus.ONGOING.value, EventStatus.COMPLETED.value]))
+        )
+        result = db.execute(events_stmt)
+        stats.total_events = result.scalar() or 0
+
+        current_year = datetime.now().year
+        events_year_stmt = (
+            select(func.count(distinct(Event.id)))
+            .join(EventEnrollment, EventEnrollment.event_id == Event.id)
+            .where(and_(*event_filter))
+            .where(Event.status.in_([EventStatus.ONGOING.value, EventStatus.COMPLETED.value]))
+            .where(func.extract("year", Event.start_date) == current_year)
+        )
+        result = db.execute(events_year_stmt)
+        stats.total_events_this_year = result.scalar() or 0
+
+        catch_filter = [
+            Catch.user_id == user_id,
+            Event.is_test == False,
+        ]
+        if event_type_id is not None:
+            catch_filter.append(Event.event_type_id == event_type_id)
+
+        catches_stmt = (
+            select(func.count(Catch.id))
+            .join(Event, Catch.event_id == Event.id)
+            .where(and_(*catch_filter))
+        )
+        result = db.execute(catches_stmt)
+        stats.total_catches = result.scalar() or 0
+
+        approved_stmt = (
+            select(func.count(Catch.id))
+            .join(Event, Catch.event_id == Event.id)
+            .where(and_(*catch_filter))
+            .where(Catch.status == CatchStatus.APPROVED.value)
+        )
+        result = db.execute(approved_stmt)
+        stats.total_approved_catches = result.scalar() or 0
+
+        rejected_stmt = (
+            select(func.count(Catch.id))
+            .join(Event, Catch.event_id == Event.id)
+            .where(and_(*catch_filter))
+            .where(Catch.status == CatchStatus.REJECTED.value)
+        )
+        result = db.execute(rejected_stmt)
+        stats.total_rejected_catches = result.scalar() or 0
+
+        largest_stmt = (
+            select(Catch.length, Catch.fish_id)
+            .join(Event, Catch.event_id == Event.id)
+            .where(and_(*catch_filter))
+            .where(Catch.status == CatchStatus.APPROVED.value)
+            .order_by(Catch.length.desc())
+            .limit(1)
+        )
+        result = db.execute(largest_stmt)
+        largest = result.first()
+        if largest:
+            stats.largest_catch_cm = largest[0]
+            stats.largest_catch_species_id = largest[1]
+        else:
+            stats.largest_catch_cm = None
+            stats.largest_catch_species_id = None
+
+        avg_stmt = (
+            select(func.avg(Catch.length))
+            .join(Event, Catch.event_id == Event.id)
+            .where(and_(*catch_filter))
+            .where(Catch.status == CatchStatus.APPROVED.value)
+        )
+        result = db.execute(avg_stmt)
+        stats.average_catch_length = result.scalar() or 0.0
+
+        species_stmt = (
+            select(func.count(distinct(Catch.fish_id)))
+            .join(Event, Catch.event_id == Event.id)
+            .where(and_(*catch_filter))
+            .where(Catch.status == CatchStatus.APPROVED.value)
+        )
+        result = db.execute(species_stmt)
+        stats.unique_species_count = result.scalar() or 0
+
+        scoreboard_filter = [
+            EventScoreboard.user_id == user_id,
+            Event.is_test == False,
+        ]
+        if event_type_id is not None:
+            scoreboard_filter.append(Event.event_type_id == event_type_id)
+
+        points_stmt = (
+            select(func.sum(EventScoreboard.total_points))
+            .join(Event, EventScoreboard.event_id == Event.id)
+            .where(and_(*scoreboard_filter))
+            .where(Event.status == EventStatus.COMPLETED.value)
+        )
+        result = db.execute(points_stmt)
+        stats.total_points = result.scalar() or 0.0
+
+        bonus_stmt = (
+            select(func.sum(EventScoreboard.bonus_points))
+            .join(Event, EventScoreboard.event_id == Event.id)
+            .where(and_(*scoreboard_filter))
+            .where(Event.status == EventStatus.COMPLETED.value)
+        )
+        result = db.execute(bonus_stmt)
+        stats.total_bonus_points = result.scalar() or 0
+
+        penalty_stmt = (
+            select(func.sum(EventScoreboard.penalty_points))
+            .join(Event, EventScoreboard.event_id == Event.id)
+            .where(and_(*scoreboard_filter))
+            .where(Event.status == EventStatus.COMPLETED.value)
+        )
+        result = db.execute(penalty_stmt)
+        stats.total_penalty_points = result.scalar() or 0
+
+        wins_stmt = (
+            select(func.count(EventScoreboard.id))
+            .join(Event, EventScoreboard.event_id == Event.id)
+            .where(and_(*scoreboard_filter))
+            .where(Event.status == EventStatus.COMPLETED.value)
+            .where(EventScoreboard.rank == 1)
+        )
+        result = db.execute(wins_stmt)
+        stats.total_wins = result.scalar() or 0
+
+        podium_stmt = (
+            select(func.count(EventScoreboard.id))
+            .join(Event, EventScoreboard.event_id == Event.id)
+            .where(and_(*scoreboard_filter))
+            .where(Event.status == EventStatus.COMPLETED.value)
+            .where(EventScoreboard.rank <= 3)
+        )
+        result = db.execute(podium_stmt)
+        stats.podium_finishes = result.scalar() or 0
+
+        best_rank_stmt = (
+            select(func.min(EventScoreboard.rank))
+            .join(Event, EventScoreboard.event_id == Event.id)
+            .where(and_(*scoreboard_filter))
+            .where(Event.status == EventStatus.COMPLETED.value)
+            .where(EventScoreboard.rank > 0)
+        )
+        result = db.execute(best_rank_stmt)
+        stats.best_rank = result.scalar()
+
+        last_event_stmt = (
+            select(Event.id, Event.end_date)
+            .join(EventEnrollment, EventEnrollment.event_id == Event.id)
+            .where(and_(*event_filter))
+            .where(Event.status.in_([EventStatus.ONGOING.value, EventStatus.COMPLETED.value]))
+            .order_by(Event.end_date.desc())
+            .limit(1)
+        )
+        result = db.execute(last_event_stmt)
+        last_event = result.first()
+        if last_event:
+            stats.last_event_id = last_event[0]
+            stats.last_event_date = last_event[1]
+
+        if event_type_id is None:
+            ta_stats = StatisticsService._calc_ta_stats_sync(db, user_id)
+            if any(v is not None for v in ta_stats.values()):
+                stats.ta_total_matches = ta_stats.get('ta_total_matches')
+                stats.ta_match_wins = ta_stats.get('ta_match_wins')
+                stats.ta_match_losses = ta_stats.get('ta_match_losses')
+                stats.ta_match_ties = ta_stats.get('ta_match_ties')
+                stats.ta_total_catches = ta_stats.get('ta_total_catches')
+                stats.ta_tournament_wins = ta_stats.get('ta_tournament_wins')
+                stats.ta_tournament_podiums = ta_stats.get('ta_tournament_podiums')
+
+        stats.last_updated = datetime.utcnow()
+        db.flush()
+
+        return stats
+
+    @staticmethod
+    def _calc_ta_stats_sync(
+        db: Session,
+        user_id: int,
+    ) -> dict:
+        """Sync version of _calc_ta_stats for Celery tasks."""
+        participation_check = db.execute(
+            select(func.count(TAMatch.id))
+            .where(
+                or_(
+                    TAMatch.competitor_a_id == user_id,
+                    TAMatch.competitor_b_id == user_id,
+                )
+            )
+            .where(TAMatch.status == TAMatchStatus.COMPLETED.value)
+        )
+        total_matches = participation_check.scalar() or 0
+
+        if total_matches == 0:
+            return {
+                "ta_total_matches": None,
+                "ta_match_wins": None,
+                "ta_match_losses": None,
+                "ta_match_ties": None,
+                "ta_total_catches": None,
+                "ta_tournament_wins": None,
+                "ta_tournament_podiums": None,
+            }
+
+        wins_a = db.execute(
+            select(func.count(TAMatch.id))
+            .where(TAMatch.competitor_a_id == user_id)
+            .where(TAMatch.status == TAMatchStatus.COMPLETED.value)
+            .where(TAMatch.competitor_a_outcome_code.like("V%"))
+        )
+        wins_a_count = wins_a.scalar() or 0
+
+        wins_b = db.execute(
+            select(func.count(TAMatch.id))
+            .where(TAMatch.competitor_b_id == user_id)
+            .where(TAMatch.status == TAMatchStatus.COMPLETED.value)
+            .where(TAMatch.competitor_b_outcome_code.like("V%"))
+        )
+        wins_b_count = wins_b.scalar() or 0
+        total_wins = wins_a_count + wins_b_count
+
+        losses_a = db.execute(
+            select(func.count(TAMatch.id))
+            .where(TAMatch.competitor_a_id == user_id)
+            .where(TAMatch.status == TAMatchStatus.COMPLETED.value)
+            .where(TAMatch.competitor_a_outcome_code.like("L%"))
+        )
+        losses_a_count = losses_a.scalar() or 0
+
+        losses_b = db.execute(
+            select(func.count(TAMatch.id))
+            .where(TAMatch.competitor_b_id == user_id)
+            .where(TAMatch.status == TAMatchStatus.COMPLETED.value)
+            .where(TAMatch.competitor_b_outcome_code.like("L%"))
+        )
+        losses_b_count = losses_b.scalar() or 0
+        total_losses = losses_a_count + losses_b_count
+
+        ties_a = db.execute(
+            select(func.count(TAMatch.id))
+            .where(TAMatch.competitor_a_id == user_id)
+            .where(TAMatch.status == TAMatchStatus.COMPLETED.value)
+            .where(TAMatch.competitor_a_outcome_code.like("T%"))
+        )
+        ties_a_count = ties_a.scalar() or 0
+
+        ties_b = db.execute(
+            select(func.count(TAMatch.id))
+            .where(TAMatch.competitor_b_id == user_id)
+            .where(TAMatch.status == TAMatchStatus.COMPLETED.value)
+            .where(TAMatch.competitor_b_outcome_code.like("T%"))
+        )
+        ties_b_count = ties_b.scalar() or 0
+        total_ties = ties_a_count + ties_b_count
+
+        catches_result = db.execute(
+            select(func.coalesce(func.sum(TAGameCard.my_catches), 0))
+            .join(TAMatch, TAGameCard.match_id == TAMatch.id)
+            .where(TAGameCard.user_id == user_id)
+            .where(TAGameCard.status == TAGameCardStatus.VALIDATED.value)
+            .where(TAMatch.status == TAMatchStatus.COMPLETED.value)
+            .where(TAGameCard.my_catches.isnot(None))
+        )
+        total_catches = catches_result.scalar() or 0
+
+        tournament_wins_result = db.execute(
+            select(func.count(TAQualifierStanding.id))
+            .join(Event, TAQualifierStanding.event_id == Event.id)
+            .where(TAQualifierStanding.user_id == user_id)
+            .where(TAQualifierStanding.rank == 1)
+            .where(Event.status == EventStatus.COMPLETED.value)
+            .where(Event.is_test == False)
+        )
+        tournament_wins = tournament_wins_result.scalar() or 0
+
+        tournament_podiums_result = db.execute(
             select(func.count(TAQualifierStanding.id))
             .join(Event, TAQualifierStanding.event_id == Event.id)
             .where(TAQualifierStanding.user_id == user_id)

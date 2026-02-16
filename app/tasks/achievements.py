@@ -16,7 +16,7 @@ from sqlalchemy import select, and_
 from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery_app
-from app.database import create_celery_session_maker
+from app.database import CelerySessionContext
 from app.services.achievement_service import achievement_service
 from app.services.statistics_service import statistics_service
 from app.models.event import Event, EventStatus
@@ -42,78 +42,78 @@ async def _process_catch_achievements(
     user_id: int,
 ) -> List[int]:
     """Process achievements for a validated catch."""
-    session_maker = create_celery_session_maker()
-    async with session_maker() as db:
-        try:
-            # Get catch details with fish info
-            from app.models.fish import Fish
-            catch_stmt = (
-                select(Catch)
-                .where(Catch.id == catch_id)
-                .options(selectinload(Catch.fish))
-            )
-            result = await db.execute(catch_stmt)
-            catch = result.scalar_one_or_none()
+    async with CelerySessionContext() as session_maker:
+        async with session_maker() as db:
+            try:
+                # Get catch details with fish info
+                from app.models.fish import Fish
+                catch_stmt = (
+                    select(Catch)
+                    .where(Catch.id == catch_id)
+                    .options(selectinload(Catch.fish))
+                )
+                result = await db.execute(catch_stmt)
+                catch = result.scalar_one_or_none()
 
-            if not catch or catch.status != CatchStatus.APPROVED.value:
+                if not catch or catch.status != CatchStatus.APPROVED.value:
+                    return []
+
+                # Get event details for time-based achievements
+                event = await db.get(Event, event_id)
+                if not event:
+                    return []
+
+                # Build context for achievement checking
+                context = {
+                    "catch_length": catch.length,
+                    "catch_weight": catch.weight,
+                    "fish_id": catch.fish_id,
+                    "fish_slug": catch.fish.slug if catch.fish else None,
+                }
+
+                # Check if personal best (largest catch by this user)
+                from sqlalchemy import func
+                largest_stmt = (
+                    select(func.max(Catch.length))
+                    .where(Catch.user_id == user_id)
+                    .where(Catch.status == CatchStatus.APPROVED.value)
+                    .where(Catch.id != catch_id)
+                )
+                result = await db.execute(largest_stmt)
+                prev_best = result.scalar() or 0
+                context["is_personal_best"] = catch.length > prev_best
+
+                # Check early bird (first 30 minutes)
+                early_cutoff = event.start_date + timedelta(minutes=30)
+                catch_time = catch.catch_time or catch.submitted_at
+                context["is_early_bird"] = catch_time <= early_cutoff
+
+                # Check last minute (final 30 minutes)
+                late_cutoff = event.end_date - timedelta(minutes=30)
+                context["is_last_minute"] = catch_time >= late_cutoff
+
+                # Update statistics first
+                await statistics_service.update_user_stats_for_event(db, user_id, event_id)
+
+                # Check and award achievements
+                newly_awarded = await achievement_service.check_and_award_achievements(
+                    db,
+                    user_id,
+                    trigger="catch_approved",
+                    event_id=event_id,
+                    catch_id=catch_id,
+                    context=context,
+                )
+
+                await db.commit()
+
+                # Return IDs of newly awarded achievements for notification
+                return [a.id for a in newly_awarded]
+
+            except Exception as e:
+                logger.error(f"Error processing catch achievements: {e}")
+                await db.rollback()
                 return []
-
-            # Get event details for time-based achievements
-            event = await db.get(Event, event_id)
-            if not event:
-                return []
-
-            # Build context for achievement checking
-            context = {
-                "catch_length": catch.length,
-                "catch_weight": catch.weight,
-                "fish_id": catch.fish_id,
-                "fish_slug": catch.fish.slug if catch.fish else None,
-            }
-
-            # Check if personal best (largest catch by this user)
-            from sqlalchemy import func
-            largest_stmt = (
-                select(func.max(Catch.length))
-                .where(Catch.user_id == user_id)
-                .where(Catch.status == CatchStatus.APPROVED.value)
-                .where(Catch.id != catch_id)
-            )
-            result = await db.execute(largest_stmt)
-            prev_best = result.scalar() or 0
-            context["is_personal_best"] = catch.length > prev_best
-
-            # Check early bird (first 30 minutes)
-            early_cutoff = event.start_date + timedelta(minutes=30)
-            catch_time = catch.catch_time or catch.submitted_at
-            context["is_early_bird"] = catch_time <= early_cutoff
-
-            # Check last minute (final 30 minutes)
-            late_cutoff = event.end_date - timedelta(minutes=30)
-            context["is_last_minute"] = catch_time >= late_cutoff
-
-            # Update statistics first
-            await statistics_service.update_user_stats_for_event(db, user_id, event_id)
-
-            # Check and award achievements
-            newly_awarded = await achievement_service.check_and_award_achievements(
-                db,
-                user_id,
-                trigger="catch_approved",
-                event_id=event_id,
-                catch_id=catch_id,
-                context=context,
-            )
-
-            await db.commit()
-
-            # Return IDs of newly awarded achievements for notification
-            return [a.id for a in newly_awarded]
-
-        except Exception as e:
-            logger.error(f"Error processing catch achievements: {e}")
-            await db.rollback()
-            return []
 
 
 async def _process_event_completion_achievements(
@@ -123,49 +123,49 @@ async def _process_event_completion_achievements(
     initial_rank: Optional[int] = None,
 ) -> List[int]:
     """Process achievements when an event completes."""
-    session_maker = create_celery_session_maker()
-    async with session_maker() as db:
-        try:
-            # Build context
-            context = {
-                "final_rank": final_rank,
-                "rank_improvement": (initial_rank - final_rank) if initial_rank else 0,
-            }
+    async with CelerySessionContext() as session_maker:
+        async with session_maker() as db:
+            try:
+                # Build context
+                context = {
+                    "final_rank": final_rank,
+                    "rank_improvement": (initial_rank - final_rank) if initial_rank else 0,
+                }
 
-            # Update statistics
-            await statistics_service.update_user_stats_for_event(db, user_id, event_id)
+                # Update statistics
+                await statistics_service.update_user_stats_for_event(db, user_id, event_id)
 
-            # Check and award achievements
-            newly_awarded = await achievement_service.check_and_award_achievements(
-                db,
-                user_id,
-                trigger="event_completed",
-                event_id=event_id,
-                context=context,
-            )
+                # Check and award achievements
+                newly_awarded = await achievement_service.check_and_award_achievements(
+                    db,
+                    user_id,
+                    trigger="event_completed",
+                    event_id=event_id,
+                    context=context,
+                )
 
-            await db.commit()
+                await db.commit()
 
-            return [a.id for a in newly_awarded]
+                return [a.id for a in newly_awarded]
 
-        except Exception as e:
-            logger.error(f"Error processing event completion achievements: {e}")
-            await db.rollback()
-            return []
+            except Exception as e:
+                logger.error(f"Error processing event completion achievements: {e}")
+                await db.rollback()
+                return []
 
 
 async def _recalculate_user_stats(user_id: int) -> bool:
     """Recalculate all statistics for a user."""
-    session_maker = create_celery_session_maker()
-    async with session_maker() as db:
-        try:
-            await statistics_service.recalculate_all_stats(db, user_id)
-            await db.commit()
-            return True
-        except Exception as e:
-            logger.error(f"Error recalculating user stats: {e}")
-            await db.rollback()
-            return False
+    async with CelerySessionContext() as session_maker:
+        async with session_maker() as db:
+            try:
+                await statistics_service.recalculate_all_stats(db, user_id)
+                await db.commit()
+                return True
+            except Exception as e:
+                logger.error(f"Error recalculating user stats: {e}")
+                await db.rollback()
+                return False
 
 
 async def _send_achievement_notification(
@@ -175,58 +175,58 @@ async def _send_achievement_notification(
 ) -> bool:
     """Send push notification and in-app (bell) notification for achievement unlock."""
     try:
-        session_maker = create_celery_session_maker()
-        async with session_maker() as db:
-            # Get achievement details
-            achievement = await db.get(AchievementDefinition, achievement_id)
-            if not achievement:
-                return False
+        async with CelerySessionContext() as session_maker:
+            async with session_maker() as db:
+                # Get achievement details
+                achievement = await db.get(AchievementDefinition, achievement_id)
+                if not achievement:
+                    return False
 
-            # Get event name if applicable
-            event_name = None
-            if event_id:
-                event = await db.get(Event, event_id)
-                event_name = event.name if event else None
+                # Get event name if applicable
+                event_name = None
+                if event_id:
+                    event = await db.get(Event, event_id)
+                    event_name = event.name if event else None
 
-            # Import here to avoid circular dependency
-            from app.tasks.notifications import send_notification_to_users
-            from app.models.notification import Notification
+                # Import here to avoid circular dependency
+                from app.tasks.notifications import send_notification_to_users
+                from app.models.notification import Notification
 
-            title = "Achievement Unlocked!"
-            message = f"Congratulations! You earned the '{achievement.name}' badge!"
-            if event_name:
-                message += f" (from {event_name})"
+                title = "Achievement Unlocked!"
+                message = f"Congratulations! You earned the '{achievement.name}' badge!"
+                if event_name:
+                    message += f" (from {event_name})"
 
-            notification_data = {
-                "type": "achievement_unlocked",
-                "achievement_id": achievement_id,
-                "achievement_code": achievement.code,
-                "achievement_name": achievement.name,
-                "achievement_tier": achievement.tier,
-                "achievement_category": achievement.category,
-                "event_id": event_id,
-            }
+                notification_data = {
+                    "type": "achievement_unlocked",
+                    "achievement_id": achievement_id,
+                    "achievement_code": achievement.code,
+                    "achievement_name": achievement.name,
+                    "achievement_tier": achievement.tier,
+                    "achievement_category": achievement.category,
+                    "event_id": event_id,
+                }
 
-            # Create in-app (bell) notification
-            in_app_notification = Notification(
-                user_id=user_id,
-                type="achievement_unlocked",
-                title=title,
-                message=message,
-                data=notification_data,
-            )
-            db.add(in_app_notification)
-            await db.commit()
+                # Create in-app (bell) notification
+                in_app_notification = Notification(
+                    user_id=user_id,
+                    type="achievement_unlocked",
+                    title=title,
+                    message=message,
+                    data=notification_data,
+                )
+                db.add(in_app_notification)
+                await db.commit()
 
-            # Queue the push notification
-            send_notification_to_users.delay(
-                user_ids=[user_id],
-                title=title,
-                body=message,
-                data=notification_data,
-            )
+                # Queue the push notification
+                send_notification_to_users.delay(
+                    user_ids=[user_id],
+                    title=title,
+                    body=message,
+                    data=notification_data,
+                )
 
-            return True
+                return True
 
     except Exception as e:
         logger.error(f"Error sending achievement notification: {e}")
@@ -411,18 +411,18 @@ def batch_recalculate_all_users_statistics():
     from app.models.user import UserAccount
 
     async def _batch_recalculate():
-        session_maker = create_celery_session_maker()
-        async with session_maker() as db:
-            result = await db.execute(
-                select(UserAccount.id).where(UserAccount.is_active == True)
-            )
-            user_ids = result.scalars().all()
+        async with CelerySessionContext() as session_maker:
+            async with session_maker() as db:
+                result = await db.execute(
+                    select(UserAccount.id).where(UserAccount.is_active == True)
+                )
+                user_ids = result.scalars().all()
 
-        # Queue individual recalculations
-        for user_id in user_ids:
-            recalculate_user_statistics.delay(user_id)
+            # Queue individual recalculations
+            for user_id in user_ids:
+                recalculate_user_statistics.delay(user_id)
 
-        return len(user_ids)
+            return len(user_ids)
 
     try:
         count = _run_async(_batch_recalculate())
@@ -445,18 +445,18 @@ def recalculate_all_achievements(send_notifications: bool = False):
     from sqlalchemy import func, distinct
 
     async def _recalculate_all():
-        session_maker = create_celery_session_maker()
-        async with session_maker() as db:
-            # Get all users who have participated in at least one completed event
-            result = await db.execute(
-                select(distinct(EventEnrollment.user_id))
-                .join(Event, Event.id == EventEnrollment.event_id)
-                .where(EventEnrollment.status == "approved")
-                .where(Event.status == "completed")
-                .where(Event.is_test == False)
-            )
-            user_ids = result.scalars().all()
-            return user_ids
+        async with CelerySessionContext() as session_maker:
+            async with session_maker() as db:
+                # Get all users who have participated in at least one completed event
+                result = await db.execute(
+                    select(distinct(EventEnrollment.user_id))
+                    .join(Event, Event.id == EventEnrollment.event_id)
+                    .where(EventEnrollment.status == "approved")
+                    .where(Event.status == "completed")
+                    .where(Event.is_test == False)
+                )
+                user_ids = result.scalars().all()
+                return user_ids
 
     try:
         user_ids = _run_async(_recalculate_all())
@@ -488,121 +488,121 @@ def recalculate_user_achievements(user_id: int, send_notifications: bool = False
     from sqlalchemy import func
 
     async def _recalculate_user():
-        session_maker = create_celery_session_maker()
-        async with session_maker() as db:
-            # Verify user exists
-            user = await db.get(UserAccount, user_id)
-            if not user:
-                logger.warning(f"User {user_id} not found for achievement recalculation")
-                return {"error": "User not found"}
+        async with CelerySessionContext() as session_maker:
+            async with session_maker() as db:
+                # Verify user exists
+                user = await db.get(UserAccount, user_id)
+                if not user:
+                    logger.warning(f"User {user_id} not found for achievement recalculation")
+                    return {"error": "User not found"}
 
-            new_achievements = []
+                new_achievements = []
 
-            # Get user's completed events
-            events_query = (
-                select(Event.id, Event.event_type_id)
-                .join(EventEnrollment, EventEnrollment.event_id == Event.id)
-                .where(EventEnrollment.user_id == user_id)
-                .where(EventEnrollment.status == "approved")
-                .where(Event.status == "completed")
-                .where(Event.is_test == False)
-                .order_by(Event.end_date)
-            )
-            events_result = await db.execute(events_query)
-            events = events_result.fetchall()
-
-            # Get user's approved catches with fish info
-            catches_query = (
-                select(Catch)
-                .join(Event, Event.id == Catch.event_id)
-                .options(selectinload(Catch.fish))
-                .where(Catch.user_id == user_id)
-                .where(Catch.status == CatchStatus.APPROVED.value)
-                .where(Event.is_test == False)
-                .order_by(Catch.submitted_at)
-            )
-            catches_result = await db.execute(catches_query)
-            catches = catches_result.scalars().all()
-
-            max_length_seen = 0.0
-
-            # Process each catch
-            for catch in catches:
-                event = await db.get(Event, catch.event_id)
-                if not event or not event.event_type:
-                    continue
-
-                format_code = "sf" if event.event_type.code == "street_fishing" else "ta"
-
-                catch_time = catch.catch_time or catch.submitted_at
-                early_cutoff = event.start_date + timedelta(minutes=30)
-                late_cutoff = event.end_date - timedelta(minutes=30)
-
-                is_early_bird = catch_time <= early_cutoff if catch_time and event.start_date else False
-                is_last_minute = catch_time >= late_cutoff if catch_time and event.end_date else False
-                is_personal_best = catch.length > max_length_seen if catch.length else False
-
-                if catch.length and catch.length > max_length_seen:
-                    max_length_seen = catch.length
-
-                context = {
-                    "catch_length": catch.length,
-                    "catch_weight": catch.weight,
-                    "fish_id": catch.fish_id,
-                    "fish_slug": catch.fish.slug if catch.fish else None,
-                    "is_early_bird": is_early_bird,
-                    "is_last_minute": is_last_minute,
-                    "is_personal_best": is_personal_best,
-                }
-
-                awarded = await achievement_service.check_and_award_achievements(
-                    db,
-                    user_id=user_id,
-                    trigger="catch_approved",
-                    event_id=catch.event_id,
-                    catch_id=catch.id,
-                    context=context,
-                    format_code=format_code,
+                # Get user's completed events
+                events_query = (
+                    select(Event.id, Event.event_type_id)
+                    .join(EventEnrollment, EventEnrollment.event_id == Event.id)
+                    .where(EventEnrollment.user_id == user_id)
+                    .where(EventEnrollment.status == "approved")
+                    .where(Event.status == "completed")
+                    .where(Event.is_test == False)
+                    .order_by(Event.end_date)
                 )
+                events_result = await db.execute(events_query)
+                events = events_result.fetchall()
 
-                for ach in awarded:
+                # Get user's approved catches with fish info
+                catches_query = (
+                    select(Catch)
+                    .join(Event, Event.id == Catch.event_id)
+                    .options(selectinload(Catch.fish))
+                    .where(Catch.user_id == user_id)
+                    .where(Catch.status == CatchStatus.APPROVED.value)
+                    .where(Event.is_test == False)
+                    .order_by(Catch.submitted_at)
+                )
+                catches_result = await db.execute(catches_query)
+                catches = catches_result.scalars().all()
+
+                max_length_seen = 0.0
+
+                # Process each catch
+                for catch in catches:
+                    event = await db.get(Event, catch.event_id)
+                    if not event or not event.event_type:
+                        continue
+
+                    format_code = "sf" if event.event_type.code == "street_fishing" else "ta"
+
+                    catch_time = catch.catch_time or catch.submitted_at
+                    early_cutoff = event.start_date + timedelta(minutes=30)
+                    late_cutoff = event.end_date - timedelta(minutes=30)
+
+                    is_early_bird = catch_time <= early_cutoff if catch_time and event.start_date else False
+                    is_last_minute = catch_time >= late_cutoff if catch_time and event.end_date else False
+                    is_personal_best = catch.length > max_length_seen if catch.length else False
+
+                    if catch.length and catch.length > max_length_seen:
+                        max_length_seen = catch.length
+
+                    context = {
+                        "catch_length": catch.length,
+                        "catch_weight": catch.weight,
+                        "fish_id": catch.fish_id,
+                        "fish_slug": catch.fish.slug if catch.fish else None,
+                        "is_early_bird": is_early_bird,
+                        "is_last_minute": is_last_minute,
+                        "is_personal_best": is_personal_best,
+                    }
+
+                    awarded = await achievement_service.check_and_award_achievements(
+                        db,
+                        user_id=user_id,
+                        trigger="catch_approved",
+                        event_id=catch.event_id,
+                        catch_id=catch.id,
+                        context=context,
+                        format_code=format_code,
+                    )
+
+                    for ach in awarded:
+                        if ach.code not in new_achievements:
+                            new_achievements.append(ach.code)
+                            if send_notifications:
+                                send_achievement_notification.delay(user_id, ach.id, catch.event_id)
+
+                # Process each completed event
+                for event_row in events:
+                    event = await db.get(Event, event_row.id)
+                    if not event or not event.event_type:
+                        continue
+
+                    format_code = "sf" if event.event_type.code == "street_fishing" else "ta"
+
+                    awarded = await achievement_service.check_and_award_achievements(
+                        db,
+                        user_id=user_id,
+                        trigger="event_completed",
+                        event_id=event_row.id,
+                        format_code=format_code,
+                    )
+
+                    for ach in awarded:
+                        if ach.code not in new_achievements:
+                            new_achievements.append(ach.code)
+                            if send_notifications:
+                                send_achievement_notification.delay(user_id, ach.id, event_row.id)
+
+                # Check Hall of Fame achievements (not tied to specific app events)
+                hof_awards = await _check_hall_of_fame_achievements(db, user_id)
+                for ach in hof_awards:
                     if ach.code not in new_achievements:
                         new_achievements.append(ach.code)
                         if send_notifications:
-                            send_achievement_notification.delay(user_id, ach.id, catch.event_id)
+                            send_achievement_notification.delay(user_id, ach.id, None)
 
-            # Process each completed event
-            for event_row in events:
-                event = await db.get(Event, event_row.id)
-                if not event or not event.event_type:
-                    continue
-
-                format_code = "sf" if event.event_type.code == "street_fishing" else "ta"
-
-                awarded = await achievement_service.check_and_award_achievements(
-                    db,
-                    user_id=user_id,
-                    trigger="event_completed",
-                    event_id=event_row.id,
-                    format_code=format_code,
-                )
-
-                for ach in awarded:
-                    if ach.code not in new_achievements:
-                        new_achievements.append(ach.code)
-                        if send_notifications:
-                            send_achievement_notification.delay(user_id, ach.id, event_row.id)
-
-            # Check Hall of Fame achievements (not tied to specific app events)
-            hof_awards = await _check_hall_of_fame_achievements(db, user_id)
-            for ach in hof_awards:
-                if ach.code not in new_achievements:
-                    new_achievements.append(ach.code)
-                    if send_notifications:
-                        send_achievement_notification.delay(user_id, ach.id, None)
-
-            await db.commit()
-            return {"user_id": user_id, "new_achievements": new_achievements}
+                await db.commit()
+                return {"user_id": user_id, "new_achievements": new_achievements}
 
     try:
         result = _run_async(_recalculate_user())

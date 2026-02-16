@@ -85,7 +85,7 @@ class StripeBillingService:
         """Check if Stripe is properly configured."""
         return bool(settings.stripe_secret_key)
 
-    async def get_or_create_customer(
+    def get_or_create_customer(
         self,
         billing_profile: OrganizerBillingProfile,
     ) -> Optional[str]:
@@ -163,7 +163,7 @@ class StripeBillingService:
             logger.error(f"Failed to create Stripe customer: {e}")
             raise
 
-    async def create_invoice(
+    def create_invoice(
         self,
         invoice: PlatformInvoice,
         billing_profile: OrganizerBillingProfile,
@@ -191,7 +191,7 @@ class StripeBillingService:
             }
 
         # Ensure we have a Stripe customer
-        customer_id = await self.get_or_create_customer(billing_profile)
+        customer_id = self.get_or_create_customer(billing_profile)
         if not customer_id:
             raise ValueError("Could not create Stripe customer")
 

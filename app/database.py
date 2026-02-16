@@ -5,7 +5,7 @@ from typing import AsyncGenerator
 
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import get_settings
 
@@ -30,6 +30,15 @@ sync_engine = create_engine(
     pool_pre_ping=True,
     pool_size=DB_SYNC_POOL_SIZE,
     max_overflow=DB_SYNC_MAX_OVERFLOW,
+)
+
+# Sync session factory for Celery tasks (psycopg2)
+SyncSessionLocal = sessionmaker(
+    bind=sync_engine,
+    class_=Session,
+    expire_on_commit=False,
+    autocommit=False,
+    autoflush=False,
 )
 
 # Create async engine only if NOT in Celery worker
@@ -120,26 +129,3 @@ class CelerySessionContext:
         return False
 
 
-def create_celery_session_maker():
-    """Create a fresh async session maker for Celery tasks.
-
-    DEPRECATED: Use CelerySessionContext instead for proper cleanup.
-    Kept for backwards compatibility but creates per-task engine.
-    """
-    celery_pool = int(os.getenv("DB_CELERY_POOL_SIZE", "1"))
-    celery_overflow = int(os.getenv("DB_CELERY_MAX_OVERFLOW", "1"))
-
-    celery_engine = create_async_engine(
-        settings.database_url,
-        echo=False,
-        pool_pre_ping=True,
-        pool_size=celery_pool,
-        max_overflow=celery_overflow,
-    )
-    return async_sessionmaker(
-        celery_engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-        autocommit=False,
-        autoflush=False,
-    )

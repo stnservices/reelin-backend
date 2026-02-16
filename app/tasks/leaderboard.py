@@ -9,7 +9,6 @@ The main leaderboard calculation happens in the API endpoint (api/v1/leaderboard
 This task ensures DB ranks are updated and clients are notified of changes.
 """
 
-import asyncio
 import logging
 import re
 from collections import defaultdict
@@ -21,7 +20,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery_app
-from app.database import create_celery_session_maker
+from app.database import SyncSessionLocal
 from app.models.catch import Catch, CatchStatus, RankingMovement, EventScoreboard
 from app.models.event import Event, EventFishScoring, EventSpeciesBonusPoints
 from app.models.fish import Fish
@@ -59,34 +58,22 @@ def recalculate_event_leaderboard(self, event_id: int, triggered_by: str = "unkn
     logger.info(f"Recalculating leaderboard for event {event_id} (triggered by: {triggered_by})")
 
     try:
-        # Create a fresh event loop for each task execution
-        # This avoids "Event loop is closed" errors when Celery reuses worker processes
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result = loop.run_until_complete(_async_recalculate(event_id))
-            return result
-        finally:
-            loop.close()
-
+        return _sync_recalculate(event_id)
     except Exception as e:
         logger.error(f"Failed to recalculate leaderboard for event {event_id}: {e}")
         raise self.retry(exc=e, countdown=5)
 
 
-async def _async_recalculate(event_id: int) -> dict:
-    """Async implementation of leaderboard recalculation."""
-    # Create fresh session maker for this event loop
-    session_maker = create_celery_session_maker()
-
-    async with session_maker() as db:
+def _sync_recalculate(event_id: int) -> dict:
+    """Sync implementation of leaderboard recalculation."""
+    with SyncSessionLocal() as db:
         # Load event with scoring config
         event_query = (
             select(Event)
             .options(selectinload(Event.scoring_config))
             .where(Event.id == event_id)
         )
-        result = await db.execute(event_query)
+        result = db.execute(event_query)
         event = result.scalar_one_or_none()
 
         if not event:
@@ -99,7 +86,7 @@ async def _async_recalculate(event_id: int) -> dict:
             .options(selectinload(EventFishScoring.fish))
             .where(EventFishScoring.event_id == event_id)
         )
-        fish_scoring_result = await db.execute(fish_scoring_query)
+        fish_scoring_result = db.execute(fish_scoring_query)
         fish_scoring_list = fish_scoring_result.scalars().all()
         fish_scoring = {fs.fish_id: fs for fs in fish_scoring_list}
 
@@ -109,12 +96,11 @@ async def _async_recalculate(event_id: int) -> dict:
             .where(EventSpeciesBonusPoints.event_id == event_id)
             .order_by(EventSpeciesBonusPoints.species_count.desc())
         )
-        bonus_result = await db.execute(bonus_query)
+        bonus_result = db.execute(bonus_query)
         bonus_points_config = bonus_result.scalars().all()
 
         # Get scoring config
         scoring_code = event.scoring_config.code if event.scoring_config else "top_x_by_species"
-        # Use event's top_x_overall, fallback to scoring config default, then hardcoded 10
         default_top_x = event.scoring_config.default_top_x if event.scoring_config else 10
         top_x_overall = event.top_x_overall or default_top_x or 10
 
@@ -131,8 +117,8 @@ async def _async_recalculate(event_id: int) -> dict:
             )
             .order_by(Catch.length.desc())
         )
-        catches_result = await db.execute(approved_catches_query)
-        approved_catches = catches_result.scalars().all()
+        catches_result = db.execute(approved_catches_query)
+        approved_catches = catches_result.scalars().unique().all()
 
         # Load rejected catches
         rejected_catches_query = (
@@ -148,15 +134,15 @@ async def _async_recalculate(event_id: int) -> dict:
             )
             .order_by(Catch.submitted_at.desc())
         )
-        rejected_result = await db.execute(rejected_catches_query)
-        rejected_catches = rejected_result.scalars().all()
+        rejected_result = db.execute(rejected_catches_query)
+        rejected_catches = rejected_result.scalars().unique().all()
 
         # Get disqualified users for this event
         disqualified_query = select(EventEnrollment).where(
             EventEnrollment.event_id == event_id,
             EventEnrollment.status == EnrollmentStatus.DISQUALIFIED.value,
         )
-        disqualified_result = await db.execute(disqualified_query)
+        disqualified_result = db.execute(disqualified_query)
         disqualified_enrollments = disqualified_result.scalars().all()
         disqualified_user_ids = {e.user_id for e in disqualified_enrollments}
         disqualified_info = {
@@ -172,20 +158,20 @@ async def _async_recalculate(event_id: int) -> dict:
         scoreboard_query = select(EventScoreboard).where(
             EventScoreboard.event_id == event_id
         )
-        scoreboard_result = await db.execute(scoreboard_query)
+        scoreboard_result = db.execute(scoreboard_query)
         scoreboards = scoreboard_result.scalars().all()
         for sb in scoreboards:
             old_rankings[sb.user_id] = sb.rank
 
         # Calculate based on event type
         if event.is_team_event:
-            result = await _calculate_team_leaderboard(
+            result = _calculate_team_leaderboard(
                 db, event, approved_catches, rejected_catches,
                 fish_scoring, bonus_points_config, scoring_code, top_x_overall,
                 disqualified_user_ids, disqualified_info
             )
         else:
-            result = await _calculate_individual_leaderboard(
+            result = _calculate_individual_leaderboard(
                 db, event, approved_catches, rejected_catches,
                 fish_scoring, bonus_points_config, scoring_code, top_x_overall,
                 disqualified_user_ids, disqualified_info
@@ -194,7 +180,6 @@ async def _async_recalculate(event_id: int) -> dict:
         # Detect and record ranking movements (skip DQ entries with rank=None)
         movements = []
         for entry in result["leaderboard"]["entries"]:
-            # Skip disqualified entries (they have rank=None)
             if entry.get("is_disqualified"):
                 continue
 
@@ -209,7 +194,7 @@ async def _async_recalculate(event_id: int) -> dict:
                     "user_id": entity_id if not event.is_team_event else None,
                     "old_rank": old_rank,
                     "new_rank": new_rank,
-                    "movement": old_rank - new_rank,  # Positive = moved up
+                    "movement": old_rank - new_rank,
                     "created_at": datetime.utcnow().isoformat(),
                 }
                 if event.is_team_event:
@@ -226,7 +211,7 @@ async def _async_recalculate(event_id: int) -> dict:
             new_rank = entry.get("rank")
             old_rank = old_rankings.get(user_id)
             if user_id and new_rank is not None:
-                await db.execute(
+                db.execute(
                     update(EventScoreboard)
                     .where(
                         EventScoreboard.event_id == event_id,
@@ -235,7 +220,7 @@ async def _async_recalculate(event_id: int) -> dict:
                     .values(rank=new_rank, previous_rank=old_rank)
                 )
 
-        # Save movements to database and Redis (for live feed)
+        # Save movements to database
         if movements:
             for m in movements:
                 db_movement = RankingMovement(
@@ -248,9 +233,9 @@ async def _async_recalculate(event_id: int) -> dict:
                 )
                 db.add(db_movement)
 
-        await db.commit()
+        db.commit()
 
-        # Build recent catches list for Firebase (sorted by validated_at desc)
+        # Build recent catches list for Firebase
         recent_catches = []
         sorted_by_validated = sorted(
             approved_catches,
@@ -265,13 +250,13 @@ async def _async_recalculate(event_id: int) -> dict:
                 "catch_id": catch.id,
                 "fish_name": catch.fish.name if catch.fish else "Unknown",
                 "length": catch.length,
-                "points": int(catch.length),  # Simplified - actual points calculated elsewhere
+                "points": int(catch.length),
                 "angler_name": user_name,
                 "validated_at_ms": int(catch.validated_at.timestamp() * 1000) if catch.validated_at else None,
                 "is_scored": True,
             })
 
-        # Sync to Firebase for web real-time updates (with accurate viewer counting)
+        # Sync to Firebase for web real-time updates
         sync_leaderboard_to_firebase(
             event_id=event_id,
             leaderboard_data=result["leaderboard"],
@@ -291,7 +276,7 @@ async def _async_recalculate(event_id: int) -> dict:
         }
 
 
-async def _calculate_individual_leaderboard(
+def _calculate_individual_leaderboard(
     db,
     event: Event,
     approved_catches: list[Catch],
@@ -324,23 +309,19 @@ async def _calculate_individual_leaderboard(
     user_details = {}
 
     for user_id, catches in user_catches.items():
-        # Sort by length (descending) for slot assignment
         catches_sorted = sorted(catches, key=lambda c: c.length, reverse=True)
 
         user = catches_sorted[0].user
         user_name = f"{user.profile.first_name} {user.profile.last_name}" if user.profile else f"User {user_id}"
 
-        # Calculate catch details with scoring status
         catch_details = _calculate_catch_details(
             catches_sorted, fish_scoring, scoring_code, top_x_overall
         )
 
-        # Calculate aggregates
         scored_catches = [c for c in catch_details if c["is_scored"]]
         total_points = sum(c["points"] for c in scored_catches)
         species_ids = set(c["fish_id"] for c in scored_catches)
 
-        # Species bonus
         species_bonus = 0
         for bp in bonus_config:
             if len(species_ids) >= bp.species_count:
@@ -349,9 +330,7 @@ async def _calculate_individual_leaderboard(
 
         total_points += species_bonus
 
-        # Tiebreaker stats
         best_length = max((c["length"] for c in scored_catches), default=0)
-        # Find best catch to get species name
         best_catch = max(scored_catches, key=lambda c: c["length"]) if scored_catches else None
         best_catch_species = best_catch["fish_name"] if best_catch else None
         total_length = sum(c["length"] for c in scored_catches)
@@ -373,14 +352,13 @@ async def _calculate_individual_leaderboard(
             "best_catch_length": best_length,
             "best_catch_species": best_catch_species,
             "best_catch_photo_url": best_catch["photo_url"] if best_catch else None,
-            "best_catch_user_name": user_name,  # For individual events, same as entry user
+            "best_catch_user_name": user_name,
             "average_catch": avg_catch,
             "first_catch_time": first_catch_time,
             "is_disqualified": False,
         }
         user_scores.append(entry)
 
-        # Build user details for cache
         rejected_list = _build_rejected_details(user_rejected.get(user_id, []))
         user_details[user_id] = {
             "user_id": user_id,
@@ -426,12 +404,10 @@ async def _calculate_individual_leaderboard(
         user = catches_sorted[0].user
         user_name = f"{user.profile.first_name} {user.profile.last_name}" if user.profile else f"User {user_id}"
 
-        # Calculate catch details
         catch_details = _calculate_catch_details(
             catches_sorted, fish_scoring, scoring_code, top_x_overall
         )
 
-        # Calculate aggregates (but catches don't count for DQ users)
         species_ids = set(c["fish_id"] for c in catch_details)
         total_points = sum(c["points"] for c in catch_details)
         best_length = max((c["length"] for c in catch_details), default=0)
@@ -448,7 +424,7 @@ async def _calculate_individual_leaderboard(
             "avatar_url": user.profile.profile_picture_url if user.profile else None,
             "total_points": total_points,
             "total_catches": len(catches),
-            "counted_catches": 0,  # Not counted due to disqualification
+            "counted_catches": 0,
             "species_count": len(species_ids),
             "species_bonus": 0,
             "best_catch_length": best_length,
@@ -457,14 +433,13 @@ async def _calculate_individual_leaderboard(
             "best_catch_user_name": user_name,
             "average_catch": avg_catch,
             "first_catch_time": None,
-            "rank": None,  # No rank for disqualified
+            "rank": None,
             "is_disqualified": True,
             "disqualification_reason": dq_info.get("reason"),
             "disqualified_at": dq_info.get("at").isoformat() if dq_info.get("at") else None,
         }
         disqualified_entries.append(entry)
 
-        # Build user details for cache (DQ users)
         rejected_list = _build_rejected_details(user_rejected.get(user_id, []))
         user_details[user_id] = {
             "user_id": user_id,
@@ -485,10 +460,8 @@ async def _calculate_individual_leaderboard(
     # For completed events, include enrolled users with 0 catches
     no_catch_entries = []
     if event.is_completed:
-        # Get all users who have catches or are disqualified
         users_with_activity = set(user_catches.keys()) | set(disqualified_catches.keys())
 
-        # Query enrolled users (APPROVED status) who have no catches
         enrolled_query = (
             select(EventEnrollment)
             .options(selectinload(EventEnrollment.user).selectinload(UserAccount.profile))
@@ -498,10 +471,9 @@ async def _calculate_individual_leaderboard(
                 EventEnrollment.user_id.notin_(users_with_activity) if users_with_activity else True,
             )
         )
-        enrolled_result = await db.execute(enrolled_query)
-        enrolled_no_catches = enrolled_result.scalars().all()
+        enrolled_result = db.execute(enrolled_query)
+        enrolled_no_catches = enrolled_result.scalars().unique().all()
 
-        # Determine the shared rank for all users with 0 catches
         last_rank = user_scores[-1]["rank"] if user_scores else 0
         shared_rank = last_rank + 1
 
@@ -531,7 +503,6 @@ async def _calculate_individual_leaderboard(
             }
             no_catch_entries.append(entry)
 
-            # Build user details for cache
             user_details[user_id] = {
                 "user_id": user_id,
                 "user_name": user_name,
@@ -550,13 +521,11 @@ async def _calculate_individual_leaderboard(
     # Combine ranked entries + no-catch entries + disqualified at bottom
     all_entries = user_scores + no_catch_entries + disqualified_entries
 
-    # Build leaderboard response
     last_updated = max(
         (c.validated_at or c.submitted_at for c in approved_catches),
         default=datetime.utcnow()
     )
 
-    # Calculate total catches excluding DQ catches
     dq_catch_count = sum(len(catches) for catches in disqualified_catches.values())
 
     leaderboard = {
@@ -565,8 +534,8 @@ async def _calculate_individual_leaderboard(
         "is_team_event": False,
         "scoring_type": scoring_code,
         "entries": all_entries,
-        "total_participants": len(user_scores),  # Only count ranked participants with catches
-        "total_catches": len(approved_catches) - dq_catch_count,  # Exclude DQ catches
+        "total_participants": len(user_scores),
+        "total_catches": len(approved_catches) - dq_catch_count,
         "disqualified_count": len(disqualified_entries),
         "no_catch_participants_count": len(no_catch_entries),
         "last_updated": last_updated.isoformat() if last_updated else None,
@@ -579,7 +548,7 @@ async def _calculate_individual_leaderboard(
     }
 
 
-async def _calculate_team_leaderboard(
+def _calculate_team_leaderboard(
     db,
     event: Event,
     approved_catches: list[Catch],
@@ -599,8 +568,8 @@ async def _calculate_team_leaderboard(
         .options(selectinload(Team.members).selectinload(TeamMember.enrollment))
         .where(Team.event_id == event.id, Team.is_active == True)
     )
-    teams_result = await db.execute(teams_query)
-    teams = teams_result.scalars().all()
+    teams_result = db.execute(teams_query)
+    teams = teams_result.scalars().unique().all()
 
     # Build user -> team mapping
     user_to_team: dict[int, int] = {}
@@ -625,15 +594,15 @@ async def _calculate_team_leaderboard(
                     "disqualification_reason": dq_info.get("reason") if is_dq else None,
                 })
 
-    # Group catches by team (excluding catches from disqualified members)
+    # Group catches by team
     team_catches: dict[int, list[Catch]] = defaultdict(list)
-    disqualified_catch_count: dict[int, int] = defaultdict(int)  # Track DQ catches per team
+    disqualified_catch_count: dict[int, int] = defaultdict(int)
     for catch in approved_catches:
         team_id = user_to_team.get(catch.user_id)
         if team_id:
             if catch.user_id in disqualified_user_ids:
                 disqualified_catch_count[team_id] += 1
-                continue  # Exclude from team scoring
+                continue
             team_catches[team_id].append(catch)
 
     # Group rejected catches by team
@@ -651,17 +620,14 @@ async def _calculate_team_leaderboard(
         catches_sorted = sorted(catches, key=lambda c: c.length, reverse=True)
         info = team_info[team_id]
 
-        # Calculate catch details with uploader info
         catch_details = _calculate_catch_details(
             catches_sorted, fish_scoring, scoring_code, top_x_overall, is_team=True
         )
 
-        # Calculate aggregates
         scored_catches = [c for c in catch_details if c["is_scored"]]
         total_points = sum(c["points"] for c in scored_catches)
         species_ids = set(c["fish_id"] for c in scored_catches)
 
-        # Species bonus
         species_bonus = 0
         for bp in bonus_config:
             if len(species_ids) >= bp.species_count:
@@ -670,7 +636,6 @@ async def _calculate_team_leaderboard(
 
         total_points += species_bonus
 
-        # Tiebreaker stats
         best_length = max((c["length"] for c in scored_catches), default=0)
         best_catch = max(scored_catches, key=lambda c: c["length"]) if scored_catches else None
         best_catch_species = best_catch["fish_name"] if best_catch else None
@@ -681,7 +646,6 @@ async def _calculate_team_leaderboard(
             default=None
         )
 
-        # Calculate member breakdown
         member_stats: dict[int, dict] = {}
         for c in catch_details:
             uid = c["uploaded_by_id"]
@@ -702,7 +666,6 @@ async def _calculate_team_leaderboard(
             if c["is_scored"]:
                 member_stats[uid]["total_scoring"] += 1
 
-        # Count rejected per member
         for c in team_rejected.get(team_id, []):
             uid = c.user_id
             if uid not in member_stats:
@@ -721,7 +684,6 @@ async def _calculate_team_leaderboard(
                 }
             member_stats[uid]["total_rejected"] += 1
 
-        # Count disqualified members in this team
         dq_members_in_team = [m for m in info["members"] if m.get("is_disqualified")]
         dq_catches_excluded = disqualified_catch_count.get(team_id, 0)
 
@@ -746,7 +708,6 @@ async def _calculate_team_leaderboard(
         }
         team_scores.append(entry)
 
-        # Build team details for cache
         rejected_list = _build_rejected_details(team_rejected.get(team_id, []), is_team=True)
         team_details[team_id] = {
             "team_id": team_id,
@@ -763,7 +724,7 @@ async def _calculate_team_leaderboard(
             "team_members": list(member_stats.values()),
         }
 
-    # Sort teams with catches using 6-level tiebreaker
+    # Sort teams with 6-level tiebreaker
     team_scores.sort(key=lambda x: (
         -x["total_points"],
         -x["counted_catches"],
@@ -773,7 +734,7 @@ async def _calculate_team_leaderboard(
         x["first_catch_time"] or datetime.max,
     ))
 
-    # Assign ranks with tie handling (only for teams with catches)
+    # Assign ranks with tie handling
     current_rank = 1
     prev_entry = None
     for i, entry in enumerate(team_scores, start=1):
@@ -784,7 +745,7 @@ async def _calculate_team_leaderboard(
             entry["rank"] = current_rank
         prev_entry = entry
 
-    # For completed events, include teams with no catches at shared last rank
+    # For completed events, include teams with no catches
     no_catch_teams = []
     if event.is_completed:
         last_rank = team_scores[-1]["rank"] if team_scores else 0
@@ -831,16 +792,13 @@ async def _calculate_team_leaderboard(
                     "has_no_catches": True,
                 }
 
-    # Combine teams with catches + teams with no catches
     all_team_entries = team_scores + no_catch_teams
 
-    # Build leaderboard response
     last_updated = max(
         (c.validated_at or c.submitted_at for c in approved_catches),
         default=datetime.utcnow()
     )
 
-    # Calculate totals for DQ info
     total_dq_catches = sum(disqualified_catch_count.values())
     total_dq_users = len(disqualified_user_ids)
 
@@ -850,8 +808,8 @@ async def _calculate_team_leaderboard(
         "is_team_event": True,
         "scoring_type": scoring_code,
         "entries": all_team_entries,
-        "total_teams": len(team_scores),  # Only count teams with catches as active participants
-        "total_catches": len(approved_catches) - total_dq_catches,  # Exclude DQ catches
+        "total_teams": len(team_scores),
+        "total_catches": len(approved_catches) - total_dq_catches,
         "disqualified_members_count": total_dq_users,
         "disqualified_catches_excluded": total_dq_catches,
         "no_catch_teams_count": len(no_catch_teams),
@@ -872,18 +830,10 @@ def _calculate_catch_details(
     top_x_overall: int,
     is_team: bool = False,
 ) -> list[dict]:
-    """
-    Calculate detailed scoring info for each catch.
-
-    Determines:
-    - Which catches are scored vs exceeded slot limit
-    - Points for each catch (length or under_min_length_points)
-    - Rank within category
-    """
+    """Calculate detailed scoring info for each catch."""
     details = []
 
     if "top_x_overall" in scoring_code:
-        # Global top X scoring
         for i, catch in enumerate(catches):
             is_scored = i < top_x_overall
             rank_in_category = i + 1
@@ -927,13 +877,11 @@ def _calculate_catch_details(
             }
             details.append(detail)
     else:
-        # Top X by species scoring
         catches_by_species: dict[int, list[Catch]] = defaultdict(list)
         for catch in catches:
             catches_by_species[catch.fish_id].append(catch)
 
         for fish_id, species_catches in catches_by_species.items():
-            # Sort by length within species
             species_catches.sort(key=lambda c: c.length, reverse=True)
 
             fish_config = fish_scoring.get(fish_id)
@@ -980,7 +928,6 @@ def _calculate_catch_details(
                 }
                 details.append(detail)
 
-    # Sort: scored first (by points desc), then not scored
     details.sort(key=lambda x: (-x["points"], not x["is_scored"]))
     return details
 

@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery_app
-from app.database import create_celery_session_maker
+from app.database import CelerySessionContext
 from app.services.ai_analysis_service import ai_analysis_service
 from app.services.firebase_leaderboard_service import sync_validator_event
 
@@ -28,19 +28,19 @@ async def _run_catch_analysis(catch_id: int) -> dict:
     from app.models.catch import Catch
     from app.models.ai_analysis import CatchAiAnalysis
 
-    session_maker = create_celery_session_maker()
-    async with session_maker() as db:
-        try:
-            result = await ai_analysis_service.analyze_catch(db, catch_id)
-            logger.info(f"AI analysis completed for catch {catch_id}")
+    async with CelerySessionContext() as session_maker:
+        async with session_maker() as db:
+            try:
+                result = await ai_analysis_service.analyze_catch(db, catch_id)
+                logger.info(f"AI analysis completed for catch {catch_id}")
 
-            # Broadcast AI analysis completion via SSE
-            await _broadcast_ai_analysis_complete(db, catch_id)
+                # Broadcast AI analysis completion via SSE
+                await _broadcast_ai_analysis_complete(db, catch_id)
 
-            return result
-        except Exception as e:
-            logger.error(f"AI analysis failed for catch {catch_id}: {e}")
-            raise
+                return result
+            except Exception as e:
+                logger.error(f"AI analysis failed for catch {catch_id}: {e}")
+                raise
 
 
 async def _broadcast_ai_analysis_complete(db, catch_id: int) -> None:
@@ -170,30 +170,30 @@ def reanalyze_pending_catches(limit: int = 100) -> dict:
     from app.models.ai_analysis import CatchAiAnalysis, AiAnalysisStatus
 
     async def _reanalyze():
-        session_maker = create_celery_session_maker()
-        async with session_maker() as db:
-            stmt = (
-                select(CatchAiAnalysis)
-                .where(
-                    CatchAiAnalysis.status.in_([
-                        AiAnalysisStatus.PENDING.value,
-                        AiAnalysisStatus.FAILED.value,
-                    ])
+        async with CelerySessionContext() as session_maker:
+            async with session_maker() as db:
+                stmt = (
+                    select(CatchAiAnalysis)
+                    .where(
+                        CatchAiAnalysis.status.in_([
+                            AiAnalysisStatus.PENDING.value,
+                            AiAnalysisStatus.FAILED.value,
+                        ])
+                    )
+                    .limit(limit)
                 )
-                .limit(limit)
-            )
-            result = await db.execute(stmt)
-            analyses = result.scalars().all()
+                result = await db.execute(stmt)
+                analyses = result.scalars().all()
 
-            processed = 0
-            for analysis in analyses:
-                try:
-                    await ai_analysis_service.analyze_catch(db, analysis.catch_id)
-                    processed += 1
-                except Exception as e:
-                    logger.error(f"Reanalysis failed for catch {analysis.catch_id}: {e}")
+                processed = 0
+                for analysis in analyses:
+                    try:
+                        await ai_analysis_service.analyze_catch(db, analysis.catch_id)
+                        processed += 1
+                    except Exception as e:
+                        logger.error(f"Reanalysis failed for catch {analysis.catch_id}: {e}")
 
-            return {"processed": processed, "total_found": len(analyses)}
+                return {"processed": processed, "total_found": len(analyses)}
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)

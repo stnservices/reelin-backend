@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery_app
-from app.database import create_celery_session_maker
+from app.database import CelerySessionContext
 from app.models.event import Event
 from app.services.achievement_service import achievement_service
 from app.services.statistics_service import statistics_service
@@ -45,94 +45,94 @@ async def _process_format_event_achievements(
     Returns:
         Dict with processing results
     """
-    session_maker = create_celery_session_maker()
-    async with session_maker() as db:
-        try:
-            # Get event with type for verification
-            event_query = (
-                select(Event)
-                .options(selectinload(Event.event_type))
-                .where(Event.id == event_id)
-            )
-            event_result = await db.execute(event_query)
-            event = event_result.scalar_one_or_none()
+    async with CelerySessionContext() as session_maker:
+        async with session_maker() as db:
+            try:
+                # Get event with type for verification
+                event_query = (
+                    select(Event)
+                    .options(selectinload(Event.event_type))
+                    .where(Event.id == event_id)
+                )
+                event_result = await db.execute(event_query)
+                event = event_result.scalar_one_or_none()
 
-            if not event:
-                logger.warning(f"Event {event_id} not found for achievement processing")
-                return {"event_id": event_id, "status": "not_found", "awarded": 0}
+                if not event:
+                    logger.warning(f"Event {event_id} not found for achievement processing")
+                    return {"event_id": event_id, "status": "not_found", "awarded": 0}
 
-            # Get participant IDs
-            participant_ids = await get_event_participant_ids(db, event_id, format_code)
+                # Get participant IDs
+                participant_ids = await get_event_participant_ids(db, event_id, format_code)
 
-            logger.info(
-                f"Processing achievements for {len(participant_ids)} participants "
-                f"in event {event_id} (format: {format_code})"
-            )
+                logger.info(
+                    f"Processing achievements for {len(participant_ids)} participants "
+                    f"in event {event_id} (format: {format_code})"
+                )
 
-            total_awarded = 0
-            errors = 0
+                total_awarded = 0
+                errors = 0
 
-            for user_id in participant_ids:
-                try:
-                    # Ensure user stats are updated before checking achievements
-                    # This guarantees achievement checks see fresh stats even if
-                    # the stats recalculation task hasn't completed yet
-                    await statistics_service.update_user_stats_for_event(
-                        db, user_id, event_id
-                    )
-
-                    awarded = await achievement_service.check_and_award_achievements(
-                        db=db,
-                        user_id=user_id,
-                        trigger="event_completed",
-                        event_id=event_id,
-                        format_code=format_code,
-                    )
-                    total_awarded += len(awarded)
-
-                    if awarded:
-                        logger.info(
-                            f"User {user_id} earned {len(awarded)} achievements: "
-                            f"{[a.code for a in awarded]}"
+                for user_id in participant_ids:
+                    try:
+                        # Ensure user stats are updated before checking achievements
+                        # This guarantees achievement checks see fresh stats even if
+                        # the stats recalculation task hasn't completed yet
+                        await statistics_service.update_user_stats_for_event(
+                            db, user_id, event_id
                         )
 
-                        # Send notifications for newly awarded achievements
-                        from app.tasks.achievements import send_achievement_notification
-                        for achievement in awarded:
-                            send_achievement_notification.delay(
-                                user_id, achievement.id, event_id
+                        awarded = await achievement_service.check_and_award_achievements(
+                            db=db,
+                            user_id=user_id,
+                            trigger="event_completed",
+                            event_id=event_id,
+                            format_code=format_code,
+                        )
+                        total_awarded += len(awarded)
+
+                        if awarded:
+                            logger.info(
+                                f"User {user_id} earned {len(awarded)} achievements: "
+                                f"{[a.code for a in awarded]}"
                             )
 
-                except Exception as e:
-                    logger.error(f"Error processing achievements for user {user_id}: {e}")
-                    errors += 1
-                    continue
+                            # Send notifications for newly awarded achievements
+                            from app.tasks.achievements import send_achievement_notification
+                            for achievement in awarded:
+                                send_achievement_notification.delay(
+                                    user_id, achievement.id, event_id
+                                )
 
-            await db.commit()
+                    except Exception as e:
+                        logger.error(f"Error processing achievements for user {user_id}: {e}")
+                        errors += 1
+                        continue
 
-            logger.info(
-                f"Event {event_id} achievement processing complete: "
-                f"{total_awarded} total awarded, {errors} errors"
-            )
+                await db.commit()
 
-            return {
-                "event_id": event_id,
-                "format_code": format_code,
-                "participants": len(participant_ids),
-                "awarded": total_awarded,
-                "errors": errors,
-                "status": "completed",
-            }
+                logger.info(
+                    f"Event {event_id} achievement processing complete: "
+                    f"{total_awarded} total awarded, {errors} errors"
+                )
 
-        except Exception as e:
-            logger.error(f"Error in format event achievement processing: {e}")
-            await db.rollback()
-            return {
-                "event_id": event_id,
-                "status": "error",
-                "error": str(e),
-                "awarded": 0,
-            }
+                return {
+                    "event_id": event_id,
+                    "format_code": format_code,
+                    "participants": len(participant_ids),
+                    "awarded": total_awarded,
+                    "errors": errors,
+                    "status": "completed",
+                }
+
+            except Exception as e:
+                logger.error(f"Error in format event achievement processing: {e}")
+                await db.rollback()
+                return {
+                    "event_id": event_id,
+                    "status": "error",
+                    "error": str(e),
+                    "awarded": 0,
+                }
 
 
 # === Celery Tasks ===
