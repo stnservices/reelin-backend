@@ -23,6 +23,7 @@ from app.models.social_account import OAuthProvider
 from app.models.user import UserAccount
 from app.services.social_auth import SocialAuthService
 from app.services.account_deletion import account_deletion_service
+from app.services import audit_service
 from app.schemas.social_account import SocialAccountResponse
 
 logger = logging.getLogger(__name__)
@@ -106,6 +107,35 @@ async def check_pending_deletion_for_mobile(user: UserAccount, db: AsyncSession)
             user.is_active = True
             await db.commit()
             await db.refresh(user)
+
+
+async def _audit_oauth_login(request_or_none, db, user, provider: str):
+    """Shared audit logic for OAuth mobile endpoints."""
+    if request_or_none is None:
+        return
+    ctx = audit_service.extract_request_context(request_or_none)
+    audit_service.log_event(
+        db,
+        event_type="login",
+        user_id=user.id,
+        ip=ctx["ip"],
+        user_agent=ctx["user_agent"],
+        device_id=ctx["device_id"],
+        details={"provider": provider},
+    )
+    is_new_device = False
+    if ctx["device_id"]:
+        _, is_new_device = await audit_service.register_or_update_device(
+            db, user.id, ctx["device_id"], ip=ctx["ip"], device_info=ctx["device_info"]
+        )
+    await db.commit()
+
+    if is_new_device:
+        try:
+            from app.tasks.audit import check_repeat_offender
+            check_repeat_offender.delay(user.id, ctx["device_id"], ctx["ip"], user.email)
+        except Exception:
+            pass
 
 
 class GoogleMobileAuthRequest(BaseModel):
@@ -261,6 +291,7 @@ async def google_callback(
 
 @router.post("/google/mobile", response_model=MobileAuthResponse)
 async def google_mobile_auth(
+    request: Request,
     request_body: GoogleMobileAuthRequest,
     db: AsyncSession = Depends(get_db),
 ):
@@ -304,6 +335,9 @@ async def google_mobile_auth(
 
         # Check for pending deletion (same as email login)
         await check_pending_deletion_for_mobile(user, db)
+
+        # Audit: log OAuth login + device registration
+        await _audit_oauth_login(request, db, user, "google")
 
         # Create JWT tokens
         token_data = {"sub": str(user.id)}
@@ -428,6 +462,7 @@ async def facebook_callback(
 
 @router.post("/facebook/mobile", response_model=MobileAuthResponse)
 async def facebook_mobile_auth(
+    request: Request,
     request_body: FacebookMobileAuthRequest,
     db: AsyncSession = Depends(get_db),
 ):
@@ -527,6 +562,9 @@ async def facebook_mobile_auth(
         # Check for pending deletion (same as email login)
         await check_pending_deletion_for_mobile(user, db)
 
+        # Audit: log OAuth login + device registration
+        await _audit_oauth_login(request, db, user, "facebook")
+
         # Create JWT tokens
         token_data = {"sub": str(user.id)}
         access_token = create_access_token(token_data)
@@ -562,6 +600,7 @@ async def facebook_mobile_auth(
 
 @router.post("/apple/mobile", response_model=MobileAuthResponse)
 async def apple_mobile_auth(
+    request: Request,
     request_body: AppleMobileAuthRequest,
     db: AsyncSession = Depends(get_db),
 ):
@@ -668,6 +707,9 @@ async def apple_mobile_auth(
 
         # Check for pending deletion (same as email login)
         await check_pending_deletion_for_mobile(user, db)
+
+        # Audit: log OAuth login + device registration
+        await _audit_oauth_login(request, db, user, "apple")
 
         # Create JWT tokens
         token_data = {"sub": str(user.id)}

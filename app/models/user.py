@@ -39,6 +39,12 @@ class UserAccount(Base):
     pro_plan_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # 'monthly', 'yearly'
     pro_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Ban fields
+    is_banned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    banned_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    ban_reason: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    normalized_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+
     # Account deletion - grace period support
     deletion_scheduled_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True

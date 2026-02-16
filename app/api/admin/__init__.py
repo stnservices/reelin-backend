@@ -11,6 +11,7 @@ from app.api.admin.notifications import router as notifications_router
 from app.api.admin.pro import router as pro_router
 from app.api.admin.ml_models import router as ml_models_router
 from app.api.admin.ml_predictions import router as ml_predictions_router
+from app.api.admin.audit import router as audit_router
 
 router = APIRouter(tags=["Admin"])
 
@@ -23,3 +24,4 @@ router.include_router(notifications_router, prefix="/notifications")
 router.include_router(pro_router, prefix="/pro")
 router.include_router(ml_models_router, prefix="/ml")
 router.include_router(ml_predictions_router, prefix="/ml/predictions")
+router.include_router(audit_router, prefix="/audit")

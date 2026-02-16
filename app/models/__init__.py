@@ -56,6 +56,7 @@ from app.models.partner import Partner
 from app.models.news import News
 from app.models.hall_of_fame import HallOfFameEntry
 from app.models.route_history import RouteHistory
+from app.models.audit import AuditLog, UserDevice, UserSuspiciousFlag
 
 # Minigame
 from app.models.minigame import MinigameScore
@@ -205,6 +206,10 @@ __all__ = [
     "HallOfFameEntry",
     # Route History
     "RouteHistory",
+    # Audit & Device Tracking
+    "AuditLog",
+    "UserDevice",
+    "UserSuspiciousFlag",
     # Minigame
     "MinigameScore",
     # Trout Area (TA)

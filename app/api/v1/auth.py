@@ -44,6 +44,7 @@ from app.schemas.user import (
 from app.schemas.common import MessageResponse
 from app.services.email import get_email_service
 from app.services.account_deletion import account_deletion_service
+from app.services import audit_service
 from app.api.v1.public import verify_recaptcha
 
 router = APIRouter()
@@ -112,8 +113,34 @@ async def register(
         roles=["angler"],  # Default role
     )
     db.add(profile)
+
+    # Compute normalized email
+    user.normalized_email = audit_service.normalize_email(user_data.email)
+
+    # Audit: log registration + register device
+    ctx = audit_service.extract_request_context(request)
+    audit_service.log_event(
+        db,
+        event_type="registration",
+        user_id=user.id,
+        ip=ctx["ip"],
+        user_agent=ctx["user_agent"],
+        device_id=ctx["device_id"],
+    )
+    if ctx["device_id"]:
+        await audit_service.register_or_update_device(
+            db, user.id, ctx["device_id"], ip=ctx["ip"], device_info=ctx["device_info"]
+        )
+
     await db.commit()
     await db.refresh(user)
+
+    # Fire Celery repeat-offender check (non-blocking)
+    try:
+        from app.tasks.audit import check_repeat_offender
+        check_repeat_offender.delay(user.id, ctx["device_id"], ctx["ip"], user_data.email)
+    except Exception:
+        pass  # Never delay registration for audit
 
     # Load profile relationship
     await db.refresh(user, ["profile"])
@@ -167,6 +194,18 @@ async def login(
     user = result.scalar_one_or_none()
 
     if not user or not verify_password(credentials.password, user.password_hash):
+        # Audit: log failed login
+        ctx = audit_service.extract_request_context(request)
+        audit_service.log_event(
+            db,
+            event_type="login_failed",
+            ip=ctx["ip"],
+            user_agent=ctx["user_agent"],
+            device_id=ctx["device_id"],
+            details={"attempted_email": credentials.email},
+            risk_level="medium",
+        )
+        await db.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -215,7 +254,32 @@ async def login(
 
     # Update last login
     user.last_login = datetime.now(timezone.utc)
+
+    # Audit: log successful login + register device
+    ctx = audit_service.extract_request_context(request)
+    audit_service.log_event(
+        db,
+        event_type="login",
+        user_id=user.id,
+        ip=ctx["ip"],
+        user_agent=ctx["user_agent"],
+        device_id=ctx["device_id"],
+    )
+    is_new_device = False
+    if ctx["device_id"]:
+        _, is_new_device = await audit_service.register_or_update_device(
+            db, user.id, ctx["device_id"], ip=ctx["ip"], device_info=ctx["device_info"]
+        )
+
     await db.commit()
+
+    # Fire Celery check only on new device
+    if is_new_device:
+        try:
+            from app.tasks.audit import check_repeat_offender
+            check_repeat_offender.delay(user.id, ctx["device_id"], ctx["ip"], user.email)
+        except Exception:
+            pass
 
     # Create tokens - sub must be a string for JWT
     token_data = {"sub": str(user.id)}
@@ -365,6 +429,17 @@ async def logout(
             expires_at=datetime.fromtimestamp(token_exp, tz=timezone.utc),
         )
         db.add(blacklist_entry)
+
+        # Audit: log logout
+        ctx = audit_service.extract_request_context(request)
+        audit_service.log_event(
+            db,
+            event_type="logout",
+            user_id=current_user.id,
+            ip=ctx["ip"],
+            user_agent=ctx["user_agent"],
+            device_id=ctx["device_id"],
+        )
         await db.commit()
 
     except JWTError:
