@@ -232,6 +232,9 @@ async def _cascade_knockout_update(db: AsyncSession, event_id: int, match: "TAMa
                         # Update opponent if changed
                         if existing_card.opponent_id != opponent_id:
                             existing_card.opponent_id = opponent_id
+                        # Reset ghost flag when a real opponent fills the slot
+                        if existing_card.is_ghost_opponent and opponent_id is not None:
+                            existing_card.is_ghost_opponent = False
                     else:
                         # Create new card
                         db.add(TAGameCard(
