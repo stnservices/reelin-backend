@@ -3115,13 +3115,6 @@ async def validate_opponent_card(
                     "updated_at": now,
                 }
 
-            # Check if BOTH cards are now validated - if so, update match result
-            both_validated = my_card and my_card.is_validated
-            if both_validated:
-                # Sync opponent_catches on both game cards
-                opponent_card_values["opponent_catches"] = my_card.my_catches
-                my_card_values["opponent_catches"] = opponent_card.my_catches
-
             # Execute card updates in ascending ID order to prevent deadlocks
             all_card_updates = [(opponent_card.id, opponent_card_values)]
             if my_card and my_card_values:
@@ -3133,8 +3126,25 @@ async def validate_opponent_card(
                     update(TAGameCard).where(TAGameCard.id == cid).values(**vals)
                 )
 
-            # If both validated, update match results
+            # Re-check if both cards are now validated AFTER updates.
+            # Ordered updates serialize concurrent transactions — the second
+            # transaction waits for the first to commit, then sees latest state.
+            both_validated = False
+            if my_card:
+                await db.refresh(my_card)
+                both_validated = my_card.is_validated
+
             if both_validated:
+                # Sync opponent_catches on both game cards
+                await db.execute(
+                    update(TAGameCard).where(TAGameCard.id == opponent_card.id)
+                    .values(opponent_catches=my_card.my_catches)
+                )
+                await db.execute(
+                    update(TAGameCard).where(TAGameCard.id == my_card.id)
+                    .values(opponent_catches=opponent_card.my_catches)
+                )
+
                 match = opponent_card.match
                 if match:
                     # Determine which side is which
