@@ -35,7 +35,7 @@ from sqlalchemy import func, select, and_, delete, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload, selectinload
 
 from app.database import get_db
 from app.dependencies import get_current_user
@@ -499,12 +499,12 @@ async def get_ta_event(
     """Get event and verify it's a TA competition."""
     query = (
         select(Event)
-        .options(selectinload(Event.event_type))
-        .options(selectinload(Event.ta_settings))
+        .options(joinedload(Event.event_type))
+        .options(joinedload(Event.ta_settings))
         .where(Event.id == event_id, Event.is_deleted == False)
     )
     result = await db.execute(query)
-    event = result.scalar_one_or_none()
+    event = result.unique().scalar_one_or_none()
 
     if not event:
         raise HTTPException(
@@ -814,21 +814,19 @@ async def update_standings_for_match(
     ranks_updated = False
 
     if not skip_rank_recalculation:
-        from app.services.ta_ranking import TARankingService
-        ranking_service = TARankingService(db)
-
-        # Check if this leg is now complete
-        leg_complete = await ranking_service.is_leg_complete(
-            match.event_id,
-            match.leg_number,
-            match.phase,
+        # Single query: any incomplete matches left in this leg?
+        incomplete_result = await db.execute(
+            select(func.count(TAMatch.id)).where(
+                TAMatch.event_id == match.event_id,
+                TAMatch.leg_number == match.leg_number,
+                TAMatch.status != TAMatchStatus.COMPLETED.value,
+            )
         )
+        leg_complete = (incomplete_result.scalar() or 0) == 0
 
         if leg_complete:
-            # Leg is complete - recalculate ranks once for the whole leg
             await recalculate_event_ranks(db, match.event_id)
             ranks_updated = True
-            # Firebase sync handled by ta_leg_completed Celery task
 
     return {
         "leg_complete": leg_complete,
@@ -2842,8 +2840,8 @@ async def submit_game_card(
         query = (
             select(TAGameCard)
             .options(
-                selectinload(TAGameCard.user).selectinload(UserAccount.profile),
-                selectinload(TAGameCard.opponent).selectinload(UserAccount.profile),
+                joinedload(TAGameCard.user).joinedload(UserAccount.profile),
+                joinedload(TAGameCard.opponent).joinedload(UserAccount.profile),
             )
             .where(
                 TAGameCard.id == card_id,
@@ -2851,7 +2849,7 @@ async def submit_game_card(
             )
         )
         result = await db.execute(query)
-        card = result.scalar_one_or_none()
+        card = result.unique().scalar_one_or_none()
 
         if not card:
             raise HTTPException(
@@ -3041,9 +3039,9 @@ async def validate_opponent_card(
         query = (
             select(TAGameCard)
             .options(
-                selectinload(TAGameCard.user).selectinload(UserAccount.profile),
-                selectinload(TAGameCard.opponent).selectinload(UserAccount.profile),
-                selectinload(TAGameCard.match),
+                joinedload(TAGameCard.user).joinedload(UserAccount.profile),
+                joinedload(TAGameCard.opponent).joinedload(UserAccount.profile),
+                joinedload(TAGameCard.match),
             )
             .where(
                 TAGameCard.id == card_id,
@@ -3051,7 +3049,7 @@ async def validate_opponent_card(
             )
         )
         result = await db.execute(query)
-        opponent_card = result.scalar_one_or_none()
+        opponent_card = result.unique().scalar_one_or_none()
 
         if not opponent_card:
             raise HTTPException(
