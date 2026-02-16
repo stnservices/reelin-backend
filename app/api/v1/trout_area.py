@@ -828,7 +828,7 @@ async def update_standings_for_match(
             # Leg is complete - recalculate ranks once for the whole leg
             await recalculate_event_ranks(db, match.event_id)
             ranks_updated = True
-            # Firebase sync handled by ta_match_completed Celery task
+            # Firebase sync handled by ta_leg_completed Celery task
 
     return {
         "leg_complete": leg_complete,
@@ -2691,11 +2691,12 @@ async def edit_match_results(
         cascade_result = await _cascade_knockout_update(db, event_id, match)
 
         # Update qualifier standings (ties, losses breakdown)
-        await update_standings_for_match(db, match, point_config)
+        standings_result = await update_standings_for_match(db, match, point_config)
 
-        # Defer stats + Firebase sync to Celery
-        from app.tasks.ta_match import ta_match_completed
-        ta_match_completed.delay(event_id, match.competitor_a_id, match.competitor_b_id)
+        # Defer stats + Firebase sync to Celery (only when full leg completes)
+        if standings_result.get("leg_complete"):
+            from app.tasks.ta_match import ta_leg_completed
+            ta_leg_completed.delay(event_id, match.leg_number)
 
     await db.commit()
     await db.refresh(match)
@@ -2926,12 +2927,13 @@ async def submit_game_card(
                     match.completed_at = now
 
                     # Auto-update standings for ghost match
-                    await update_standings_for_match(db, match, point_config)
+                    standings_result = await update_standings_for_match(db, match, point_config)
                     await _cascade_knockout_update(db, event_id, match)
 
-                    # Defer stats + Firebase sync to Celery
-                    from app.tasks.ta_match import ta_match_completed
-                    ta_match_completed.delay(event_id, match.competitor_a_id, match.competitor_b_id)
+                    # Defer stats + Firebase sync to Celery (only when full leg completes)
+                    if standings_result.get("leg_complete"):
+                        from app.tasks.ta_match import ta_leg_completed
+                        ta_leg_completed.delay(event_id, match.leg_number)
         else:
             # Check if opponent has already submitted - if so, update opponent_catches
             opponent_card_updates = None
@@ -3182,14 +3184,13 @@ async def validate_opponent_card(
                         # Refresh match ORM state after explicit UPDATE
                         await db.refresh(match)
 
-                        await update_standings_for_match(db, match, point_config)
+                        standings_result = await update_standings_for_match(db, match, point_config)
                         await _cascade_knockout_update(db, event_id, match)
 
-                        # Defer heavy work (stats + Firebase sync) to Celery
-                        from app.tasks.ta_match import ta_match_completed
-                        ta_match_completed.delay(
-                            event_id, match.competitor_a_id, match.competitor_b_id
-                        )
+                        # Defer heavy work (stats + Firebase sync) to Celery (only when full leg completes)
+                        if standings_result.get("leg_complete"):
+                            from app.tasks.ta_match import ta_leg_completed
+                            ta_leg_completed.delay(event_id, match.leg_number)
         else:
             # Dispute — single card, no deadlock risk
             await db.execute(
@@ -3494,12 +3495,13 @@ async def admin_update_game_card(
             match.calculate_outcome(point_config)
 
             # Auto-update standings when match completes
-            await update_standings_for_match(db, match, point_config)
+            standings_result = await update_standings_for_match(db, match, point_config)
             await _cascade_knockout_update(db, card.event_id, match)
 
-            # Defer stats + Firebase sync to Celery
-            from app.tasks.ta_match import ta_match_completed
-            ta_match_completed.delay(card.event_id, match.player_a_id, match.player_b_id)
+            # Defer stats + Firebase sync to Celery (only when full leg completes)
+            if standings_result.get("leg_complete"):
+                from app.tasks.ta_match import ta_leg_completed
+                ta_leg_completed.delay(card.event_id, match.leg_number)
         else:
             # Regular match - check opponent's card
             opp_card_query = select(TAGameCard).where(
@@ -3525,12 +3527,13 @@ async def admin_update_game_card(
                 match.calculate_outcome(point_config)
 
                 # Auto-update standings when match completes
-                await update_standings_for_match(db, match, point_config)
+                standings_result = await update_standings_for_match(db, match, point_config)
                 await _cascade_knockout_update(db, card.event_id, match)
 
-                # Defer stats + Firebase sync to Celery
-                from app.tasks.ta_match import ta_match_completed
-                ta_match_completed.delay(card.event_id, match.player_a_id, match.player_b_id)
+                # Defer stats + Firebase sync to Celery (only when full leg completes)
+                if standings_result.get("leg_complete"):
+                    from app.tasks.ta_match import ta_leg_completed
+                    ta_leg_completed.delay(card.event_id, match.leg_number)
 
     await db.commit()
     await db.refresh(card)

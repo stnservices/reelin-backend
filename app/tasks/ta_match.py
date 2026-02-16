@@ -1,7 +1,8 @@
-"""Celery tasks for TA match completion background work.
+"""Celery tasks for TA leg completion background work.
 
 Defers heavy operations (stats recalculation, Firebase sync) off the
 request path to improve validate_opponent_card response times.
+Only fires when an entire leg completes (all matches validated).
 """
 
 import asyncio
@@ -15,11 +16,11 @@ logger = logging.getLogger(__name__)
 
 
 @celery_app.task(bind=True, max_retries=2)
-def ta_match_completed(self, event_id: int, competitor_a_id: int, competitor_b_id: int):
+def ta_leg_completed(self, event_id: int, leg_number: int):
     """
-    Background work after a TA match completes.
+    Background work after a TA leg completes (all matches validated).
 
-    1. Update user stats for both competitors
+    1. Update user stats for ALL competitors in this leg
     2. Sync TA standings to Firebase
     """
     try:
@@ -27,44 +28,59 @@ def ta_match_completed(self, event_id: int, competitor_a_id: int, competitor_b_i
         asyncio.set_event_loop(loop)
         try:
             return loop.run_until_complete(
-                _async_ta_match_completed(event_id, competitor_a_id, competitor_b_id)
+                _async_ta_leg_completed(event_id, leg_number)
             )
         finally:
             loop.close()
     except Exception as e:
         logger.error(
-            f"ta_match_completed failed for event {event_id}: {e}\n{traceback.format_exc()}"
+            f"ta_leg_completed failed for event {event_id} leg {leg_number}: {e}\n{traceback.format_exc()}"
         )
         raise self.retry(exc=e, countdown=10)
 
 
-async def _async_ta_match_completed(
-    event_id: int, competitor_a_id: int, competitor_b_id: int
-) -> dict:
+async def _async_ta_leg_completed(event_id: int, leg_number: int) -> dict:
     from app.services.statistics_service import statistics_service
     from app.services.firebase_leaderboard_service import sync_ta_standings_to_firebase
     from sqlalchemy import select, func
     from app.models.trout_area import (
-        TAQualifierStanding, TAEventSettings, TAGameCard, TAGameCardStatus,
+        TAMatch, TAQualifierStanding, TAEventSettings,
+        TAGameCard, TAGameCardStatus,
     )
     from app.models.user import UserProfile
 
     async with CelerySessionContext() as session_maker:
         async with session_maker() as db:
-            results = {"stats_updated": [], "firebase_synced": False}
+            results = {"stats_updated": [], "firebase_synced": False, "leg_number": leg_number}
 
-            # 1. Update stats for both competitors
-            for user_id in [competitor_a_id, competitor_b_id]:
-                if user_id:
-                    try:
-                        await statistics_service.update_user_stats_for_event(
-                            db, user_id, event_id
-                        )
-                        results["stats_updated"].append(user_id)
-                    except Exception as e:
-                        logger.error(f"Stats update failed for user {user_id}: {e}")
+            # 1. Find all unique competitor IDs from matches in this leg
+            matches_query = select(
+                TAMatch.competitor_a_id, TAMatch.competitor_b_id
+            ).where(
+                TAMatch.event_id == event_id,
+                TAMatch.leg_number == leg_number,
+            )
+            matches_result = await db.execute(matches_query)
+            rows = matches_result.all()
 
-            # 2. Sync TA standings to Firebase (with fixed N+1 query)
+            user_ids = set()
+            for row in rows:
+                if row.competitor_a_id:
+                    user_ids.add(row.competitor_a_id)
+                if row.competitor_b_id:
+                    user_ids.add(row.competitor_b_id)
+
+            # 2. Update stats for all competitors in this leg
+            for user_id in user_ids:
+                try:
+                    await statistics_service.update_user_stats_for_event(
+                        db, user_id, event_id
+                    )
+                    results["stats_updated"].append(user_id)
+                except Exception as e:
+                    logger.error(f"Stats update failed for user {user_id}: {e}")
+
+            # 3. Sync TA standings to Firebase
             try:
                 standings_query = select(TAQualifierStanding).where(
                     TAQualifierStanding.event_id == event_id
@@ -73,9 +89,9 @@ async def _async_ta_match_completed(
 
                 if standings_rows:
                     # Batch-load all profiles in one query
-                    user_ids = [s.user_id for s in standings_rows]
+                    all_user_ids = [s.user_id for s in standings_rows]
                     profiles_result = await db.execute(
-                        select(UserProfile).where(UserProfile.user_id.in_(user_ids))
+                        select(UserProfile).where(UserProfile.user_id.in_(all_user_ids))
                     )
                     profiles = {p.user_id: p for p in profiles_result.scalars().all()}
 
@@ -93,13 +109,6 @@ async def _async_ta_match_completed(
                         )
                     )
                     completed_legs = completed_result.scalar() or 0
-
-                    current_leg_result = await db.execute(
-                        select(func.max(TAGameCard.leg_number)).where(
-                            TAGameCard.event_id == event_id,
-                        )
-                    )
-                    current_leg = current_leg_result.scalar() or 1
 
                     standings_list = []
                     for standing in standings_rows:
@@ -121,7 +130,7 @@ async def _async_ta_match_completed(
                         event_id=event_id,
                         standings=standings_list,
                         current_phase="qualifier",
-                        current_leg=current_leg,
+                        current_leg=leg_number,
                         total_legs=total_legs,
                         completed_legs=completed_legs,
                         has_knockout_bracket=has_knockout,
