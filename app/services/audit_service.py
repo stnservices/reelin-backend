@@ -18,6 +18,18 @@ logger = logging.getLogger(__name__)
 def parse_user_agent(ua_string: str) -> dict:
     """Parse a user-agent string into structured browser/OS/device info."""
     try:
+        # Handle known non-browser clients before ua-parser
+        # Dart HTTP client: "Dart/3.10 (dart:io)"
+        dart_match = re.match(r"Dart/(\d+\.\d+)", ua_string)
+        if dart_match:
+            return {
+                "browser_name": "Dart",
+                "browser_version": dart_match.group(1),
+                "os_name": "Dart VM",
+                "os_version": dart_match.group(1),
+                "device_type": "mobile",
+            }
+
         from ua_parser import parse as ua_parse
         result = ua_parse(ua_string)
 
