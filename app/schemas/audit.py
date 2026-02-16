@@ -24,6 +24,23 @@ class AuditLogResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class EnrichedAuditLogResponse(AuditLogResponse):
+    """Audit log with flattened enrichment fields for admin display."""
+    browser_name: Optional[str] = None
+    browser_version: Optional[str] = None
+    os_name: Optional[str] = None
+    os_version: Optional[str] = None
+    device_type: Optional[str] = None
+    country: Optional[str] = None
+    country_code: Optional[str] = None
+    city: Optional[str] = None
+    region: Optional[str] = None
+    isp: Optional[str] = None
+    is_vpn: Optional[bool] = None
+    success: Optional[bool] = None
+    risk_reasons: Optional[list] = None
+
+
 class AuditStatsResponse(BaseModel):
     events_today: int = 0
     registrations_today: int = 0
@@ -93,6 +110,14 @@ class UnbanUserRequest(BaseModel):
 
 class PaginatedAuditLogs(BaseModel):
     items: list[AuditLogResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class PaginatedEnrichedAuditLogs(BaseModel):
+    items: list[EnrichedAuditLogResponse]
     total: int
     page: int
     page_size: int

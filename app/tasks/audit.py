@@ -1,6 +1,7 @@
-"""Celery task for repeat-offender detection after registration / new-device login."""
+"""Celery tasks for repeat-offender detection and audit log enrichment."""
 
 import logging
+import time
 from typing import Optional
 
 from sqlalchemy import select, or_
@@ -10,7 +11,7 @@ from app.celery_app import celery_app
 from app.database import sync_engine
 from app.models.audit import AuditLog, UserDevice, UserSuspiciousFlag
 from app.models.user import UserAccount
-from app.services.audit_service import normalize_email
+from app.services.audit_service import normalize_email, parse_user_agent
 
 logger = logging.getLogger(__name__)
 
@@ -187,5 +188,169 @@ def check_repeat_offender(
         session.rollback()
         logger.error(f"check_repeat_offender failed for user_id={user_id}: {exc}")
         raise self.retry(exc=exc, countdown=10)
+    finally:
+        session.close()
+
+
+@celery_app.task(bind=True, max_retries=2, soft_time_limit=30)
+def enrich_audit_log(self, audit_log_id: int):
+    """Enrich a single audit log with geo data from ip-api.com.
+
+    Fired after each audit event. Skips if already enriched or private IP.
+    """
+    from app.services.geo_enrichment import enrich_ips_batch
+
+    session = _get_sync_session()
+    try:
+        log = session.execute(
+            select(AuditLog).where(AuditLog.id == audit_log_id)
+        ).scalar_one_or_none()
+
+        if not log:
+            return {"status": "not_found", "id": audit_log_id}
+
+        details = dict(log.details) if log.details else {}
+
+        # Skip if already enriched
+        if details.get("enrichment"):
+            return {"status": "already_enriched", "id": audit_log_id}
+
+        ip = str(log.ip_address) if log.ip_address else None
+        if not ip:
+            return {"status": "no_ip", "id": audit_log_id}
+
+        # Backfill parsed_ua if missing
+        if not details.get("parsed_ua") and log.user_agent:
+            details["parsed_ua"] = parse_user_agent(log.user_agent)
+
+        # Geo enrich
+        enrichment_map = enrich_ips_batch([ip])
+        enrichment = enrichment_map.get(ip)
+
+        if not enrichment:
+            return {"status": "private_or_failed", "id": audit_log_id}
+
+        details["enrichment"] = enrichment
+
+        # Compute risk_reasons
+        risk_reasons = details.get("risk_reasons") or []
+        if enrichment.get("is_vpn"):
+            risk_reasons.append("vpn_or_proxy")
+
+        # Check for new_country: compare to user's previous logins
+        if log.user_id and enrichment.get("country_code"):
+            prev_countries = set()
+            prev_logs = session.execute(
+                select(AuditLog)
+                .where(
+                    AuditLog.user_id == log.user_id,
+                    AuditLog.id != log.id,
+                    AuditLog.event_type.in_(["login", "registration"]),
+                )
+                .order_by(AuditLog.created_at.desc())
+                .limit(20)
+            ).scalars().all()
+            for pl in prev_logs:
+                pd = pl.details or {}
+                pe = pd.get("enrichment") or {}
+                cc = pe.get("country_code")
+                if cc:
+                    prev_countries.add(cc)
+            if prev_countries and enrichment["country_code"] not in prev_countries:
+                risk_reasons.append("new_country")
+
+        if risk_reasons:
+            details["risk_reasons"] = list(set(risk_reasons))
+
+        # Upgrade risk_level if warranted
+        current_risk = log.risk_level or "low"
+        if "vpn_or_proxy" in risk_reasons and log.event_type in ("login", "login_failed"):
+            if current_risk == "low":
+                log.risk_level = "medium"
+        if "new_country" in risk_reasons:
+            if current_risk == "low":
+                log.risk_level = "medium"
+
+        log.details = details
+        session.commit()
+
+        return {"status": "enriched", "id": audit_log_id}
+
+    except Exception as exc:
+        session.rollback()
+        logger.error(f"enrich_audit_log failed for id={audit_log_id}: {exc}")
+        raise self.retry(exc=exc, countdown=15)
+    finally:
+        session.close()
+
+
+@celery_app.task(bind=True, soft_time_limit=600)
+def backfill_audit_enrichment(self, batch_size: int = 100, max_batches: int = 50):
+    """One-time backfill: enrich existing audit logs that lack enrichment data.
+
+    Processes in batches of up to 100 IPs (ip-api.com batch limit).
+    Sleeps 1.5s between batches to respect rate limits (45 req/min).
+    """
+    from app.services.geo_enrichment import enrich_ips_batch
+
+    session = _get_sync_session()
+    total_enriched = 0
+    try:
+        for batch_num in range(max_batches):
+            # Find logs without enrichment
+            logs = session.execute(
+                select(AuditLog)
+                .where(
+                    AuditLog.ip_address.isnot(None),
+                )
+                .order_by(AuditLog.created_at.desc())
+                .limit(batch_size)
+                .offset(batch_num * batch_size)
+            ).scalars().all()
+
+            # Filter to only those without enrichment
+            logs_to_enrich = [
+                l for l in logs
+                if not (l.details or {}).get("enrichment")
+            ]
+
+            if not logs_to_enrich:
+                break
+
+            # Collect unique IPs for batch request
+            ip_set = set()
+            for log in logs_to_enrich:
+                if log.ip_address:
+                    ip_set.add(str(log.ip_address))
+
+            enrichment_map = enrich_ips_batch(list(ip_set)) if ip_set else {}
+
+            for log in logs_to_enrich:
+                details = dict(log.details) if log.details else {}
+                ip = str(log.ip_address) if log.ip_address else None
+
+                # Backfill parsed_ua
+                if not details.get("parsed_ua") and log.user_agent:
+                    details["parsed_ua"] = parse_user_agent(log.user_agent)
+
+                # Add geo enrichment
+                if ip and enrichment_map.get(ip):
+                    details["enrichment"] = enrichment_map[ip]
+
+                log.details = details
+                total_enriched += 1
+
+            session.commit()
+            logger.info(f"Backfill batch {batch_num + 1}: enriched {len(logs_to_enrich)} logs")
+
+            # Rate limit: sleep between batches
+            time.sleep(1.5)
+
+        return {"status": "complete", "total_enriched": total_enriched}
+
+    except Exception as exc:
+        session.rollback()
+        logger.error(f"backfill_audit_enrichment failed: {exc}")
+        raise
     finally:
         session.close()

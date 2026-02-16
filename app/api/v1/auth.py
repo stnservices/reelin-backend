@@ -119,13 +119,14 @@ async def register(
 
     # Audit: log registration + register device
     ctx = audit_service.extract_request_context(request)
-    audit_service.log_event(
+    audit_entry = audit_service.log_event(
         db,
         event_type="registration",
         user_id=user.id,
         ip=ctx["ip"],
         user_agent=ctx["user_agent"],
         device_id=ctx["device_id"],
+        success=True,
     )
     if ctx["device_id"]:
         await audit_service.register_or_update_device(
@@ -135,10 +136,11 @@ async def register(
     await db.commit()
     await db.refresh(user)
 
-    # Fire Celery repeat-offender check (non-blocking)
+    # Fire Celery tasks (non-blocking)
     try:
-        from app.tasks.audit import check_repeat_offender
+        from app.tasks.audit import check_repeat_offender, enrich_audit_log
         check_repeat_offender.delay(user.id, ctx["device_id"], ctx["ip"], user_data.email)
+        enrich_audit_log.delay(audit_entry.id)
     except Exception:
         pass  # Never delay registration for audit
 
@@ -196,7 +198,7 @@ async def login(
     if not user or not verify_password(credentials.password, user.password_hash):
         # Audit: log failed login
         ctx = audit_service.extract_request_context(request)
-        audit_service.log_event(
+        audit_entry = audit_service.log_event(
             db,
             event_type="login_failed",
             ip=ctx["ip"],
@@ -204,8 +206,14 @@ async def login(
             device_id=ctx["device_id"],
             details={"attempted_email": credentials.email},
             risk_level="medium",
+            success=False,
         )
         await db.commit()
+        try:
+            from app.tasks.audit import enrich_audit_log
+            enrich_audit_log.delay(audit_entry.id)
+        except Exception:
+            pass
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -257,13 +265,14 @@ async def login(
 
     # Audit: log successful login + register device
     ctx = audit_service.extract_request_context(request)
-    audit_service.log_event(
+    audit_entry = audit_service.log_event(
         db,
         event_type="login",
         user_id=user.id,
         ip=ctx["ip"],
         user_agent=ctx["user_agent"],
         device_id=ctx["device_id"],
+        success=True,
     )
     is_new_device = False
     if ctx["device_id"]:
@@ -273,7 +282,12 @@ async def login(
 
     await db.commit()
 
-    # Fire Celery check only on new device
+    # Fire Celery tasks (non-blocking)
+    try:
+        from app.tasks.audit import enrich_audit_log
+        enrich_audit_log.delay(audit_entry.id)
+    except Exception:
+        pass
     if is_new_device:
         try:
             from app.tasks.audit import check_repeat_offender
@@ -432,7 +446,7 @@ async def logout(
 
         # Audit: log logout
         ctx = audit_service.extract_request_context(request)
-        audit_service.log_event(
+        audit_entry = audit_service.log_event(
             db,
             event_type="logout",
             user_id=current_user.id,
@@ -441,6 +455,11 @@ async def logout(
             device_id=ctx["device_id"],
         )
         await db.commit()
+        try:
+            from app.tasks.audit import enrich_audit_log
+            enrich_audit_log.delay(audit_entry.id)
+        except Exception:
+            pass
 
     except JWTError:
         raise HTTPException(

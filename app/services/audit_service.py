@@ -15,6 +15,65 @@ from app.models.audit import AuditLog, UserDevice
 logger = logging.getLogger(__name__)
 
 
+def parse_user_agent(ua_string: str) -> dict:
+    """Parse a user-agent string into structured browser/OS/device info."""
+    try:
+        from ua_parser import parse as ua_parse
+        result = ua_parse(ua_string)
+
+        # Browser info
+        ua = result.user_agent
+        browser_name = ua.family if ua else "Unknown"
+        browser_version = ""
+        if ua and ua.major:
+            browser_version = ua.major
+            if ua.minor:
+                browser_version += f".{ua.minor}"
+
+        # OS info
+        os_info = result.os
+        os_name = os_info.family if os_info else "Unknown"
+        os_version = ""
+        if os_info and os_info.major:
+            os_version = os_info.major
+            if os_info.minor:
+                os_version += f".{os_info.minor}"
+
+        # Device info
+        device = result.device
+        device_family = (device.family or "").lower() if device else ""
+
+        # Determine device type
+        if "spider" in browser_name.lower() or "bot" in browser_name.lower() or "crawl" in browser_name.lower():
+            device_type = "bot"
+        elif device_family in ("iphone", "ipod") or ("mobile" in ua_string.lower() and "tablet" not in ua_string.lower()):
+            device_type = "mobile"
+        elif device_family == "ipad" or "tablet" in ua_string.lower():
+            device_type = "tablet"
+        elif os_name in ("Windows", "Mac OS X", "Linux", "Chrome OS", "Ubuntu"):
+            device_type = "desktop"
+        elif device_family != "other" and device_family:
+            device_type = "mobile"
+        else:
+            device_type = "desktop"
+
+        return {
+            "browser_name": browser_name,
+            "browser_version": browser_version,
+            "os_name": os_name,
+            "os_version": os_version,
+            "device_type": device_type,
+        }
+    except Exception:
+        return {
+            "browser_name": "Unknown",
+            "browser_version": "",
+            "os_name": "Unknown",
+            "os_version": "",
+            "device_type": "unknown",
+        }
+
+
 def normalize_email(email: str) -> str:
     """Normalize an email for comparison.
 
@@ -73,8 +132,20 @@ def log_event(
     device_id: Optional[str] = None,
     details: Optional[dict] = None,
     risk_level: str = "low",
+    success: Optional[bool] = None,
 ) -> AuditLog:
     """Create an AuditLog row. Does NOT commit — caller commits."""
+    if details is None:
+        details = {}
+
+    # Parse user-agent if provided
+    if user_agent:
+        details["parsed_ua"] = parse_user_agent(user_agent)
+
+    # Store success flag
+    if success is not None:
+        details["success"] = success
+
     entry = AuditLog(
         user_id=user_id,
         event_type=event_type,
@@ -82,7 +153,7 @@ def log_event(
         ip_address=ip,
         user_agent=user_agent,
         device_id=device_id,
-        details=details,
+        details=details if details else None,
     )
     db.add(entry)
     return entry

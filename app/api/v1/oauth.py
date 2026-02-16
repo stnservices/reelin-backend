@@ -114,7 +114,7 @@ async def _audit_oauth_login(request_or_none, db, user, provider: str):
     if request_or_none is None:
         return
     ctx = audit_service.extract_request_context(request_or_none)
-    audit_service.log_event(
+    audit_entry = audit_service.log_event(
         db,
         event_type="login",
         user_id=user.id,
@@ -122,6 +122,7 @@ async def _audit_oauth_login(request_or_none, db, user, provider: str):
         user_agent=ctx["user_agent"],
         device_id=ctx["device_id"],
         details={"provider": provider},
+        success=True,
     )
     is_new_device = False
     if ctx["device_id"]:
@@ -129,6 +130,12 @@ async def _audit_oauth_login(request_or_none, db, user, provider: str):
             db, user.id, ctx["device_id"], ip=ctx["ip"], device_info=ctx["device_info"]
         )
     await db.commit()
+
+    try:
+        from app.tasks.audit import enrich_audit_log
+        enrich_audit_log.delay(audit_entry.id)
+    except Exception:
+        pass
 
     if is_new_device:
         try:

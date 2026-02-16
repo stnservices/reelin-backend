@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select, or_, case, desc
+from sqlalchemy import String, func, select, or_, case, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -17,7 +17,9 @@ from app.schemas.audit import (
     AuditLogResponse,
     AuditStatsResponse,
     BanUserRequest,
+    EnrichedAuditLogResponse,
     PaginatedAuditLogs,
+    PaginatedEnrichedAuditLogs,
     PaginatedSuspiciousFlags,
     SuspiciousFlagResolve,
     SuspiciousFlagResponse,
@@ -31,12 +33,37 @@ router = APIRouter()
 
 # ── Helpers ──
 
+def _extract_enrichment(log: AuditLog) -> dict:
+    """Extract flattened enrichment fields from details JSONB."""
+    d = log.details or {}
+    parsed_ua = d.get("parsed_ua") or {}
+    enrichment = d.get("enrichment") or {}
+    return {
+        "browser_name": parsed_ua.get("browser_name"),
+        "browser_version": parsed_ua.get("browser_version"),
+        "os_name": parsed_ua.get("os_name"),
+        "os_version": parsed_ua.get("os_version"),
+        "device_type": parsed_ua.get("device_type"),
+        "country": enrichment.get("country"),
+        "country_code": enrichment.get("country_code"),
+        "city": enrichment.get("city"),
+        "region": enrichment.get("region"),
+        "isp": enrichment.get("isp"),
+        "is_vpn": enrichment.get("is_vpn"),
+        "success": d.get("success"),
+        "risk_reasons": d.get("risk_reasons"),
+    }
+
+
 def _build_audit_log_response(log: AuditLog) -> dict:
     """Build response dict from an AuditLog row with joined user data."""
+    user_email = log._user_email if hasattr(log, "_user_email") else None
+    if not user_email and log.details:
+        user_email = log.details.get("attempted_email")
     return {
         "id": log.id,
         "user_id": log.user_id,
-        "user_email": log._user_email if hasattr(log, "_user_email") else None,
+        "user_email": user_email,
         "user_name": log._user_name if hasattr(log, "_user_name") else None,
         "event_type": log.event_type,
         "risk_level": log.risk_level,
@@ -45,6 +72,7 @@ def _build_audit_log_response(log: AuditLog) -> dict:
         "device_id": log.device_id,
         "details": log.details,
         "created_at": log.created_at,
+        **_extract_enrichment(log),
     }
 
 
@@ -138,7 +166,7 @@ async def get_audit_stats(
 
 # ── Audit Logs ──
 
-@router.get("/logs", response_model=PaginatedAuditLogs)
+@router.get("/logs", response_model=PaginatedEnrichedAuditLogs)
 async def list_audit_logs(
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(AdminOnly),
@@ -211,10 +239,13 @@ async def list_audit_logs(
     items = []
     for log in logs:
         info = user_map.get(log.user_id, {})
-        items.append(AuditLogResponse(
+        email = info.get("email")
+        if not email and log.details:
+            email = log.details.get("attempted_email")
+        items.append(EnrichedAuditLogResponse(
             id=log.id,
             user_id=log.user_id,
-            user_email=info.get("email"),
+            user_email=email,
             user_name=info.get("name"),
             event_type=log.event_type,
             risk_level=log.risk_level,
@@ -223,9 +254,10 @@ async def list_audit_logs(
             device_id=log.device_id,
             details=log.details,
             created_at=log.created_at,
+            **_extract_enrichment(log),
         ))
 
-    return PaginatedAuditLogs(
+    return PaginatedEnrichedAuditLogs(
         items=items,
         total=total,
         page=page,
@@ -372,7 +404,7 @@ async def get_user_timeline(
     logs = result.scalars().all()
 
     items = [
-        AuditLogResponse(
+        EnrichedAuditLogResponse(
             id=log.id,
             user_id=log.user_id,
             event_type=log.event_type,
@@ -382,6 +414,7 @@ async def get_user_timeline(
             device_id=log.device_id,
             details=log.details,
             created_at=log.created_at,
+            **_extract_enrichment(log),
         )
         for log in logs
     ]
