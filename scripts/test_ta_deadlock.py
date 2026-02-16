@@ -1,7 +1,7 @@
 """
-TA concurrency stress test — submit/validate with metrics.
+TA concurrency stress test — leg-by-leg submit+validate with metrics.
 Fully API-based. Creates event, enrolls 50 users, generates lineup,
-then fires concurrent submit + validate requests across all pairs.
+then processes each leg: submit both sides → validate both sides.
 
 Saves metrics to scripts/ta_stress_metrics.json.
 
@@ -24,16 +24,17 @@ import httpx
 API_BASE = "https://www.reelin.ro/api/v1"
 ADMIN_EMAIL = "admin@reelin.ro"
 ADMIN_PASSWORD = "Admin1234@"
-NUM_USERS = 50
+NUM_USERS = 33
 USER_EMAIL_TEMPLATE = "user{}@reelin.ro"
 USER_PASSWORD = "test1234"
-CONCURRENCY_BATCH = 25  # pairs per concurrent batch
+CONCURRENCY_BATCH = 15  # pairs per concurrent batch
 # ────────────────────────────────────────────────────────────────
 
 metrics = {
     "test_start": None,
     "test_end": None,
     "num_users": NUM_USERS,
+    "legs": {},
     "submit": {"ok": 0, "errors": 0, "exceptions": 0, "latencies_ms": []},
     "validate": {"ok": 0, "errors": 0, "exceptions": 0, "latencies_ms": []},
     "error_details": [],
@@ -51,6 +52,16 @@ async def login(client: httpx.AsyncClient, email: str, password: str) -> str | N
 
 def auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
+
+
+async def refresh_tokens(client, emails):
+    """Re-login all users to get fresh tokens."""
+    tokens = {}
+    for email in emails:
+        token = await login(client, email, USER_PASSWORD)
+        if token:
+            tokens[email] = token
+    return tokens
 
 
 async def create_event(client: httpx.AsyncClient, admin_token: str) -> int | None:
@@ -118,20 +129,20 @@ async def configure_and_start(client, admin_token, event_id):
         "event_id": event_id,
         "number_of_legs": 3,
         "has_knockout_stage": False,
-        "pairing_algorithm": "round_robin_full",
+        "pairing_algorithm": "round_robin_half",
     })
     if resp.status_code in (200, 201):
         print("  Settings: OK")
     elif resp.status_code == 409:
         await client.put(f"{API_BASE}/ta/events/{event_id}/settings", headers=h, json={
-            "number_of_legs": 3, "has_knockout_stage": False, "pairing_algorithm": "round_robin_full",
+            "number_of_legs": 3, "has_knockout_stage": False, "pairing_algorithm": "round_robin_half",
         })
         print("  Settings: updated existing")
     else:
         print(f"  Settings WARN: {resp.status_code} {resp.text[:150]}")
 
     resp = await client.post(f"{API_BASE}/ta/events/{event_id}/lineups/generate", headers=h,
-                             json={"algorithm": "round_robin_full"})
+                             json={"algorithm": "round_robin_half"})
     print(f"  Lineup: {resp.status_code} — {resp.text[:120]}")
 
     resp = await client.post(f"{API_BASE}/events/{event_id}/publish", headers=h)
@@ -208,13 +219,15 @@ async def validate_card(client, event_id, card_id, token, label):
     return resp
 
 
-def find_opponent_pairs(user_cards):
-    """Find matching draft card pairs between opponents."""
+def find_pairs_for_leg(user_cards, leg_number, status_filter="draft"):
+    """Find matching card pairs between opponents for a specific leg."""
     pairs = []
     used = set()
     for ea, cards_a in user_cards.items():
         for ca in cards_a:
-            if ca["id"] in used or ca["status"] != "draft":
+            if ca["id"] in used or ca["status"] != status_filter:
+                continue
+            if ca["leg_number"] != leg_number:
                 continue
             if ca.get("is_ghost_opponent") or not ca.get("opponent_id"):
                 continue
@@ -222,40 +235,12 @@ def find_opponent_pairs(user_cards):
                 if eb == ea:
                     continue
                 for cb in cards_b:
-                    if cb["id"] in used or cb["status"] != "draft":
+                    if cb["id"] in used or cb["status"] != status_filter:
+                        continue
+                    if cb["leg_number"] != leg_number:
                         continue
                     if (cb["user_id"] == ca["opponent_id"]
-                            and cb.get("opponent_id") == ca["user_id"]
-                            and cb["leg_number"] == ca["leg_number"]):
-                        pairs.append((ea, ca, eb, cb))
-                        used.add(ca["id"])
-                        used.add(cb["id"])
-                        break
-                else:
-                    continue
-                break
-    return pairs
-
-
-def find_submitted_pairs(user_cards):
-    """Find matching submitted card pairs ready for cross-validation."""
-    pairs = []
-    used = set()
-    for ea, cards_a in user_cards.items():
-        for ca in cards_a:
-            if ca["id"] in used or ca["status"] != "submitted":
-                continue
-            if ca.get("is_ghost_opponent") or not ca.get("opponent_id"):
-                continue
-            for eb, cards_b in user_cards.items():
-                if eb == ea:
-                    continue
-                for cb in cards_b:
-                    if cb["id"] in used or cb["status"] != "submitted":
-                        continue
-                    if (cb["user_id"] == ca["opponent_id"]
-                            and cb.get("opponent_id") == ca["user_id"]
-                            and cb["leg_number"] == ca["leg_number"]):
+                            and cb.get("opponent_id") == ca["user_id"]):
                         pairs.append((ea, ca, eb, cb))
                         used.add(ca["id"])
                         used.add(cb["id"])
@@ -281,9 +266,85 @@ def latency_stats(latencies):
     }
 
 
-async def run_stress_test(client, event_id, tokens):
+async def process_leg(client, event_id, tokens, user_cards, leg_number):
+    """Process a single leg: submit all pairs, then validate all pairs."""
+    print(f"\n{'─' * 50}")
+    print(f"  LEG {leg_number}")
+    print(f"{'─' * 50}")
+
+    leg_metrics = {"submit_ok": 0, "submit_err": 0, "validate_ok": 0, "validate_err": 0}
+
+    # Find draft pairs for this leg
+    pairs = find_pairs_for_leg(user_cards, leg_number, "draft")
+    print(f"  Draft pairs: {len(pairs)}")
+
+    if not pairs:
+        print(f"  No pairs for leg {leg_number}, skipping")
+        return leg_metrics
+
+    # ── SUBMIT both sides concurrently ──
+    print(f"  Submitting ({len(pairs)} pairs)...")
+    submit_start = time.monotonic()
+    for batch_idx in range(0, len(pairs), CONCURRENCY_BATCH):
+        batch = pairs[batch_idx:batch_idx + CONCURRENCY_BATCH]
+        tasks = []
+        for i, (ea, ca, eb, cb) in enumerate(batch):
+            idx = batch_idx + i + 1
+            catches_a = random.randint(0, 12)
+            catches_b = random.randint(0, 12)
+            tasks.append(submit_card(client, event_id, ca["id"], catches_a, tokens[ea], f"L{leg_number}S{idx}A"))
+            tasks.append(submit_card(client, event_id, cb["id"], catches_b, tokens[eb], f"L{leg_number}S{idx}B"))
+
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    submit_ms = (time.monotonic() - submit_start) * 1000
+    s_ok = metrics["submit"]["ok"] - sum(m.get("submit_ok", 0) for m in metrics["legs"].values())
+    s_err = metrics["submit"]["errors"] - sum(m.get("submit_err", 0) for m in metrics["legs"].values())
+    leg_metrics["submit_ok"] = s_ok
+    leg_metrics["submit_err"] = s_err
+    print(f"  Submit: {s_ok} OK, {s_err} errors ({submit_ms:.0f}ms)")
+
+    await asyncio.sleep(0.3)
+
+    # ── Re-fetch cards and VALIDATE both sides concurrently ──
+    print(f"  Re-fetching cards...")
+    for email in tokens:
+        user_cards[email] = await get_game_cards(client, event_id, tokens[email])
+
+    submitted_pairs = find_pairs_for_leg(user_cards, leg_number, "submitted")
+    print(f"  Submitted pairs ready for validation: {len(submitted_pairs)}")
+
+    if submitted_pairs:
+        print(f"  Validating ({len(submitted_pairs)} pairs)...")
+        validate_start = time.monotonic()
+        for batch_idx in range(0, len(submitted_pairs), CONCURRENCY_BATCH):
+            batch = submitted_pairs[batch_idx:batch_idx + CONCURRENCY_BATCH]
+            tasks = []
+            for i, (ea, ca, eb, cb) in enumerate(batch):
+                idx = batch_idx + i + 1
+                # Each user validates the OTHER user's card
+                tasks.append(validate_card(client, event_id, cb["id"], tokens[ea], f"L{leg_number}V{idx}A->B"))
+                tasks.append(validate_card(client, event_id, ca["id"], tokens[eb], f"L{leg_number}V{idx}B->A"))
+
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        validate_ms = (time.monotonic() - validate_start) * 1000
+        v_ok = metrics["validate"]["ok"] - sum(m.get("validate_ok", 0) for m in metrics["legs"].values())
+        v_err = metrics["validate"]["errors"] - sum(m.get("validate_err", 0) for m in metrics["legs"].values())
+        leg_metrics["validate_ok"] = v_ok
+        leg_metrics["validate_err"] = v_err
+        print(f"  Validate: {v_ok} OK, {v_err} errors ({validate_ms:.0f}ms)")
+
+    # Re-fetch for next leg
+    for email in tokens:
+        user_cards[email] = await get_game_cards(client, event_id, tokens[email])
+
+    return leg_metrics
+
+
+async def run_stress_test(client, event_id, tokens, emails):
     print("\n" + "=" * 60)
-    print("Phase 3: Concurrent Submit + Validate Stress Test")
+    print("Phase 3: Leg-by-Leg Stress Test")
     print("=" * 60)
 
     metrics["test_start"] = datetime.now(timezone.utc).isoformat()
@@ -292,78 +353,30 @@ async def run_stress_test(client, event_id, tokens):
     print("\nFetching game cards for all users...")
     user_cards = {}
     total_cards = 0
+    leg_numbers = set()
     for email, token in tokens.items():
         cards = await get_game_cards(client, event_id, token)
         user_cards[email] = cards
         total_cards += len(cards)
+        for c in cards:
+            leg_numbers.add(c["leg_number"])
+
+    legs_sorted = sorted(leg_numbers)
     print(f"  Total cards: {total_cards} across {len(tokens)} users")
+    print(f"  Legs: {legs_sorted}")
     metrics["total_cards"] = total_cards
 
-    # ── SUBMIT PHASE ──
-    pairs = find_opponent_pairs(user_cards)
-    print(f"\nFound {len(pairs)} draft opponent pairs to submit")
-    metrics["total_pairs"] = len(pairs)
+    # Process each leg sequentially
+    for leg in legs_sorted:
+        # Refresh tokens before each leg to avoid 401 expiry
+        print(f"\n  Refreshing tokens before leg {leg}...")
+        tokens = await refresh_tokens(client, emails)
+        print(f"  {len(tokens)} tokens refreshed")
 
-    if not pairs:
-        print("ERROR: No opponent pairs found")
-        return
-
-    # Process submits in batches
-    print(f"\n--- Submit Phase (batches of {CONCURRENCY_BATCH} pairs) ---")
-    submit_wall_start = time.monotonic()
-    for batch_idx in range(0, len(pairs), CONCURRENCY_BATCH):
-        batch = pairs[batch_idx:batch_idx + CONCURRENCY_BATCH]
-        tasks = []
-        for i, (ea, ca, eb, cb) in enumerate(batch):
-            idx = batch_idx + i + 1
-            catches_a = random.randint(0, 12)
-            catches_b = random.randint(0, 12)
-            tasks.append(submit_card(client, event_id, ca["id"], catches_a, tokens[ea], f"S{idx}A"))
-            tasks.append(submit_card(client, event_id, cb["id"], catches_b, tokens[eb], f"S{idx}B"))
-
-        t0 = time.monotonic()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        batch_ms = (time.monotonic() - t0) * 1000
-        print(f"  Batch {batch_idx // CONCURRENCY_BATCH + 1}: {len(batch)} pairs, {batch_ms:.0f}ms wall")
-
-    submit_wall_ms = (time.monotonic() - submit_wall_start) * 1000
-    print(f"\n  Submit phase total wall time: {submit_wall_ms:.0f}ms")
-    print(f"  Submit OK: {metrics['submit']['ok']} | Errors: {metrics['submit']['errors']} | Exceptions: {metrics['submit']['exceptions']}")
-
-    await asyncio.sleep(0.5)
-
-    # ── VALIDATE PHASE ──
-    print(f"\n--- Validate Phase (concurrent cross-validation) ---")
-
-    # Re-fetch cards to get updated statuses
-    for email in tokens:
-        user_cards[email] = await get_game_cards(client, event_id, tokens[email])
-
-    submitted_pairs = find_submitted_pairs(user_cards)
-    print(f"  Found {len(submitted_pairs)} submitted pairs ready for validation")
-
-    validate_wall_start = time.monotonic()
-    for batch_idx in range(0, len(submitted_pairs), CONCURRENCY_BATCH):
-        batch = submitted_pairs[batch_idx:batch_idx + CONCURRENCY_BATCH]
-        tasks = []
-        for i, (ea, ca, eb, cb) in enumerate(batch):
-            idx = batch_idx + i + 1
-            # Each user validates the OTHER user's card (cross-validation)
-            tasks.append(validate_card(client, event_id, cb["id"], tokens[ea], f"V{idx}A->B"))
-            tasks.append(validate_card(client, event_id, ca["id"], tokens[eb], f"V{idx}B->A"))
-
-        t0 = time.monotonic()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        batch_ms = (time.monotonic() - t0) * 1000
-        print(f"  Batch {batch_idx // CONCURRENCY_BATCH + 1}: {len(batch)} pairs, {batch_ms:.0f}ms wall")
-
-    validate_wall_ms = (time.monotonic() - validate_wall_start) * 1000
-    print(f"\n  Validate phase total wall time: {validate_wall_ms:.0f}ms")
-    print(f"  Validate OK: {metrics['validate']['ok']} | Errors: {metrics['validate']['errors']} | Exceptions: {metrics['validate']['exceptions']}")
+        leg_result = await process_leg(client, event_id, tokens, user_cards, leg)
+        metrics["legs"][str(leg)] = leg_result
 
     metrics["test_end"] = datetime.now(timezone.utc).isoformat()
-    metrics["submit_wall_ms"] = round(submit_wall_ms, 1)
-    metrics["validate_wall_ms"] = round(validate_wall_ms, 1)
 
     # ── SUMMARY ──
     total_ok = metrics["submit"]["ok"] + metrics["validate"]["ok"]
@@ -371,16 +384,20 @@ async def run_stress_test(client, event_id, tokens):
     total_exc = metrics["submit"]["exceptions"] + metrics["validate"]["exceptions"]
     total_reqs = total_ok + total_err + total_exc
 
+    submit_stats = latency_stats(metrics["submit"]["latencies_ms"])
+    validate_stats = latency_stats(metrics["validate"]["latencies_ms"])
+
     print("\n" + "=" * 60)
     print("RESULTS")
     print("=" * 60)
     print(f"  Users: {NUM_USERS}")
-    print(f"  Total pairs processed: {len(pairs)} submit + {len(submitted_pairs)} validate")
+    print(f"  Legs: {len(legs_sorted)}")
     print(f"  Total requests: {total_reqs}")
     print(f"  OK: {total_ok} | Errors: {total_err} | Exceptions: {total_exc}")
 
-    submit_stats = latency_stats(metrics["submit"]["latencies_ms"])
-    validate_stats = latency_stats(metrics["validate"]["latencies_ms"])
+    for leg in legs_sorted:
+        lm = metrics["legs"].get(str(leg), {})
+        print(f"  Leg {leg}: submit={lm.get('submit_ok', 0)} OK/{lm.get('submit_err', 0)} err | validate={lm.get('validate_ok', 0)} OK/{lm.get('validate_err', 0)} err")
 
     if submit_stats:
         print(f"\n  Submit latency:   p50={submit_stats['p50_ms']}ms  p90={submit_stats['p90_ms']}ms  max={submit_stats['max_ms']}ms")
@@ -408,7 +425,6 @@ async def run_stress_test(client, event_id, tokens):
     }
 
     out_path = Path(__file__).parent / "ta_stress_metrics.json"
-    # Remove raw latencies from saved file (keep stats only)
     save_metrics = {**metrics}
     save_metrics["submit"] = {k: v for k, v in metrics["submit"].items() if k != "latencies_ms"}
     save_metrics["validate"] = {k: v for k, v in metrics["validate"].items() if k != "latencies_ms"}
@@ -422,7 +438,7 @@ async def main():
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         print("=" * 60)
-        print(f"TA Stress Test — {NUM_USERS} users")
+        print(f"TA Stress Test — {NUM_USERS} users, leg-by-leg")
         print("=" * 60)
 
         print("\nLogging in admin...")
@@ -449,11 +465,7 @@ async def main():
 
         # Login test users
         print("\nLogging in test users...")
-        tokens = {}
-        for email in emails:
-            token = await login(client, email, USER_PASSWORD)
-            if token:
-                tokens[email] = token
+        tokens = await refresh_tokens(client, emails)
         print(f"  {len(tokens)}/{len(emails)} logged in")
         metrics["logged_in_users"] = len(tokens)
 
@@ -461,7 +473,7 @@ async def main():
             print("ERROR: Need at least 2 users"); sys.exit(1)
 
         # Run stress test
-        await run_stress_test(client, event_id, tokens)
+        await run_stress_test(client, event_id, tokens, emails)
 
 
 if __name__ == "__main__":

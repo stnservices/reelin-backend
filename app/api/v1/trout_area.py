@@ -124,7 +124,6 @@ from app.schemas.trout_area import (
 from app.schemas.common import MessageResponse
 from app.services.ta_pairing import TAPairingService, PairingAlgorithm
 from app.models.club import ClubMembership, MembershipStatus
-from app.services.statistics_service import statistics_service
 
 logger = logging.getLogger(__name__)
 
@@ -829,9 +828,7 @@ async def update_standings_for_match(
             # Leg is complete - recalculate ranks once for the whole leg
             await recalculate_event_ranks(db, match.event_id)
             ranks_updated = True
-
-            # Sync to Firebase for web real-time updates
-            await _sync_ta_standings_to_firebase(db, match.event_id)
+            # Firebase sync handled by ta_match_completed Celery task
 
     return {
         "leg_complete": leg_complete,
@@ -2696,14 +2693,9 @@ async def edit_match_results(
         # Update qualifier standings (ties, losses breakdown)
         await update_standings_for_match(db, match, point_config)
 
-        # Trigger stats recalculation for both players
-        if match.competitor_a_id:
-            await statistics_service.update_user_stats_for_event(db, match.competitor_a_id, event_id)
-        if match.competitor_b_id:
-            await statistics_service.update_user_stats_for_event(db, match.competitor_b_id, event_id)
-
-        # Sync to Firebase for web real-time updates
-        await _sync_ta_standings_to_firebase(db, event_id)
+        # Defer stats + Firebase sync to Celery
+        from app.tasks.ta_match import ta_match_completed
+        ta_match_completed.delay(event_id, match.competitor_a_id, match.competitor_b_id)
 
     await db.commit()
     await db.refresh(match)
@@ -2935,13 +2927,11 @@ async def submit_game_card(
 
                     # Auto-update standings for ghost match
                     await update_standings_for_match(db, match, point_config)
-
-                    # Trigger stats recalculation for the player (ghost has no user_id)
-                    if card.user_id:
-                        await statistics_service.update_user_stats_for_event(db, card.user_id, event_id)
-
-                    # Auto-cascade to next phase if all matches in this phase complete
                     await _cascade_knockout_update(db, event_id, match)
+
+                    # Defer stats + Firebase sync to Celery
+                    from app.tasks.ta_match import ta_match_completed
+                    ta_match_completed.delay(event_id, match.competitor_a_id, match.competitor_b_id)
         else:
             # Check if opponent has already submitted - if so, update opponent_catches
             opponent_card_updates = None
@@ -3193,13 +3183,13 @@ async def validate_opponent_card(
                         await db.refresh(match)
 
                         await update_standings_for_match(db, match, point_config)
-
-                        if match.competitor_a_id:
-                            await statistics_service.update_user_stats_for_event(db, match.competitor_a_id, event_id)
-                        if match.competitor_b_id:
-                            await statistics_service.update_user_stats_for_event(db, match.competitor_b_id, event_id)
-
                         await _cascade_knockout_update(db, event_id, match)
+
+                        # Defer heavy work (stats + Firebase sync) to Celery
+                        from app.tasks.ta_match import ta_match_completed
+                        ta_match_completed.delay(
+                            event_id, match.competitor_a_id, match.competitor_b_id
+                        )
         else:
             # Dispute — single card, no deadlock risk
             await db.execute(
@@ -3505,13 +3495,11 @@ async def admin_update_game_card(
 
             # Auto-update standings when match completes
             await update_standings_for_match(db, match, point_config)
-
-            # Trigger stats recalculation for the player (ghost has no user_id)
-            if card.user_id:
-                await statistics_service.update_user_stats_for_event(db, card.user_id, card.event_id)
-
-            # Auto-cascade to next phase if all matches in this phase complete
             await _cascade_knockout_update(db, card.event_id, match)
+
+            # Defer stats + Firebase sync to Celery
+            from app.tasks.ta_match import ta_match_completed
+            ta_match_completed.delay(card.event_id, match.player_a_id, match.player_b_id)
         else:
             # Regular match - check opponent's card
             opp_card_query = select(TAGameCard).where(
@@ -3538,15 +3526,11 @@ async def admin_update_game_card(
 
                 # Auto-update standings when match completes
                 await update_standings_for_match(db, match, point_config)
-
-                # Trigger stats recalculation for both players
-                if match.player_a_id:
-                    await statistics_service.update_user_stats_for_event(db, match.player_a_id, card.event_id)
-                if match.player_b_id:
-                    await statistics_service.update_user_stats_for_event(db, match.player_b_id, card.event_id)
-
-                # Auto-cascade to next phase if all matches in this phase complete
                 await _cascade_knockout_update(db, card.event_id, match)
+
+                # Defer stats + Firebase sync to Celery
+                from app.tasks.ta_match import ta_match_completed
+                ta_match_completed.delay(card.event_id, match.player_a_id, match.player_b_id)
 
     await db.commit()
     await db.refresh(card)
