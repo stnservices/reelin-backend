@@ -3163,6 +3163,12 @@ async def validate_opponent_card(
                     point_config = point_result.scalar_one_or_none()
                     match.calculate_outcome(point_config)
 
+                    # Save computed values before UPDATE expires ORM state
+                    a_outcome = match.competitor_a_outcome_code
+                    b_outcome = match.competitor_b_outcome_code
+                    a_points = match.competitor_a_points
+                    b_points = match.competitor_b_points
+
                     # Atomically complete match — only ONE concurrent request wins
                     completion_result = await db.execute(
                         update(TAMatch)
@@ -3175,15 +3181,17 @@ async def validate_opponent_card(
                             completed_at=now,
                             competitor_a_catches=a_catches,
                             competitor_b_catches=b_catches,
-                            competitor_a_outcome_code=match.competitor_a_outcome_code,
-                            competitor_b_outcome_code=match.competitor_b_outcome_code,
-                            competitor_a_points=match.competitor_a_points,
-                            competitor_b_points=match.competitor_b_points,
+                            competitor_a_outcome_code=a_outcome,
+                            competitor_b_outcome_code=b_outcome,
+                            competitor_a_points=a_points,
+                            competitor_b_points=b_points,
                         )
                     )
 
                     if completion_result.rowcount > 0:
-                        # This request won the completion race
+                        # Refresh match ORM state after explicit UPDATE
+                        await db.refresh(match)
+
                         await update_standings_for_match(db, match, point_config)
 
                         if match.competitor_a_id:

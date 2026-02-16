@@ -81,6 +81,7 @@ async def create_event(client: httpx.AsyncClient, admin_token: str) -> int | Non
         "location_name": "Test Lake",
         "max_participants": NUM_USERS + 10,
         "is_team_event": False,
+        "is_test": True,
     })
     if resp.status_code not in (200, 201):
         print(f"  FAILED: {resp.status_code} {resp.text[:200]}")
