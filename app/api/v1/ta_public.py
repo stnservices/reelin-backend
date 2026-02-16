@@ -312,13 +312,20 @@ async def get_public_standings(
     # Get previous positions for change calculation
     previous_positions = await get_previous_standings(event_id)
 
+    # Bulk-fetch all user profiles in one query
+    user_ids = [s.user_id for s in standings_rows]
+    if user_ids:
+        profiles_result = await db.execute(
+            select(UserProfile).where(UserProfile.user_id.in_(user_ids))
+        )
+        profiles_by_user = {p.user_id: p for p in profiles_result.scalars().all()}
+    else:
+        profiles_by_user = {}
+
     # Build response with user display names
     standings_list = []
     for standing in standings_rows:
-        # Get user profile for display name and avatar
-        profile_query = select(UserProfile).where(UserProfile.user_id == standing.user_id)
-        profile_result = await db.execute(profile_query)
-        profile = profile_result.scalar_one_or_none()
+        profile = profiles_by_user.get(standing.user_id)
 
         display_name = f"User {standing.user_id}"  # Fallback
         avatar_url = None
@@ -446,12 +453,20 @@ async def get_public_bracket(
     result = await db.execute(qualifier_query)
     qualifier_standings = result.scalars().all()
 
+    # Bulk-fetch profiles for qualifier top 6
+    q_user_ids = [s.user_id for s in qualifier_standings]
+    if q_user_ids:
+        q_profiles_result = await db.execute(
+            select(UserProfile).where(UserProfile.user_id.in_(q_user_ids))
+        )
+        q_profiles_by_user = {p.user_id: p for p in q_profiles_result.scalars().all()}
+    else:
+        q_profiles_by_user = {}
+
     # Build top 6 with display names
     qualifier_top_6 = []
     for standing in qualifier_standings:
-        profile_query = select(UserProfile).where(UserProfile.user_id == standing.user_id)
-        profile_result = await db.execute(profile_query)
-        profile = profile_result.scalar_one_or_none()
+        profile = q_profiles_by_user.get(standing.user_id)
 
         display_name = profile.full_name if profile else f"User {standing.user_id}"
 
@@ -469,23 +484,43 @@ async def get_public_bracket(
             "advances_to": advances_to,
         })
 
-    # Get knockout matches
-    async def get_matches_for_phase(phase: str) -> list[PublicBracketMatch]:
-        matches_query = select(TAMatch).where(
-            TAMatch.event_id == event_id,
-            TAMatch.phase == phase,
-        ).order_by(TAMatch.leg_number, TAMatch.match_number)
+    # Bulk-fetch all knockout matches and their competitor profiles
+    all_knockout_query = select(TAMatch).where(
+        TAMatch.event_id == event_id,
+        TAMatch.phase.in_([
+            TATournamentPhase.REQUALIFICATION.value,
+            TATournamentPhase.SEMIFINAL.value,
+            TATournamentPhase.FINAL_GRAND.value,
+            TATournamentPhase.FINAL_SMALL.value,
+        ])
+    ).order_by(TAMatch.phase, TAMatch.leg_number, TAMatch.match_number)
 
-        result = await db.execute(matches_query)
-        matches = result.scalars().all()
+    all_knockout_result = await db.execute(all_knockout_query)
+    all_knockout_matches = all_knockout_result.scalars().all()
 
+    # Collect all competitor IDs and bulk-fetch profiles
+    competitor_ids = set()
+    for m in all_knockout_matches:
+        if m.competitor_a_id:
+            competitor_ids.add(m.competitor_a_id)
+        if m.competitor_b_id:
+            competitor_ids.add(m.competitor_b_id)
+
+    if competitor_ids:
+        comp_profiles_result = await db.execute(
+            select(UserProfile).where(UserProfile.user_id.in_(competitor_ids))
+        )
+        comp_profiles = {p.user_id: p for p in comp_profiles_result.scalars().all()}
+    else:
+        comp_profiles = {}
+
+    # Build bracket matches by phase using pre-fetched profiles
+    def build_bracket_matches(matches: list[TAMatch]) -> list[PublicBracketMatch]:
         bracket_matches = []
         for match in matches:
-            # Get participant info
             participant_a = None
             participant_b = None
 
-            # Determine winner from outcome_code ("V" = Victory)
             a_is_winner = match.competitor_a_outcome_code == "V"
             b_is_winner = match.competitor_b_outcome_code == "V"
             winner_id = None
@@ -495,10 +530,7 @@ async def get_public_bracket(
                 winner_id = match.competitor_b_id
 
             if match.competitor_a_id:
-                profile_a = await db.execute(
-                    select(UserProfile).where(UserProfile.user_id == match.competitor_a_id)
-                )
-                profile_a = profile_a.scalar_one_or_none()
+                profile_a = comp_profiles.get(match.competitor_a_id)
                 participant_a = PublicBracketParticipant(
                     user_id=match.competitor_a_id,
                     display_name=profile_a.full_name if profile_a else f"User {match.competitor_a_id}",
@@ -508,10 +540,7 @@ async def get_public_bracket(
                 )
 
             if match.competitor_b_id:
-                profile_b = await db.execute(
-                    select(UserProfile).where(UserProfile.user_id == match.competitor_b_id)
-                )
-                profile_b = profile_b.scalar_one_or_none()
+                profile_b = comp_profiles.get(match.competitor_b_id)
                 participant_b = PublicBracketParticipant(
                     user_id=match.competitor_b_id,
                     display_name=profile_b.full_name if profile_b else f"User {match.competitor_b_id}",
@@ -520,7 +549,6 @@ async def get_public_bracket(
                     is_winner=b_is_winner,
                 )
 
-            # Determine status
             status = "scheduled"
             if match.status == TAMatchStatus.COMPLETED.value:
                 status = "completed"
@@ -536,13 +564,25 @@ async def get_public_bracket(
                 status=status,
                 winner_id=winner_id,
             ))
-
         return bracket_matches
 
-    requalification_matches = await get_matches_for_phase(TATournamentPhase.REQUALIFICATION.value)
-    semifinal_matches = await get_matches_for_phase(TATournamentPhase.SEMIFINAL.value)
-    grand_final_matches = await get_matches_for_phase(TATournamentPhase.FINAL_GRAND.value)
-    small_final_matches = await get_matches_for_phase(TATournamentPhase.FINAL_SMALL.value)
+    # Group matches by phase
+    matches_by_phase: dict[str, list] = {}
+    for m in all_knockout_matches:
+        matches_by_phase.setdefault(m.phase, []).append(m)
+
+    requalification_matches = build_bracket_matches(
+        matches_by_phase.get(TATournamentPhase.REQUALIFICATION.value, [])
+    )
+    semifinal_matches = build_bracket_matches(
+        matches_by_phase.get(TATournamentPhase.SEMIFINAL.value, [])
+    )
+    grand_final_matches = build_bracket_matches(
+        matches_by_phase.get(TATournamentPhase.FINAL_GRAND.value, [])
+    )
+    small_final_matches = build_bracket_matches(
+        matches_by_phase.get(TATournamentPhase.FINAL_SMALL.value, [])
+    )
 
     # Determine current phase based on match statuses
     def all_completed(matches: list) -> bool:

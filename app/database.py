@@ -42,7 +42,7 @@ SyncSessionLocal = sessionmaker(
 )
 
 # Create async engine only if NOT in Celery worker
-# Celery uses sync_engine and CelerySessionContext, not the global async engine
+# Celery uses sync_engine + SyncSessionLocal (psycopg2), not the async engine
 # This saves ~20MB of memory in Celery workers
 if not os.getenv("CELERY_WORKER"):
     # With PgBouncer transaction pooling, SQLAlchemy pool is a secondary buffer
@@ -89,43 +89,5 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-
-class CelerySessionContext:
-    """Context manager for Celery async database sessions.
-
-    Creates a fresh engine per task and properly disposes it after use.
-    This avoids event loop issues while preventing memory leaks.
-    """
-
-    def __init__(self):
-        self._engine = None
-        self._session_maker = None
-
-    async def __aenter__(self):
-        """Create engine and session for this task."""
-        celery_pool = int(os.getenv("DB_CELERY_POOL_SIZE", "1"))
-        celery_overflow = int(os.getenv("DB_CELERY_MAX_OVERFLOW", "1"))
-
-        self._engine = create_async_engine(
-            settings.database_url,
-            echo=False,
-            pool_pre_ping=True,
-            pool_size=celery_pool,
-            max_overflow=celery_overflow,
-        )
-        self._session_maker = async_sessionmaker(
-            self._engine,
-            class_=AsyncSession,
-            expire_on_commit=False,
-            autocommit=False,
-            autoflush=False,
-        )
-        return self._session_maker
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Dispose engine to release all connections."""
-        if self._engine:
-            await self._engine.dispose()
-        return False
 
 

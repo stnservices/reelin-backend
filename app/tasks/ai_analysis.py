@@ -9,50 +9,44 @@ These tasks run asynchronously AFTER catch submission,
 never blocking the user upload experience.
 """
 
-import asyncio
 import logging
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery_app
-from app.database import CelerySessionContext
+from app.database import SyncSessionLocal
 from app.services.ai_analysis_service import ai_analysis_service
 from app.services.firebase_leaderboard_service import sync_validator_event
 
 logger = logging.getLogger(__name__)
 
 
-async def _run_catch_analysis(catch_id: int) -> dict:
-    """Run AI analysis for a catch asynchronously."""
+def _sync_run_catch_analysis(catch_id: int) -> dict:
+    """Run AI analysis for a catch using sync DB session."""
+    with SyncSessionLocal() as db:
+        try:
+            result = ai_analysis_service.analyze_catch_sync(db, catch_id)
+            logger.info(f"AI analysis completed for catch {catch_id}")
+
+            # Broadcast AI analysis completion via Firebase
+            _sync_broadcast_ai_analysis_complete(db, catch_id)
+
+            return result
+        except Exception as e:
+            logger.error(f"AI analysis failed for catch {catch_id}: {e}")
+            raise
+
+
+def _sync_broadcast_ai_analysis_complete(db, catch_id: int) -> None:
+    """Broadcast AI analysis completion to validators via Firebase."""
     from app.models.catch import Catch
     from app.models.ai_analysis import CatchAiAnalysis
-
-    async with CelerySessionContext() as session_maker:
-        async with session_maker() as db:
-            try:
-                result = await ai_analysis_service.analyze_catch(db, catch_id)
-                logger.info(f"AI analysis completed for catch {catch_id}")
-
-                # Broadcast AI analysis completion via SSE
-                await _broadcast_ai_analysis_complete(db, catch_id)
-
-                return result
-            except Exception as e:
-                logger.error(f"AI analysis failed for catch {catch_id}: {e}")
-                raise
-
-
-async def _broadcast_ai_analysis_complete(db, catch_id: int) -> None:
-    """Broadcast AI analysis completion to validators via Redis pub/sub."""
-    from app.models.catch import Catch
-    from app.models.ai_analysis import CatchAiAnalysis
-    from app.models.fish import Fish
 
     try:
         # Get catch with event_id
         catch_stmt = select(Catch).where(Catch.id == catch_id)
-        catch_result = await db.execute(catch_stmt)
+        catch_result = db.execute(catch_stmt)
         catch = catch_result.scalar_one_or_none()
 
         if not catch or not catch.event_id:
@@ -65,7 +59,7 @@ async def _broadcast_ai_analysis_complete(db, catch_id: int) -> None:
             .options(selectinload(CatchAiAnalysis.detected_species))
             .where(CatchAiAnalysis.catch_id == catch_id)
         )
-        analysis_result = await db.execute(analysis_stmt)
+        analysis_result = db.execute(analysis_stmt)
         analysis = analysis_result.scalar_one_or_none()
 
         if not analysis:
@@ -141,14 +135,7 @@ def analyze_catch_with_ai(self, catch_id: int) -> dict:
     logger.info(f"Starting AI analysis for catch {catch_id}")
 
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result = loop.run_until_complete(_run_catch_analysis(catch_id))
-            return result
-        finally:
-            loop.close()
-
+        return _sync_run_catch_analysis(catch_id)
     except Exception as e:
         logger.error(f"AI analysis task failed for catch {catch_id}: {e}")
         raise self.retry(exc=e)
@@ -166,41 +153,31 @@ def reanalyze_pending_catches(limit: int = 100) -> dict:
     Returns:
         Summary of processed catches
     """
-    from sqlalchemy import select
     from app.models.ai_analysis import CatchAiAnalysis, AiAnalysisStatus
 
-    async def _reanalyze():
-        async with CelerySessionContext() as session_maker:
-            async with session_maker() as db:
-                stmt = (
-                    select(CatchAiAnalysis)
-                    .where(
-                        CatchAiAnalysis.status.in_([
-                            AiAnalysisStatus.PENDING.value,
-                            AiAnalysisStatus.FAILED.value,
-                        ])
-                    )
-                    .limit(limit)
-                )
-                result = await db.execute(stmt)
-                analyses = result.scalars().all()
+    with SyncSessionLocal() as db:
+        stmt = (
+            select(CatchAiAnalysis)
+            .where(
+                CatchAiAnalysis.status.in_([
+                    AiAnalysisStatus.PENDING.value,
+                    AiAnalysisStatus.FAILED.value,
+                ])
+            )
+            .limit(limit)
+        )
+        result = db.execute(stmt)
+        analyses = result.scalars().all()
 
-                processed = 0
-                for analysis in analyses:
-                    try:
-                        await ai_analysis_service.analyze_catch(db, analysis.catch_id)
-                        processed += 1
-                    except Exception as e:
-                        logger.error(f"Reanalysis failed for catch {analysis.catch_id}: {e}")
+        processed = 0
+        for analysis in analyses:
+            try:
+                ai_analysis_service.analyze_catch_sync(db, analysis.catch_id)
+                processed += 1
+            except Exception as e:
+                logger.error(f"Reanalysis failed for catch {analysis.catch_id}: {e}")
 
-                return {"processed": processed, "total_found": len(analyses)}
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(_reanalyze())
-    finally:
-        loop.close()
+        return {"processed": processed, "total_found": len(analyses)}
 
 
 def queue_catch_analysis(catch_id: int, delay_seconds: int = 5) -> None:

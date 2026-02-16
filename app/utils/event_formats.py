@@ -11,6 +11,7 @@ from typing import Optional, List
 from sqlalchemy import select
 from sqlalchemy.sql.expression import distinct
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from app.models.event import EventType
 
@@ -71,6 +72,32 @@ async def get_event_participant_ids(
         # SF: Get from EventParticipant
         from app.models.event_participant import EventParticipant
         result = await db.execute(
+            select(distinct(EventParticipant.user_id))
+            .where(EventParticipant.event_id == event_id)
+            .where(EventParticipant.status == "approved")
+        )
+        return [row[0] for row in result.fetchall()]
+
+
+def get_event_participant_ids_sync(
+    db: Session,
+    event_id: int,
+    format_code: str,
+) -> List[int]:
+    """Sync version of get_event_participant_ids for Celery tasks."""
+    if format_code == "ta":
+        from app.models.trout_area import TALineup
+        result = db.execute(
+            select(distinct(TALineup.user_id))
+            .where(TALineup.event_id == event_id)
+            .where(TALineup.is_ghost == False)
+            .where(TALineup.user_id.isnot(None))
+        )
+        return [row[0] for row in result.fetchall()]
+
+    else:
+        from app.models.event_participant import EventParticipant
+        result = db.execute(
             select(distinct(EventParticipant.user_id))
             .where(EventParticipant.event_id == event_id)
             .where(EventParticipant.status == "approved")

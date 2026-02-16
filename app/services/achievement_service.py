@@ -6,7 +6,7 @@ from typing import Optional, List, Dict
 
 from sqlalchemy import select, func, and_, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.achievement import (
     AchievementDefinition,
@@ -51,6 +51,21 @@ def invalidate_achievement_cache():
     global _achievement_cache, _achievement_cache_time
     _achievement_cache = {}
     _achievement_cache_time = 0
+
+
+def get_cached_achievement_sync(
+    db: Session, code: str
+) -> Optional[AchievementDefinition]:
+    """Sync version of get_cached_achievement for Celery tasks."""
+    global _achievement_cache, _achievement_cache_time
+
+    if not _achievement_cache or (time.time() - _achievement_cache_time) > _ACHIEVEMENT_CACHE_TTL:
+        result = db.execute(select(AchievementDefinition))
+        achievements = result.scalars().all()
+        _achievement_cache = {a.code: a for a in achievements}
+        _achievement_cache_time = time.time()
+
+    return _achievement_cache.get(code)
 
 
 class AchievementService:
@@ -1392,6 +1407,1049 @@ class AchievementService:
         # Versatile Angler: Podium in both formats
         if has_sf_podium and has_ta_podium:
             awarded = await AchievementService._award_achievement(
+                db, user_id, "versatile_angler", event_id, None
+            )
+            if awarded:
+                newly_awarded.append(awarded)
+
+        return newly_awarded
+
+    # ── Sync versions for Celery tasks (psycopg2) ──────────────────────
+
+    @staticmethod
+    def check_and_award_achievements_sync(
+        db: Session,
+        user_id: int,
+        trigger: str,
+        event_id: Optional[int] = None,
+        catch_id: Optional[int] = None,
+        context: Optional[dict] = None,
+        format_code: Optional[str] = None,
+    ) -> List[AchievementDefinition]:
+        """Sync version of check_and_award_achievements for Celery tasks."""
+        if event_id:
+            event = db.get(Event, event_id)
+            if event and event.is_test:
+                return []
+
+        newly_awarded = []
+
+        tiered_awards = AchievementService._check_tiered_achievements_sync(
+            db, user_id, trigger, event_id, catch_id, context, format_code
+        )
+        newly_awarded.extend(tiered_awards)
+
+        if format_code is None or format_code == "sf":
+            fish_awards = AchievementService._check_fish_achievements_sync(
+                db, user_id, trigger, event_id, catch_id, context
+            )
+            newly_awarded.extend(fish_awards)
+
+        special_awards = AchievementService._check_special_achievements_sync(
+            db, user_id, trigger, event_id, catch_id, context, format_code
+        )
+        newly_awarded.extend(special_awards)
+
+        cross_format_awards = AchievementService._check_cross_format_achievements_sync(
+            db, user_id, trigger, event_id, context
+        )
+        newly_awarded.extend(cross_format_awards)
+
+        return newly_awarded
+
+    @staticmethod
+    def _check_tiered_achievements_sync(
+        db: Session,
+        user_id: int,
+        trigger: str,
+        event_id: Optional[int],
+        catch_id: Optional[int],
+        context: Optional[dict],
+        format_code: Optional[str] = None,
+    ) -> List[AchievementDefinition]:
+        """Sync version of _check_tiered_achievements."""
+        newly_awarded = []
+
+        stats_stmt = (
+            select(UserEventTypeStats)
+            .where(UserEventTypeStats.user_id == user_id)
+            .where(UserEventTypeStats.event_type_id.is_(None))
+        )
+        result = db.execute(stats_stmt)
+        stats = result.scalar_one_or_none()
+
+        if not stats:
+            return newly_awarded
+
+        type_to_value = {
+            AchievementType.PARTICIPATION.value: stats.total_events,
+            AchievementType.CATCH_COUNT.value: stats.total_approved_catches,
+            AchievementType.SPECIES_COUNT.value: stats.unique_species_count,
+            AchievementType.PODIUM_COUNT.value: stats.podium_finishes,
+            AchievementType.WIN_COUNT.value: stats.total_wins,
+        }
+
+        for achievement_type, current_value in type_to_value.items():
+            progress = AchievementService._get_or_create_progress_sync(
+                db, user_id, achievement_type, None
+            )
+            progress.current_value = current_value
+            progress.last_updated = datetime.utcnow()
+
+            thresholds = AchievementService.TIER_THRESHOLDS.get(achievement_type, {})
+            for tier, threshold in thresholds.items():
+                if current_value >= threshold:
+                    code = f"{achievement_type}_{tier}"
+                    awarded = AchievementService._award_achievement_with_format_sync(
+                        db, user_id, code, event_id, catch_id, format_code
+                    )
+                    if awarded:
+                        newly_awarded.append(awarded)
+
+        db.flush()
+        return newly_awarded
+
+    @staticmethod
+    def _check_fish_achievements_sync(
+        db: Session,
+        user_id: int,
+        trigger: str,
+        event_id: Optional[int],
+        catch_id: Optional[int],
+        context: Optional[dict],
+    ) -> List[AchievementDefinition]:
+        """Sync version of _check_fish_achievements."""
+        newly_awarded = []
+
+        if trigger != "catch_approved":
+            return newly_awarded
+
+        fish_id = context.get("fish_id") if context else None
+        fish_slug = context.get("fish_slug") if context else None
+
+        if not fish_id:
+            return newly_awarded
+
+        if fish_slug in AchievementService.PREDATOR_FISH_SLUGS:
+            species_count_stmt = (
+                select(func.count(Catch.id))
+                .join(Event, Catch.event_id == Event.id)
+                .where(Catch.user_id == user_id)
+                .where(Catch.fish_id == fish_id)
+                .where(Catch.status == CatchStatus.APPROVED.value)
+                .where(Event.is_test == False)
+                .where(Event.is_deleted == False)
+                .where(Event.status.in_(["ongoing", "completed"]))
+            )
+            result = db.execute(species_count_stmt)
+            species_catch_count = result.scalar() or 0
+
+            thresholds = AchievementService.TIER_THRESHOLDS[AchievementType.FISH_CATCH_COUNT.value]
+            for tier, threshold in thresholds.items():
+                if species_catch_count >= threshold:
+                    code = f"fish_{fish_slug.replace('-', '_')}_{tier}"
+                    awarded = AchievementService._award_achievement_sync(
+                        db, user_id, code, event_id, catch_id
+                    )
+                    if awarded:
+                        newly_awarded.append(awarded)
+
+        if fish_slug in AchievementService.PREDATOR_FISH_SLUGS:
+            predator_stmt = (
+                select(Fish.id)
+                .where(Fish.slug.in_(AchievementService.PREDATOR_FISH_SLUGS))
+            )
+            result = db.execute(predator_stmt)
+            predator_fish_ids = [row[0] for row in result.fetchall()]
+
+            predator_count_stmt = (
+                select(func.count(Catch.id))
+                .join(Event, Catch.event_id == Event.id)
+                .where(Catch.user_id == user_id)
+                .where(Catch.fish_id.in_(predator_fish_ids))
+                .where(Catch.status == CatchStatus.APPROVED.value)
+                .where(Event.is_test == False)
+                .where(Event.is_deleted == False)
+                .where(Event.status.in_(["ongoing", "completed"]))
+            )
+            result = db.execute(predator_count_stmt)
+            predator_catch_count = result.scalar() or 0
+
+            thresholds = AchievementService.TIER_THRESHOLDS[AchievementType.PREDATOR_CATCH_COUNT.value]
+            for tier, threshold in thresholds.items():
+                if predator_catch_count >= threshold:
+                    code = f"predator_{tier}"
+                    awarded = AchievementService._award_achievement_sync(
+                        db, user_id, code, event_id, catch_id
+                    )
+                    if awarded:
+                        newly_awarded.append(awarded)
+
+        db.flush()
+        return newly_awarded
+
+    @staticmethod
+    def _check_special_achievements_sync(
+        db: Session,
+        user_id: int,
+        trigger: str,
+        event_id: Optional[int],
+        catch_id: Optional[int],
+        context: Optional[dict],
+        format_code: Optional[str] = None,
+    ) -> List[AchievementDefinition]:
+        """Sync version of _check_special_achievements."""
+        newly_awarded = []
+        context = context or {}
+
+        if trigger == "catch_approved":
+            awarded = AchievementService._check_first_blood_sync(
+                db, user_id, event_id, catch_id, format_code
+            )
+            if awarded:
+                newly_awarded.append(awarded)
+
+            if context.get("catch_length", 0) >= 50:
+                awarded = AchievementService._award_achievement_with_format_sync(
+                    db, user_id, "trophy_hunter", event_id, catch_id, format_code
+                )
+                if awarded:
+                    newly_awarded.append(awarded)
+
+            if context.get("is_personal_best"):
+                awarded = AchievementService._award_achievement_with_format_sync(
+                    db, user_id, "monster_catch", event_id, catch_id, format_code
+                )
+                if awarded:
+                    newly_awarded.append(awarded)
+
+            if context.get("is_early_bird"):
+                awarded = AchievementService._award_achievement_with_format_sync(
+                    db, user_id, "early_bird", event_id, catch_id, format_code
+                )
+                if awarded:
+                    newly_awarded.append(awarded)
+
+            if context.get("is_last_minute"):
+                awarded = AchievementService._award_achievement_with_format_sync(
+                    db, user_id, "last_minute", event_id, catch_id, format_code
+                )
+                if awarded:
+                    newly_awarded.append(awarded)
+
+            if event_id:
+                speed_awarded = AchievementService._check_speed_demon_sync(
+                    db, user_id, event_id, format_code
+                )
+                if speed_awarded:
+                    newly_awarded.append(speed_awarded)
+
+        if trigger == "event_completed":
+            clean_awarded = AchievementService._check_clean_sheet_sync(
+                db, user_id, event_id, format_code
+            )
+            if clean_awarded:
+                newly_awarded.append(clean_awarded)
+
+            precision_awarded = AchievementService._check_precision_angler_sync(
+                db, user_id, event_id, format_code
+            )
+            if precision_awarded:
+                newly_awarded.append(precision_awarded)
+
+            diversity_awarded = AchievementService._check_diversity_master_sync(
+                db, user_id, event_id, format_code
+            )
+            if diversity_awarded:
+                newly_awarded.append(diversity_awarded)
+
+            comeback_awarded = AchievementService._check_comeback_king_sync(
+                db, user_id, event_id, format_code
+            )
+            if comeback_awarded:
+                newly_awarded.append(comeback_awarded)
+
+            streak_awards = AchievementService._update_streaks_sync(
+                db, user_id, event_id, context, format_code
+            )
+            newly_awarded.extend(streak_awards)
+
+            if format_code == "ta" and event_id:
+                ta_clean_awarded = AchievementService._check_ta_clean_sheet_sync(
+                    db, user_id, event_id
+                )
+                if ta_clean_awarded:
+                    newly_awarded.append(ta_clean_awarded)
+
+                ta_perfect_awarded = AchievementService._check_ta_perfect_leg_sync(
+                    db, user_id, event_id
+                )
+                if ta_perfect_awarded:
+                    newly_awarded.append(ta_perfect_awarded)
+
+                ta_champion_awarded = AchievementService._check_ta_champion_sync(
+                    db, user_id, event_id
+                )
+                if ta_champion_awarded:
+                    newly_awarded.append(ta_champion_awarded)
+
+            if format_code == "sf" and event_id:
+                sf_champion_awarded = AchievementService._check_sf_champion_sync(
+                    db, user_id, event_id
+                )
+                if sf_champion_awarded:
+                    newly_awarded.append(sf_champion_awarded)
+
+            if event_id:
+                team_awards = AchievementService._check_team_achievements_sync(
+                    db, user_id, event_id
+                )
+                newly_awarded.extend(team_awards)
+
+        db.flush()
+        return newly_awarded
+
+    @staticmethod
+    def _check_first_blood_sync(
+        db: Session,
+        user_id: int,
+        event_id: Optional[int],
+        catch_id: Optional[int],
+        format_code: Optional[str] = None,
+    ) -> Optional[AchievementDefinition]:
+        """Sync version of _check_first_blood."""
+        count_stmt = (
+            select(func.count(Catch.id))
+            .join(Event, Catch.event_id == Event.id)
+            .where(Catch.user_id == user_id)
+            .where(Catch.status == CatchStatus.APPROVED.value)
+            .where(Event.is_test == False)
+        )
+        result = db.execute(count_stmt)
+        total_catches = result.scalar() or 0
+
+        if total_catches == 1:
+            return AchievementService._award_achievement_with_format_sync(
+                db, user_id, "first_blood", event_id, catch_id, format_code
+            )
+        return None
+
+    @staticmethod
+    def _check_speed_demon_sync(
+        db: Session,
+        user_id: int,
+        event_id: int,
+        format_code: Optional[str] = None,
+    ) -> Optional[AchievementDefinition]:
+        """Sync version of _check_speed_demon."""
+        event = db.get(Event, event_id)
+        if not event:
+            return None
+
+        first_hour_end = event.start_date + timedelta(hours=1)
+
+        count_stmt = (
+            select(func.count(Catch.id))
+            .where(Catch.user_id == user_id)
+            .where(Catch.event_id == event_id)
+            .where(Catch.status == CatchStatus.APPROVED.value)
+            .where(Catch.submitted_at <= first_hour_end)
+        )
+        result = db.execute(count_stmt)
+        first_hour_catches = result.scalar() or 0
+
+        if first_hour_catches >= 5:
+            return AchievementService._award_achievement_with_format_sync(
+                db, user_id, "speed_demon", event_id, None, format_code
+            )
+        return None
+
+    @staticmethod
+    def _check_clean_sheet_sync(
+        db: Session,
+        user_id: int,
+        event_id: int,
+        format_code: Optional[str] = None,
+    ) -> Optional[AchievementDefinition]:
+        """Sync version of _check_clean_sheet."""
+        approved_stmt = (
+            select(func.count(Catch.id))
+            .where(Catch.user_id == user_id)
+            .where(Catch.event_id == event_id)
+            .where(Catch.status == CatchStatus.APPROVED.value)
+        )
+        result = db.execute(approved_stmt)
+        approved_count = result.scalar() or 0
+
+        rejected_stmt = (
+            select(func.count(Catch.id))
+            .where(Catch.user_id == user_id)
+            .where(Catch.event_id == event_id)
+            .where(Catch.status == CatchStatus.REJECTED.value)
+        )
+        result = db.execute(rejected_stmt)
+        rejected_count = result.scalar() or 0
+
+        if approved_count >= 3 and rejected_count == 0:
+            return AchievementService._award_achievement_with_format_sync(
+                db, user_id, "clean_sheet", event_id, None, format_code
+            )
+        return None
+
+    @staticmethod
+    def _check_comeback_king_sync(
+        db: Session,
+        user_id: int,
+        event_id: int,
+        format_code: Optional[str] = None,
+    ) -> Optional[AchievementDefinition]:
+        """Sync version of _check_comeback_king."""
+        from app.models.team import Team, TeamMember
+
+        event_stmt = select(Event.is_team_event).where(Event.id == event_id)
+        result = db.execute(event_stmt)
+        is_team_event = result.scalar()
+
+        final_rank_stmt = (
+            select(EventScoreboard.rank)
+            .where(EventScoreboard.event_id == event_id)
+            .where(EventScoreboard.user_id == user_id)
+        )
+        result = db.execute(final_rank_stmt)
+        final_rank = result.scalar()
+
+        if final_rank is None:
+            return None
+
+        worst_rank = None
+
+        if is_team_event:
+            team_stmt = (
+                select(Team.id)
+                .join(TeamMember, TeamMember.team_id == Team.id)
+                .join(EventEnrollment, EventEnrollment.id == TeamMember.enrollment_id)
+                .where(Team.event_id == event_id)
+                .where(EventEnrollment.user_id == user_id)
+                .where(TeamMember.is_active == True)
+            )
+            result = db.execute(team_stmt)
+            team_id = result.scalar()
+
+            if team_id:
+                worst_old = (
+                    select(func.max(RankingMovement.old_rank))
+                    .where(RankingMovement.event_id == event_id)
+                    .where(RankingMovement.team_id == team_id)
+                )
+                worst_new = (
+                    select(func.max(RankingMovement.new_rank))
+                    .where(RankingMovement.event_id == event_id)
+                    .where(RankingMovement.team_id == team_id)
+                )
+                result_old = db.execute(worst_old)
+                result_new = db.execute(worst_new)
+                max_old = result_old.scalar() or 0
+                max_new = result_new.scalar() or 0
+                worst_rank = max(max_old, max_new) if (max_old or max_new) else None
+        else:
+            worst_old = (
+                select(func.max(RankingMovement.old_rank))
+                .where(RankingMovement.event_id == event_id)
+                .where(RankingMovement.user_id == user_id)
+            )
+            worst_new = (
+                select(func.max(RankingMovement.new_rank))
+                .where(RankingMovement.event_id == event_id)
+                .where(RankingMovement.user_id == user_id)
+            )
+            result_old = db.execute(worst_old)
+            result_new = db.execute(worst_new)
+            max_old = result_old.scalar() or 0
+            max_new = result_new.scalar() or 0
+            worst_rank = max(max_old, max_new) if (max_old or max_new) else None
+
+        if worst_rank is None:
+            return None
+
+        rank_improvement = worst_rank - final_rank
+
+        if rank_improvement >= 5:
+            return AchievementService._award_achievement_with_format_sync(
+                db, user_id, "comeback_king", event_id, None, format_code
+            )
+        return None
+
+    @staticmethod
+    def _check_ta_clean_sheet_sync(
+        db: Session,
+        user_id: int,
+        event_id: int,
+    ) -> Optional[AchievementDefinition]:
+        """Sync version of _check_ta_clean_sheet."""
+        from app.models.trout_area import TAMatch, TAMatchOutcome, TAMatchStatus
+
+        matches_query = (
+            select(TAMatch)
+            .where(TAMatch.event_id == event_id)
+            .where(TAMatch.status == TAMatchStatus.COMPLETED.value)
+            .where(
+                (
+                    (TAMatch.competitor_a_id == user_id) &
+                    (TAMatch.competitor_a_outcome_code == TAMatchOutcome.VICTORY.value) &
+                    (TAMatch.competitor_b_catches == 0)
+                ) |
+                (
+                    (TAMatch.competitor_b_id == user_id) &
+                    (TAMatch.competitor_b_outcome_code == TAMatchOutcome.VICTORY.value) &
+                    (TAMatch.competitor_a_catches == 0)
+                )
+            )
+        )
+        result = db.execute(matches_query)
+        clean_sheet_matches = result.scalars().all()
+
+        if len(clean_sheet_matches) > 0:
+            return AchievementService._award_achievement_sync(
+                db, user_id, "ta_clean_sheet", event_id, None
+            )
+        return None
+
+    @staticmethod
+    def _check_ta_perfect_leg_sync(
+        db: Session,
+        user_id: int,
+        event_id: int,
+    ) -> Optional[AchievementDefinition]:
+        """Sync version of _check_ta_perfect_leg."""
+        from app.models.trout_area import TAMatch, TAMatchOutcome, TAMatchStatus
+
+        matches_query = (
+            select(TAMatch)
+            .where(TAMatch.event_id == event_id)
+            .where(TAMatch.status == TAMatchStatus.COMPLETED.value)
+            .where(
+                (TAMatch.competitor_a_id == user_id) |
+                (TAMatch.competitor_b_id == user_id)
+            )
+            .order_by(TAMatch.leg_number)
+        )
+        result = db.execute(matches_query)
+        user_matches = result.scalars().all()
+
+        if not user_matches:
+            return None
+
+        matches_by_leg: dict[int, list] = {}
+        for match in user_matches:
+            leg = match.leg_number
+            if leg not in matches_by_leg:
+                matches_by_leg[leg] = []
+            matches_by_leg[leg].append(match)
+
+        for leg_number, leg_matches in matches_by_leg.items():
+            all_wins = True
+            for match in leg_matches:
+                if match.competitor_a_id == user_id:
+                    if match.competitor_a_outcome_code != TAMatchOutcome.VICTORY.value:
+                        all_wins = False
+                        break
+                else:
+                    if match.competitor_b_outcome_code != TAMatchOutcome.VICTORY.value:
+                        all_wins = False
+                        break
+
+            if all_wins and len(leg_matches) > 0:
+                return AchievementService._award_achievement_sync(
+                    db, user_id, "ta_perfect_leg", event_id, None
+                )
+
+        return None
+
+    @staticmethod
+    def _check_ta_champion_sync(
+        db: Session,
+        user_id: int,
+        event_id: int,
+    ) -> Optional[AchievementDefinition]:
+        """Sync version of _check_ta_champion."""
+        from app.models.hall_of_fame import HallOfFameEntry
+
+        hof_stmt = (
+            select(HallOfFameEntry.id)
+            .where(HallOfFameEntry.user_id == user_id)
+            .where(HallOfFameEntry.format_code == "ta")
+            .where(HallOfFameEntry.position == 1)
+            .where(HallOfFameEntry.achievement_type == "national_champion")
+        )
+        result = db.execute(hof_stmt)
+        has_ta_title = result.scalar() is not None
+
+        if has_ta_title:
+            return AchievementService._award_achievement_sync(
+                db, user_id, "ta_champion", event_id, None
+            )
+        return None
+
+    @staticmethod
+    def _check_sf_champion_sync(
+        db: Session,
+        user_id: int,
+        event_id: int,
+    ) -> Optional[AchievementDefinition]:
+        """Sync version of _check_sf_champion."""
+        from app.models.hall_of_fame import HallOfFameEntry
+
+        hof_stmt = (
+            select(HallOfFameEntry.id)
+            .where(HallOfFameEntry.user_id == user_id)
+            .where(HallOfFameEntry.format_code == "sf")
+            .where(HallOfFameEntry.position == 1)
+            .where(HallOfFameEntry.achievement_type == "national_champion")
+        )
+        result = db.execute(hof_stmt)
+        has_sf_title = result.scalar() is not None
+
+        if has_sf_title:
+            return AchievementService._award_achievement_sync(
+                db, user_id, "sf_champion", event_id, None
+            )
+        return None
+
+    @staticmethod
+    def _check_team_achievements_sync(
+        db: Session,
+        user_id: int,
+        event_id: int,
+    ) -> List[AchievementDefinition]:
+        """Sync version of _check_team_achievements."""
+        from app.models.team import Team, TeamMember
+
+        newly_awarded: List[AchievementDefinition] = []
+
+        event = db.get(Event, event_id)
+        if not event or not event.is_team_event:
+            return newly_awarded
+
+        team_stmt = (
+            select(Team)
+            .join(TeamMember, TeamMember.team_id == Team.id)
+            .join(EventEnrollment, EventEnrollment.id == TeamMember.enrollment_id)
+            .where(Team.event_id == event_id)
+            .where(EventEnrollment.user_id == user_id)
+        )
+        result = db.execute(team_stmt)
+        team = result.scalar_one_or_none()
+
+        if not team:
+            return newly_awarded
+
+        team_events_stmt = (
+            select(func.count(distinct(Team.event_id)))
+            .join(TeamMember, TeamMember.team_id == Team.id)
+            .join(EventEnrollment, EventEnrollment.id == TeamMember.enrollment_id)
+            .join(Event, Event.id == Team.event_id)
+            .where(EventEnrollment.user_id == user_id)
+            .where(Event.status == "completed")
+            .where(Event.is_test == False)
+        )
+        result = db.execute(team_events_stmt)
+        team_event_count = result.scalar() or 0
+
+        if team_event_count == 1:
+            awarded = AchievementService._award_achievement_sync(
+                db, user_id, "team_player", event_id, None
+            )
+            if awarded:
+                newly_awarded.append(awarded)
+
+        team_rank_stmt = (
+            select(EventScoreboard.rank)
+            .where(EventScoreboard.event_id == event_id)
+            .where(EventScoreboard.team_id == team.id)
+        )
+        result = db.execute(team_rank_stmt)
+        team_rank = result.scalar()
+
+        if team_rank == 1:
+            awarded = AchievementService._award_achievement_sync(
+                db, user_id, "team_champion", event_id, None
+            )
+            if awarded:
+                newly_awarded.append(awarded)
+
+        if team_rank == 1:
+            team_wins_stmt = (
+                select(func.count(distinct(Team.event_id)))
+                .join(TeamMember, TeamMember.team_id == Team.id)
+                .join(EventEnrollment, EventEnrollment.id == TeamMember.enrollment_id)
+                .join(Event, Event.id == Team.event_id)
+                .join(EventScoreboard, and_(
+                    EventScoreboard.event_id == Team.event_id,
+                    EventScoreboard.team_id == Team.id
+                ))
+                .where(EventEnrollment.user_id == user_id)
+                .where(Event.status == "completed")
+                .where(Event.is_test == False)
+                .where(EventScoreboard.rank == 1)
+            )
+            result = db.execute(team_wins_stmt)
+            team_wins = result.scalar() or 0
+
+            if team_wins >= 10:
+                awarded = AchievementService._award_achievement_sync(
+                    db, user_id, "team_spirit_gold", event_id, None
+                )
+                if awarded:
+                    newly_awarded.append(awarded)
+            elif team_wins >= 5:
+                awarded = AchievementService._award_achievement_sync(
+                    db, user_id, "team_spirit_silver", event_id, None
+                )
+                if awarded:
+                    newly_awarded.append(awarded)
+            elif team_wins >= 3:
+                awarded = AchievementService._award_achievement_sync(
+                    db, user_id, "team_spirit_bronze", event_id, None
+                )
+                if awarded:
+                    newly_awarded.append(awarded)
+
+        return newly_awarded
+
+    @staticmethod
+    def _check_precision_angler_sync(
+        db: Session,
+        user_id: int,
+        event_id: int,
+        format_code: Optional[str] = None,
+    ) -> Optional[AchievementDefinition]:
+        """Sync version of _check_precision_angler."""
+        approved_stmt = (
+            select(func.count(Catch.id))
+            .where(Catch.user_id == user_id)
+            .where(Catch.event_id == event_id)
+            .where(Catch.status == CatchStatus.APPROVED.value)
+        )
+        result = db.execute(approved_stmt)
+        approved_count = result.scalar() or 0
+
+        total_stmt = (
+            select(func.count(Catch.id))
+            .where(Catch.user_id == user_id)
+            .where(Catch.event_id == event_id)
+        )
+        result = db.execute(total_stmt)
+        total_count = result.scalar() or 0
+
+        if total_count >= 5 and approved_count / total_count >= 0.9:
+            return AchievementService._award_achievement_with_format_sync(
+                db, user_id, "precision_angler", event_id, None, format_code
+            )
+        return None
+
+    @staticmethod
+    def _check_diversity_master_sync(
+        db: Session,
+        user_id: int,
+        event_id: int,
+        format_code: Optional[str] = None,
+    ) -> Optional[AchievementDefinition]:
+        """Sync version of _check_diversity_master."""
+        from app.models.event import EventFishScoring
+
+        available_stmt = (
+            select(func.count(distinct(EventFishScoring.fish_id)))
+            .where(EventFishScoring.event_id == event_id)
+        )
+        result = db.execute(available_stmt)
+        available_species = result.scalar() or 0
+
+        if available_species == 0:
+            return None
+
+        caught_stmt = (
+            select(func.count(distinct(Catch.fish_id)))
+            .where(Catch.user_id == user_id)
+            .where(Catch.event_id == event_id)
+            .where(Catch.status == CatchStatus.APPROVED.value)
+        )
+        result = db.execute(caught_stmt)
+        caught_species = result.scalar() or 0
+
+        if caught_species >= available_species:
+            return AchievementService._award_achievement_with_format_sync(
+                db, user_id, "diversity_master", event_id, None, format_code
+            )
+        return None
+
+    @staticmethod
+    def _update_streaks_sync(
+        db: Session,
+        user_id: int,
+        event_id: int,
+        context: Optional[dict],
+        format_code: Optional[str] = None,
+    ) -> List[AchievementDefinition]:
+        """Sync version of _update_streaks."""
+        newly_awarded = []
+        context = context or {}
+
+        rank = context.get("final_rank")
+        if rank is None:
+            return newly_awarded
+
+        AchievementService._update_streak_sync(db, user_id, "participation", event_id, True)
+
+        is_podium = rank <= 3
+        podium_tracker = AchievementService._update_streak_sync(
+            db, user_id, "podium", event_id, is_podium
+        )
+        if podium_tracker and podium_tracker.current_streak >= 3:
+            awarded = AchievementService._award_achievement_with_format_sync(
+                db, user_id, "hot_streak", event_id, None, format_code
+            )
+            if awarded:
+                newly_awarded.append(awarded)
+
+        is_win = rank == 1
+        win_tracker = AchievementService._update_streak_sync(
+            db, user_id, "win", event_id, is_win
+        )
+        if win_tracker and win_tracker.current_streak >= 2:
+            awarded = AchievementService._award_achievement_with_format_sync(
+                db, user_id, "dominator", event_id, None, format_code
+            )
+            if awarded:
+                newly_awarded.append(awarded)
+
+        participation_tracker = AchievementService._get_streak_tracker_sync(
+            db, user_id, "participation"
+        )
+        if participation_tracker and participation_tracker.current_streak >= 5:
+            awarded = AchievementService._award_achievement_with_format_sync(
+                db, user_id, "iron_man", event_id, None, format_code
+            )
+            if awarded:
+                newly_awarded.append(awarded)
+
+        return newly_awarded
+
+    @staticmethod
+    def _update_streak_sync(
+        db: Session,
+        user_id: int,
+        streak_type: str,
+        event_id: int,
+        increment: bool,
+    ) -> UserStreakTracker:
+        """Sync version of _update_streak."""
+        tracker = AchievementService._get_or_create_streak_tracker_sync(
+            db, user_id, streak_type
+        )
+
+        if increment:
+            tracker.current_streak += 1
+            if tracker.current_streak > tracker.max_streak:
+                tracker.max_streak = tracker.current_streak
+        else:
+            tracker.current_streak = 0
+
+        tracker.last_event_id = event_id
+        tracker.last_updated = datetime.utcnow()
+
+        db.flush()
+        return tracker
+
+    @staticmethod
+    def _get_streak_tracker_sync(
+        db: Session,
+        user_id: int,
+        streak_type: str,
+    ) -> Optional[UserStreakTracker]:
+        """Sync version of _get_streak_tracker."""
+        stmt = select(UserStreakTracker).where(
+            and_(
+                UserStreakTracker.user_id == user_id,
+                UserStreakTracker.streak_type == streak_type,
+            )
+        )
+        result = db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    def _get_or_create_streak_tracker_sync(
+        db: Session,
+        user_id: int,
+        streak_type: str,
+    ) -> UserStreakTracker:
+        """Sync version of _get_or_create_streak_tracker."""
+        tracker = AchievementService._get_streak_tracker_sync(db, user_id, streak_type)
+        if tracker is None:
+            tracker = UserStreakTracker(user_id=user_id, streak_type=streak_type)
+            db.add(tracker)
+            db.flush()
+        return tracker
+
+    @staticmethod
+    def _get_or_create_progress_sync(
+        db: Session,
+        user_id: int,
+        achievement_type: str,
+        event_type_id: Optional[int],
+    ) -> UserAchievementProgress:
+        """Sync version of _get_or_create_progress."""
+        stmt = select(UserAchievementProgress).where(
+            and_(
+                UserAchievementProgress.user_id == user_id,
+                UserAchievementProgress.achievement_type == achievement_type,
+                UserAchievementProgress.event_type_id == event_type_id
+                if event_type_id is not None
+                else UserAchievementProgress.event_type_id.is_(None),
+            )
+        )
+        result = db.execute(stmt)
+        progress = result.scalar_one_or_none()
+
+        if progress is None:
+            progress = UserAchievementProgress(
+                user_id=user_id,
+                achievement_type=achievement_type,
+                event_type_id=event_type_id,
+            )
+            db.add(progress)
+            db.flush()
+
+        return progress
+
+    @staticmethod
+    def _award_achievement_sync(
+        db: Session,
+        user_id: int,
+        achievement_code: str,
+        event_id: Optional[int],
+        catch_id: Optional[int],
+    ) -> Optional[AchievementDefinition]:
+        """Sync version of _award_achievement."""
+        achievement = get_cached_achievement_sync(db, achievement_code)
+
+        if not achievement or not achievement.is_active:
+            return None
+
+        existing_stmt = select(UserAchievement.id).where(
+            and_(
+                UserAchievement.user_id == user_id,
+                UserAchievement.achievement_id == achievement.id,
+            )
+        )
+        result = db.execute(existing_stmt)
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            return None
+
+        user_achievement = UserAchievement(
+            user_id=user_id,
+            achievement_id=achievement.id,
+            event_id=event_id,
+            catch_id=catch_id,
+        )
+        db.add(user_achievement)
+        db.flush()
+
+        return achievement
+
+    @staticmethod
+    def _award_achievement_with_format_sync(
+        db: Session,
+        user_id: int,
+        achievement_code: str,
+        event_id: Optional[int],
+        catch_id: Optional[int],
+        format_code: Optional[str] = None,
+    ) -> Optional[AchievementDefinition]:
+        """Sync version of _award_achievement_with_format."""
+        achievement = get_cached_achievement_sync(db, achievement_code)
+
+        if not achievement or not achievement.is_active:
+            return None
+
+        if format_code is not None:
+            if not achievement.applies_to_format(format_code):
+                return None
+
+        existing_stmt = select(UserAchievement.id).where(
+            and_(
+                UserAchievement.user_id == user_id,
+                UserAchievement.achievement_id == achievement.id,
+            )
+        )
+        result = db.execute(existing_stmt)
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            return None
+
+        user_achievement = UserAchievement(
+            user_id=user_id,
+            achievement_id=achievement.id,
+            event_id=event_id,
+            catch_id=catch_id,
+        )
+        db.add(user_achievement)
+        db.flush()
+
+        return achievement
+
+    @staticmethod
+    def _check_cross_format_achievements_sync(
+        db: Session,
+        user_id: int,
+        trigger: str,
+        event_id: Optional[int],
+        context: Optional[dict],
+    ) -> List[AchievementDefinition]:
+        """Sync version of _check_cross_format_achievements."""
+        newly_awarded = []
+
+        if trigger != "event_completed":
+            return newly_awarded
+
+        stats_stmt = (
+            select(UserEventTypeStats)
+            .where(UserEventTypeStats.user_id == user_id)
+            .where(UserEventTypeStats.event_type_id.is_(None))
+        )
+        result = db.execute(stats_stmt)
+        stats = result.scalar_one_or_none()
+
+        if not stats:
+            return newly_awarded
+
+        has_sf = stats.total_events > 0
+        has_ta = stats.ta_total_matches is not None and stats.ta_total_matches > 0
+
+        if has_sf and has_ta:
+            awarded = AchievementService._award_achievement_sync(
+                db, user_id, "format_explorer", event_id, None
+            )
+            if awarded:
+                newly_awarded.append(awarded)
+
+        has_sf_win = stats.total_wins > 0
+        has_ta_win = stats.ta_tournament_wins is not None and stats.ta_tournament_wins > 0
+
+        if has_sf_win and has_ta_win:
+            awarded = AchievementService._award_achievement_sync(
+                db, user_id, "dual_champion", event_id, None
+            )
+            if awarded:
+                newly_awarded.append(awarded)
+
+        has_sf_podium = stats.podium_finishes > 0
+        has_ta_podium = stats.ta_tournament_podiums is not None and stats.ta_tournament_podiums > 0
+
+        if has_sf_podium and has_ta_podium:
+            awarded = AchievementService._award_achievement_sync(
                 db, user_id, "versatile_angler", event_id, None
             )
             if awarded:
