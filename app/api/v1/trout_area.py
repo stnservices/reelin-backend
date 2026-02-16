@@ -32,6 +32,7 @@ def sanitize_filename(name: str) -> str:
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select, and_, delete, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -731,16 +732,10 @@ async def update_standings_for_match(
         enrollment = enrollments[competitor_id]
         points = point_values.get(outcome_code, Decimal("0"))
 
-        # Get or create standing
-        standing_query = select(TAQualifierStanding).where(
-            TAQualifierStanding.event_id == match.event_id,
-            TAQualifierStanding.user_id == competitor_id,
-        )
-        standing_result = await db.execute(standing_query)
-        standing = standing_result.scalar_one_or_none()
-
-        if not standing:
-            standing = TAQualifierStanding(
+        # Get or create standing (upsert to handle concurrent match completions)
+        await db.execute(
+            pg_insert(TAQualifierStanding)
+            .values(
                 event_id=match.event_id,
                 user_id=competitor_id,
                 enrollment_id=enrollment.id,
@@ -756,7 +751,15 @@ async def update_standings_for_match(
                 losses_without_fish=0,
                 leg_results={},
             )
-            db.add(standing)
+            .on_conflict_do_nothing(index_elements=["event_id", "user_id"])
+        )
+
+        standing_query = select(TAQualifierStanding).where(
+            TAQualifierStanding.event_id == match.event_id,
+            TAQualifierStanding.user_id == competitor_id,
+        )
+        standing_result = await db.execute(standing_query)
+        standing = standing_result.scalar_one()
 
         # Update totals
         standing.total_points += points
@@ -3140,38 +3143,55 @@ async def validate_opponent_card(
                     update(TAGameCard).where(TAGameCard.id == cid).values(**vals)
                 )
 
-            # If both validated, update match results (ORM for single match row)
+            # If both validated, update match results
             if both_validated:
                 match = opponent_card.match
                 if match:
                     # Determine which side is which
                     if match.competitor_a_id == opponent_card.user_id:
-                        match.competitor_a_catches = opponent_card.my_catches
-                        match.competitor_b_catches = my_card.my_catches
+                        a_catches = opponent_card.my_catches
+                        b_catches = my_card.my_catches
                     else:
-                        match.competitor_b_catches = opponent_card.my_catches
-                        match.competitor_a_catches = my_card.my_catches
+                        a_catches = my_card.my_catches
+                        b_catches = opponent_card.my_catches
 
-                    # Calculate outcome
+                    # Calculate outcome on ORM object (pure computation)
+                    match.competitor_a_catches = a_catches
+                    match.competitor_b_catches = b_catches
                     point_config_query = select(TAEventPointConfig).where(TAEventPointConfig.event_id == event_id)
                     point_result = await db.execute(point_config_query)
                     point_config = point_result.scalar_one_or_none()
                     match.calculate_outcome(point_config)
 
-                    match.status = TAMatchStatus.COMPLETED.value
-                    match.completed_at = now
+                    # Atomically complete match — only ONE concurrent request wins
+                    completion_result = await db.execute(
+                        update(TAMatch)
+                        .where(
+                            TAMatch.id == match.id,
+                            TAMatch.status != TAMatchStatus.COMPLETED.value,
+                        )
+                        .values(
+                            status=TAMatchStatus.COMPLETED.value,
+                            completed_at=now,
+                            competitor_a_catches=a_catches,
+                            competitor_b_catches=b_catches,
+                            competitor_a_outcome_code=match.competitor_a_outcome_code,
+                            competitor_b_outcome_code=match.competitor_b_outcome_code,
+                            competitor_a_points=match.competitor_a_points,
+                            competitor_b_points=match.competitor_b_points,
+                        )
+                    )
 
-                    # Auto-update standings when match completes
-                    await update_standings_for_match(db, match, point_config)
+                    if completion_result.rowcount > 0:
+                        # This request won the completion race
+                        await update_standings_for_match(db, match, point_config)
 
-                    # Trigger stats recalculation for both players
-                    if match.competitor_a_id:
-                        await statistics_service.update_user_stats_for_event(db, match.competitor_a_id, event_id)
-                    if match.competitor_b_id:
-                        await statistics_service.update_user_stats_for_event(db, match.competitor_b_id, event_id)
+                        if match.competitor_a_id:
+                            await statistics_service.update_user_stats_for_event(db, match.competitor_a_id, event_id)
+                        if match.competitor_b_id:
+                            await statistics_service.update_user_stats_for_event(db, match.competitor_b_id, event_id)
 
-                    # Auto-cascade to next phase if all matches in this phase complete
-                    await _cascade_knockout_update(db, event_id, match)
+                        await _cascade_knockout_update(db, event_id, match)
         else:
             # Dispute — single card, no deadlock risk
             await db.execute(
