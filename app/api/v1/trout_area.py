@@ -13,6 +13,7 @@ Key features:
 - Real-time ranking updates
 """
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timezone
@@ -31,6 +32,7 @@ def sanitize_filename(name: str) -> str:
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select, and_, delete, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -133,60 +135,27 @@ router = APIRouter()
 # =============================================================================
 
 
-# =============================================================================
-# Legacy SSE Broadcast Functions (now no-ops, kept for API compatibility)
-# =============================================================================
+async def execute_with_deadlock_retry(db: AsyncSession, fn, max_retries: int = 3):
+    """Execute an async DB operation with deadlock retry.
 
-async def broadcast_ta_leg_complete(
-    event_id: int,
-    leg_number: int,
-    phase: str,
-    standings_updated: bool = True,
-) -> None:
-    """Legacy SSE broadcast - now handled by Firebase."""
-    pass
-
-
-async def broadcast_ta_standings_update(
-    event_id: int,
-    phase: str,
-    top_changes: list[dict] | None = None,
-) -> None:
-    """Legacy SSE broadcast - now handled by Firebase."""
-    pass
-
-
-async def broadcast_ta_phase_advanced(
-    event_id: int,
-    from_phase: str,
-    to_phase: str,
-) -> None:
-    """Legacy SSE broadcast - now handled by Firebase."""
-    pass
-
-
-async def broadcast_ta_bracket_generated(
-    event_id: int,
-    semifinalists: list[int],
-    requalification_participants: list[int] | None = None,
-) -> None:
-    """Legacy SSE broadcast - now handled by Firebase."""
-    pass
-
-
-async def broadcast_ta_match_result(
-    event_id: int,
-    match_id: int,
-    phase: str,
-    leg_number: int,
-    competitor_a_id: int,
-    competitor_b_id: int,
-    competitor_a_catches: int,
-    competitor_b_catches: int,
-    winner_id: int | None,
-) -> None:
-    """Legacy SSE broadcast - now handled by Firebase."""
-    pass
+    On deadlock detection, rolls back the transaction and retries with
+    exponential backoff. The fn callable must re-read all data on each
+    invocation since previous ORM objects are invalidated by rollback.
+    """
+    for attempt in range(max_retries):
+        try:
+            return await fn()
+        except OperationalError as e:
+            if "deadlock" in str(e).lower() and attempt < max_retries - 1:
+                logger.warning(
+                    "Deadlock detected (attempt %d/%d), retrying...",
+                    attempt + 1,
+                    max_retries,
+                )
+                await db.rollback()
+                await asyncio.sleep(0.05 * (2 ** attempt))
+            else:
+                raise
 
 
 async def _cascade_knockout_update(db: AsyncSession, event_id: int, match: "TAMatch") -> dict | None:
@@ -2721,25 +2690,6 @@ async def edit_match_results(
         # Cascade updates to downstream phases if this is a knockout match
         cascade_result = await _cascade_knockout_update(db, event_id, match)
 
-        # Broadcast SSE match result for live public leaderboard
-        winner_id = None
-        if match.competitor_a_catches > match.competitor_b_catches:
-            winner_id = match.competitor_a_id
-        elif match.competitor_b_catches > match.competitor_a_catches:
-            winner_id = match.competitor_b_id
-
-        await broadcast_ta_match_result(
-            event_id=event_id,
-            match_id=match.id,
-            phase=match.phase,
-            leg_number=match.round_number,
-            competitor_a_id=match.competitor_a_id,
-            competitor_b_id=match.competitor_b_id,
-            competitor_a_catches=match.competitor_a_catches or 0,
-            competitor_b_catches=match.competitor_b_catches or 0,
-            winner_id=winner_id,
-        )
-
         # Update qualifier standings (ties, losses breakdown)
         await update_standings_for_match(db, match, point_config)
 
@@ -2891,142 +2841,178 @@ async def submit_game_card(
     """
     await get_ta_event(event_id, db, request)
 
-    # Get game card with row-level lock to prevent concurrent updates
-    query = (
-        select(TAGameCard)
-        .options(
-            selectinload(TAGameCard.user).selectinload(UserAccount.profile),
-            selectinload(TAGameCard.opponent).selectinload(UserAccount.profile),
+    async def _do_submit():
+        # Get game card (no FOR UPDATE — use ordered UPDATE statements instead)
+        query = (
+            select(TAGameCard)
+            .options(
+                selectinload(TAGameCard.user).selectinload(UserAccount.profile),
+                selectinload(TAGameCard.opponent).selectinload(UserAccount.profile),
+            )
+            .where(
+                TAGameCard.id == card_id,
+                TAGameCard.event_id == event_id,
+            )
         )
-        .where(
-            TAGameCard.id == card_id,
-            TAGameCard.event_id == event_id,
-        )
-        .with_for_update(nowait=False)  # Row-level pessimistic lock
-    )
-    result = await db.execute(query)
-    card = result.scalar_one_or_none()
+        result = await db.execute(query)
+        card = result.scalar_one_or_none()
 
-    if not card:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=get_error_message("ta_game_card_not_found", request),
-        )
+        if not card:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=get_error_message("ta_game_card_not_found", request),
+            )
 
-    # Verify ownership
-    if card.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=get_error_message("ta_participant_not_in_match", request),
-        )
+        # Verify ownership
+        if card.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=get_error_message("ta_participant_not_in_match", request),
+            )
 
-    # Check status
-    if card.status not in [TAGameCardStatus.DRAFT.value, TAGameCardStatus.DISPUTED.value]:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=get_error_message("ta_game_card_locked", request),
-        )
+        # Check status
+        if card.status not in [TAGameCardStatus.DRAFT.value, TAGameCardStatus.DISPUTED.value]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=get_error_message("ta_game_card_locked", request),
+            )
 
-    # Update card with catches
-    card.my_catches = data.my_catches
-    card.is_submitted = True
-    card.status = TAGameCardStatus.SUBMITTED.value
-    card.submitted_at = datetime.now(timezone.utc)
-    card.updated_at = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
 
-    # If ghost opponent, auto-validate (both directions) and complete match
-    if card.is_ghost_opponent:
-        card.opponent_catches = 0
-        # Ghost validates my catches (auto)
-        card.is_validated = True
-        card.validated_at = datetime.now(timezone.utc)
-        # I validate ghost's catches (auto - they have 0)
-        card.i_validated_opponent = True
-        card.i_validated_at = datetime.now(timezone.utc)
-        card.status = TAGameCardStatus.VALIDATED.value
+        # Build base card updates
+        card_updates = {
+            "my_catches": data.my_catches,
+            "is_submitted": True,
+            "status": TAGameCardStatus.SUBMITTED.value,
+            "submitted_at": now,
+            "updated_at": now,
+        }
 
-        # Sync catches to TAMatch and complete it (BYE match auto-completion)
-        if card.match_id:
-            match_query = select(TAMatch).where(TAMatch.id == card.match_id)
-            match_result = await db.execute(match_query)
-            match = match_result.scalar_one_or_none()
-            if match:
-                # Set catches on match - user is competitor_a or competitor_b
-                if match.competitor_a_id == card.user_id:
-                    match.competitor_a_catches = card.my_catches
-                    match.competitor_b_catches = 0  # Ghost always 0
-                else:
-                    match.competitor_b_catches = card.my_catches
-                    match.competitor_a_catches = 0  # Ghost always 0
+        # If ghost opponent, auto-validate (both directions) and complete match
+        if card.is_ghost_opponent:
+            card_updates.update({
+                "opponent_catches": 0,
+                "is_validated": True,
+                "validated_at": now,
+                "i_validated_opponent": True,
+                "i_validated_at": now,
+                "status": TAGameCardStatus.VALIDATED.value,
+            })
 
-                # Calculate outcome using point config
-                point_config_query = select(TAEventPointConfig).where(
-                    TAEventPointConfig.event_id == event_id
+            # Apply ghost card update (single card — no ordering needed)
+            await db.execute(
+                update(TAGameCard).where(TAGameCard.id == card.id).values(**card_updates)
+            )
+
+            # Sync catches to TAMatch and complete it (BYE match auto-completion)
+            if card.match_id:
+                match_query = select(TAMatch).where(TAMatch.id == card.match_id)
+                match_result = await db.execute(match_query)
+                match = match_result.scalar_one_or_none()
+                if match:
+                    # Set catches on match - user is competitor_a or competitor_b
+                    if match.competitor_a_id == card.user_id:
+                        match.competitor_a_catches = data.my_catches
+                        match.competitor_b_catches = 0  # Ghost always 0
+                    else:
+                        match.competitor_b_catches = data.my_catches
+                        match.competitor_a_catches = 0  # Ghost always 0
+
+                    # Calculate outcome using point config
+                    point_config_query = select(TAEventPointConfig).where(
+                        TAEventPointConfig.event_id == event_id
+                    )
+                    point_result = await db.execute(point_config_query)
+                    point_config = point_result.scalar_one_or_none()
+                    match.calculate_outcome(point_config)
+
+                    # Mark match as completed
+                    match.status = TAMatchStatus.COMPLETED.value
+                    match.completed_at = now
+
+                    # Auto-update standings for ghost match
+                    await update_standings_for_match(db, match, point_config)
+
+                    # Trigger stats recalculation for the player (ghost has no user_id)
+                    if card.user_id:
+                        await statistics_service.update_user_stats_for_event(db, card.user_id, event_id)
+
+                    # Auto-cascade to next phase if all matches in this phase complete
+                    await _cascade_knockout_update(db, event_id, match)
+        else:
+            # Check if opponent has already submitted - if so, update opponent_catches
+            opponent_card_updates = None
+            if card.opponent_id:
+                opponent_card_query = select(TAGameCard).where(
+                    TAGameCard.event_id == event_id,
+                    TAGameCard.leg_number == card.leg_number,
+                    TAGameCard.user_id == card.opponent_id,
                 )
-                point_result = await db.execute(point_config_query)
-                point_config = point_result.scalar_one_or_none()
-                match.calculate_outcome(point_config)
+                opponent_result = await db.execute(opponent_card_query)
+                opponent_card = opponent_result.scalar_one_or_none()
 
-                # Mark match as completed
-                match.status = TAMatchStatus.COMPLETED.value
-                match.completed_at = datetime.now(timezone.utc)
+                if opponent_card and opponent_card.is_submitted:
+                    # Both have submitted - set opponent catches on both cards
+                    card_updates["opponent_catches"] = opponent_card.my_catches
+                    opponent_card_updates = (opponent_card.id, {
+                        "opponent_catches": data.my_catches,
+                        "updated_at": now,
+                    })
 
-                # Auto-update standings for ghost match
-                await update_standings_for_match(db, match, point_config)
+            # Execute card updates in ascending ID order to prevent deadlocks
+            all_updates = [(card.id, card_updates)]
+            if opponent_card_updates:
+                all_updates.append(opponent_card_updates)
+            all_updates.sort(key=lambda x: x[0])
 
-                # Trigger stats recalculation for the player (ghost has no user_id)
-                if card.user_id:
-                    await statistics_service.update_user_stats_for_event(db, card.user_id, event_id)
+            for cid, vals in all_updates:
+                await db.execute(
+                    update(TAGameCard).where(TAGameCard.id == cid).values(**vals)
+                )
 
-                # Auto-cascade to next phase if all matches in this phase complete
-                await _cascade_knockout_update(db, event_id, match)
+        await db.commit()
 
-    # Check if opponent has already submitted - if so, update opponent_catches
-    if card.opponent_id:
-        opponent_card_query = select(TAGameCard).where(
-            TAGameCard.event_id == event_id,
-            TAGameCard.leg_number == card.leg_number,
-            TAGameCard.user_id == card.opponent_id,
+        # Re-fetch card with relationships for response
+        refresh_query = (
+            select(TAGameCard)
+            .options(
+                selectinload(TAGameCard.user).selectinload(UserAccount.profile),
+                selectinload(TAGameCard.opponent).selectinload(UserAccount.profile),
+            )
+            .where(TAGameCard.id == card_id)
         )
-        opponent_result = await db.execute(opponent_card_query)
-        opponent_card = opponent_result.scalar_one_or_none()
+        refresh_result = await db.execute(refresh_query)
+        card = refresh_result.scalar_one()
 
-        if opponent_card and opponent_card.is_submitted:
-            # Both have submitted - update both cards with opponent catches
-            card.opponent_catches = opponent_card.my_catches
-            opponent_card.opponent_catches = card.my_catches
-            opponent_card.updated_at = datetime.now(timezone.utc)
+        return {
+            "id": card.id,
+            "event_id": card.event_id,
+            "match_id": card.match_id,
+            "leg_number": card.leg_number,
+            "user_id": card.user_id,
+            "my_catches": card.my_catches,
+            "my_seat": card.my_seat,
+            "opponent_id": card.opponent_id,
+            "opponent_catches": card.opponent_catches,
+            "opponent_seat": card.opponent_seat,
+            "is_submitted": card.is_submitted,
+            "is_validated": card.is_validated,
+            "validated_at": card.validated_at,
+            "i_validated_opponent": card.i_validated_opponent,
+            "i_validated_at": card.i_validated_at,
+            "is_disputed": card.is_disputed,
+            "dispute_reason": card.dispute_reason,
+            "status": TAGameCardStatusAPI(card.status),
+            "is_ghost_opponent": card.is_ghost_opponent,
+            "submitted_at": card.submitted_at,
+            "created_at": card.created_at,
+            "updated_at": card.updated_at,
+            "user_name": card.user.profile.full_name if card.user and card.user.profile else None,
+            "user_avatar": card.user.effective_avatar_url if card.user else None,
+            "opponent_name": card.opponent.profile.full_name if card.opponent and card.opponent.profile else None,
+        }
 
-    await db.commit()
-    await db.refresh(card)
-
-    return {
-        "id": card.id,
-        "event_id": card.event_id,
-        "match_id": card.match_id,
-        "leg_number": card.leg_number,
-        "user_id": card.user_id,
-        "my_catches": card.my_catches,
-        "my_seat": card.my_seat,
-        "opponent_id": card.opponent_id,
-        "opponent_catches": card.opponent_catches,
-        "opponent_seat": card.opponent_seat,
-        "is_submitted": card.is_submitted,
-        "is_validated": card.is_validated,
-        "validated_at": card.validated_at,
-        "i_validated_opponent": card.i_validated_opponent,
-        "i_validated_at": card.i_validated_at,
-        "is_disputed": card.is_disputed,
-        "dispute_reason": card.dispute_reason,
-        "status": TAGameCardStatusAPI(card.status),
-        "is_ghost_opponent": card.is_ghost_opponent,
-        "submitted_at": card.submitted_at,
-        "created_at": card.created_at,
-        "updated_at": card.updated_at,
-        "user_name": card.user.profile.full_name if card.user and card.user.profile else None,
-        "user_avatar": card.user.effective_avatar_url if card.user else None,
-        "opponent_name": card.opponent.profile.full_name if card.opponent and card.opponent.profile else None,
-    }
+    return await execute_with_deadlock_retry(db, _do_submit)
 
 
 @router.post(
@@ -3053,156 +3039,193 @@ async def validate_opponent_card(
 
     This endpoint allows a participant to validate their opponent's card.
     """
-    event = await get_ta_event(event_id, db, request)
+    await get_ta_event(event_id, db, request)
 
-    # Get the opponent's game card with row-level lock to prevent concurrent updates
-    query = (
-        select(TAGameCard)
-        .options(
-            selectinload(TAGameCard.user).selectinload(UserAccount.profile),
-            selectinload(TAGameCard.opponent).selectinload(UserAccount.profile),
-            selectinload(TAGameCard.match),
+    async def _do_validate():
+        # Get the opponent's game card (no FOR UPDATE — use ordered UPDATE statements instead)
+        query = (
+            select(TAGameCard)
+            .options(
+                selectinload(TAGameCard.user).selectinload(UserAccount.profile),
+                selectinload(TAGameCard.opponent).selectinload(UserAccount.profile),
+                selectinload(TAGameCard.match),
+            )
+            .where(
+                TAGameCard.id == card_id,
+                TAGameCard.event_id == event_id,
+            )
         )
-        .where(
-            TAGameCard.id == card_id,
+        result = await db.execute(query)
+        opponent_card = result.scalar_one_or_none()
+
+        if not opponent_card:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=get_error_message("ta_game_card_not_found", request),
+            )
+
+        # Cannot validate own card
+        if opponent_card.user_id == current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=get_error_message("ta_cannot_validate_own_card", request),
+            )
+
+        # Must be the opponent in the match
+        if opponent_card.opponent_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=get_error_message("ta_participant_not_in_match", request),
+            )
+
+        # Card must be submitted
+        if not opponent_card.is_submitted:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Card must be submitted before validation",
+            )
+
+        # Already validated
+        if opponent_card.is_validated:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=get_error_message("ta_already_validated", request),
+            )
+
+        # Get my card to update i_validated_opponent
+        my_card_query = select(TAGameCard).where(
             TAGameCard.event_id == event_id,
+            TAGameCard.leg_number == opponent_card.leg_number,
+            TAGameCard.user_id == current_user.id,
         )
-        .with_for_update(nowait=False)  # Row-level pessimistic lock
-    )
-    result = await db.execute(query)
-    opponent_card = result.scalar_one_or_none()
+        my_card_result = await db.execute(my_card_query)
+        my_card = my_card_result.scalar_one_or_none()
 
-    if not opponent_card:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=get_error_message("ta_game_card_not_found", request),
+        now = datetime.now(timezone.utc)
+
+        if data.is_valid:
+            # Build updates for opponent's card
+            opponent_card_values = {
+                "is_validated": True,
+                "validated_by_id": current_user.id,
+                "validated_at": now,
+                "status": TAGameCardStatus.VALIDATED.value,
+                "updated_at": now,
+            }
+
+            # Build updates for my card
+            my_card_values = {}
+            if my_card:
+                my_card_values = {
+                    "i_validated_opponent": True,
+                    "i_validated_at": now,
+                    "updated_at": now,
+                }
+
+            # Check if BOTH cards are now validated - if so, update match result
+            both_validated = my_card and my_card.is_validated
+            if both_validated:
+                # Sync opponent_catches on both game cards
+                opponent_card_values["opponent_catches"] = my_card.my_catches
+                my_card_values["opponent_catches"] = opponent_card.my_catches
+
+            # Execute card updates in ascending ID order to prevent deadlocks
+            all_card_updates = [(opponent_card.id, opponent_card_values)]
+            if my_card and my_card_values:
+                all_card_updates.append((my_card.id, my_card_values))
+            all_card_updates.sort(key=lambda x: x[0])
+
+            for cid, vals in all_card_updates:
+                await db.execute(
+                    update(TAGameCard).where(TAGameCard.id == cid).values(**vals)
+                )
+
+            # If both validated, update match results (ORM for single match row)
+            if both_validated:
+                match = opponent_card.match
+                if match:
+                    # Determine which side is which
+                    if match.competitor_a_id == opponent_card.user_id:
+                        match.competitor_a_catches = opponent_card.my_catches
+                        match.competitor_b_catches = my_card.my_catches
+                    else:
+                        match.competitor_b_catches = opponent_card.my_catches
+                        match.competitor_a_catches = my_card.my_catches
+
+                    # Calculate outcome
+                    point_config_query = select(TAEventPointConfig).where(TAEventPointConfig.event_id == event_id)
+                    point_result = await db.execute(point_config_query)
+                    point_config = point_result.scalar_one_or_none()
+                    match.calculate_outcome(point_config)
+
+                    match.status = TAMatchStatus.COMPLETED.value
+                    match.completed_at = now
+
+                    # Auto-update standings when match completes
+                    await update_standings_for_match(db, match, point_config)
+
+                    # Trigger stats recalculation for both players
+                    if match.competitor_a_id:
+                        await statistics_service.update_user_stats_for_event(db, match.competitor_a_id, event_id)
+                    if match.competitor_b_id:
+                        await statistics_service.update_user_stats_for_event(db, match.competitor_b_id, event_id)
+
+                    # Auto-cascade to next phase if all matches in this phase complete
+                    await _cascade_knockout_update(db, event_id, match)
+        else:
+            # Dispute — single card, no deadlock risk
+            await db.execute(
+                update(TAGameCard).where(TAGameCard.id == opponent_card.id).values(
+                    is_disputed=True,
+                    dispute_reason=data.dispute_reason,
+                    status=TAGameCardStatus.DISPUTED.value,
+                    updated_at=now,
+                )
+            )
+
+        await db.commit()
+
+        # Re-fetch card with relationships for response
+        refresh_query = (
+            select(TAGameCard)
+            .options(
+                selectinload(TAGameCard.user).selectinload(UserAccount.profile),
+                selectinload(TAGameCard.opponent).selectinload(UserAccount.profile),
+            )
+            .where(TAGameCard.id == card_id)
         )
+        refresh_result = await db.execute(refresh_query)
+        opponent_card = refresh_result.scalar_one()
 
-    # Cannot validate own card
-    if opponent_card.user_id == current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=get_error_message("ta_cannot_validate_own_card", request),
-        )
+        return {
+            "id": opponent_card.id,
+            "event_id": opponent_card.event_id,
+            "match_id": opponent_card.match_id,
+            "leg_number": opponent_card.leg_number,
+            "user_id": opponent_card.user_id,
+            "my_catches": opponent_card.my_catches,
+            "my_seat": opponent_card.my_seat,
+            "opponent_id": opponent_card.opponent_id,
+            "opponent_catches": opponent_card.opponent_catches,
+            "opponent_seat": opponent_card.opponent_seat,
+            "is_submitted": opponent_card.is_submitted,
+            "is_validated": opponent_card.is_validated,
+            "validated_at": opponent_card.validated_at,
+            "i_validated_opponent": opponent_card.i_validated_opponent,
+            "i_validated_at": opponent_card.i_validated_at,
+            "is_disputed": opponent_card.is_disputed,
+            "dispute_reason": opponent_card.dispute_reason,
+            "status": TAGameCardStatusAPI(opponent_card.status),
+            "is_ghost_opponent": opponent_card.is_ghost_opponent,
+            "submitted_at": opponent_card.submitted_at,
+            "created_at": opponent_card.created_at,
+            "updated_at": opponent_card.updated_at,
+            "user_name": opponent_card.user.profile.full_name if opponent_card.user and opponent_card.user.profile else None,
+            "user_avatar": opponent_card.user.effective_avatar_url if opponent_card.user else None,
+            "opponent_name": opponent_card.opponent.profile.full_name if opponent_card.opponent and opponent_card.opponent.profile else None,
+        }
 
-    # Must be the opponent in the match
-    if opponent_card.opponent_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=get_error_message("ta_participant_not_in_match", request),
-        )
-
-    # Card must be submitted
-    if not opponent_card.is_submitted:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Card must be submitted before validation",
-        )
-
-    # Already validated
-    if opponent_card.is_validated:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=get_error_message("ta_already_validated", request),
-        )
-
-    # Get my card to update i_validated_opponent
-    my_card_query = select(TAGameCard).where(
-        TAGameCard.event_id == event_id,
-        TAGameCard.leg_number == opponent_card.leg_number,
-        TAGameCard.user_id == current_user.id,
-    )
-    my_card_result = await db.execute(my_card_query)
-    my_card = my_card_result.scalar_one_or_none()
-
-    if data.is_valid:
-        # Mark opponent's card as validated by me
-        opponent_card.is_validated = True
-        opponent_card.validated_by_id = current_user.id
-        opponent_card.validated_at = datetime.now(timezone.utc)
-        opponent_card.status = TAGameCardStatus.VALIDATED.value
-
-        # Mark my card as having validated opponent
-        if my_card:
-            my_card.i_validated_opponent = True
-            my_card.i_validated_at = datetime.now(timezone.utc)
-            my_card.updated_at = datetime.now(timezone.utc)
-
-        # Check if BOTH cards are now validated - if so, update match result
-        if my_card and my_card.is_validated:
-            # Both validated - update match results
-            match = opponent_card.match
-            if match:
-                # Determine which side is which
-                if match.competitor_a_id == opponent_card.user_id:
-                    match.competitor_a_catches = opponent_card.my_catches
-                    match.competitor_b_catches = my_card.my_catches
-                else:
-                    match.competitor_b_catches = opponent_card.my_catches
-                    match.competitor_a_catches = my_card.my_catches
-
-                # Sync opponent_catches on both game cards to match final values
-                opponent_card.opponent_catches = my_card.my_catches
-                my_card.opponent_catches = opponent_card.my_catches
-                my_card.updated_at = datetime.now(timezone.utc)
-
-                # Calculate outcome
-                point_config_query = select(TAEventPointConfig).where(TAEventPointConfig.event_id == event_id)
-                point_result = await db.execute(point_config_query)
-                point_config = point_result.scalar_one_or_none()
-                match.calculate_outcome(point_config)
-
-                match.status = TAMatchStatus.COMPLETED.value
-                match.completed_at = datetime.now(timezone.utc)
-
-                # Auto-update standings when match completes
-                await update_standings_for_match(db, match, point_config)
-
-                # Trigger stats recalculation for both players
-                if match.competitor_a_id:
-                    await statistics_service.update_user_stats_for_event(db, match.competitor_a_id, event_id)
-                if match.competitor_b_id:
-                    await statistics_service.update_user_stats_for_event(db, match.competitor_b_id, event_id)
-
-                # Auto-cascade to next phase if all matches in this phase complete
-                await _cascade_knockout_update(db, event_id, match)
-    else:
-        opponent_card.is_disputed = True
-        opponent_card.dispute_reason = data.dispute_reason
-        opponent_card.status = TAGameCardStatus.DISPUTED.value
-
-    opponent_card.updated_at = datetime.now(timezone.utc)
-
-    await db.commit()
-    await db.refresh(opponent_card)
-
-    return {
-        "id": opponent_card.id,
-        "event_id": opponent_card.event_id,
-        "match_id": opponent_card.match_id,
-        "leg_number": opponent_card.leg_number,
-        "user_id": opponent_card.user_id,
-        "my_catches": opponent_card.my_catches,
-        "my_seat": opponent_card.my_seat,
-        "opponent_id": opponent_card.opponent_id,
-        "opponent_catches": opponent_card.opponent_catches,
-        "opponent_seat": opponent_card.opponent_seat,
-        "is_submitted": opponent_card.is_submitted,
-        "is_validated": opponent_card.is_validated,
-        "validated_at": opponent_card.validated_at,
-        "i_validated_opponent": opponent_card.i_validated_opponent,
-        "i_validated_at": opponent_card.i_validated_at,
-        "is_disputed": opponent_card.is_disputed,
-        "dispute_reason": opponent_card.dispute_reason,
-        "status": TAGameCardStatusAPI(opponent_card.status),
-        "is_ghost_opponent": opponent_card.is_ghost_opponent,
-        "submitted_at": opponent_card.submitted_at,
-        "created_at": opponent_card.created_at,
-        "updated_at": opponent_card.updated_at,
-        "user_name": opponent_card.user.profile.full_name if opponent_card.user and opponent_card.user.profile else None,
-        "user_avatar": opponent_card.user.effective_avatar_url if opponent_card.user else None,
-        "opponent_name": opponent_card.opponent.profile.full_name if opponent_card.opponent and opponent_card.opponent.profile else None,
-    }
+    return await execute_with_deadlock_retry(db, _do_validate)
 
 
 # =============================================================================
@@ -3676,13 +3699,6 @@ async def recalculate_standings(
     await ranking_service._recalculate_ranks(event_id)
     await db.commit()
 
-    # Broadcast SSE standings update for live public leaderboard
-    await broadcast_ta_standings_update(
-        event_id=event_id,
-        phase=TATournamentPhase.QUALIFIER.value,
-        top_changes=None,  # Full recalculation doesn't track individual changes
-    )
-
     # Sync to Firebase for web real-time updates
     await _sync_ta_standings_to_firebase(db, event_id)
 
@@ -4021,31 +4037,6 @@ async def generate_knockout_bracket(
     await db.commit()
 
     # Broadcast SSE event for live public leaderboard
-    semifinalist_ids = []
-    requalification_ids = []
-    for m in matches_created:
-        if m.phase == TATournamentPhase.SEMIFINAL.value:
-            if m.competitor_a_id:
-                semifinalist_ids.append(m.competitor_a_id)
-            if m.competitor_b_id:
-                semifinalist_ids.append(m.competitor_b_id)
-        elif m.phase == TATournamentPhase.REQUALIFICATION.value:
-            if m.competitor_a_id:
-                requalification_ids.append(m.competitor_a_id)
-            if m.competitor_b_id:
-                requalification_ids.append(m.competitor_b_id)
-
-    await broadcast_ta_bracket_generated(
-        event_id=event_id,
-        semifinalists=list(set(semifinalist_ids)),
-        requalification_participants=list(set(requalification_ids)) if requalification_ids else None,
-    )
-    await broadcast_ta_phase_advanced(
-        event_id=event_id,
-        from_phase=TATournamentPhase.QUALIFIER.value,
-        to_phase=TATournamentPhase.SEMIFINAL.value if not settings.has_requalification else TATournamentPhase.REQUALIFICATION.value,
-    )
-
     return {
         "message": f"Knockout bracket generated: {len(matches_created)} matches created",
         "matches_created": len(matches_created),

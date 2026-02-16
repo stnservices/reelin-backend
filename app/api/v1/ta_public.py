@@ -154,29 +154,6 @@ async def get_ta_settings(db: AsyncSession, event_id: int) -> Optional[TAEventSe
     return result.scalar_one_or_none()
 
 
-async def get_completed_legs_count(db: AsyncSession, event_id: int, phase: Optional[str] = None) -> int:
-    """Count completed legs for an event (phase filter ignored - TAGameCard has no phase)."""
-    query = select(func.count(func.distinct(TAGameCard.leg_number))).where(
-        TAGameCard.event_id == event_id,
-        TAGameCard.status == TAGameCardStatus.VALIDATED.value,
-    )
-    # Note: TAGameCard doesn't have phase column, ignoring phase filter
-
-    result = await db.execute(query)
-    return result.scalar() or 0
-
-
-async def get_total_legs(db: AsyncSession, event_id: int, phase: Optional[str] = None) -> int:
-    """Get total legs for an event (phase filter ignored - TAGameCard has no phase)."""
-    query = select(func.max(TAGameCard.leg_number)).where(
-        TAGameCard.event_id == event_id
-    )
-    # Note: TAGameCard doesn't have phase column, ignoring phase filter
-
-    result = await db.execute(query)
-    return result.scalar() or 0
-
-
 async def get_previous_standings(event_id: int) -> dict[int, int]:
     """Get previous standings from Redis cache for position change calculation."""
     cache_key = f"ta_standings:{event_id}:previous"
@@ -276,7 +253,14 @@ async def get_public_event_status(
             elif requalifications:
                 current_phase = "requalification"
 
-    completed_legs = await get_completed_legs_count(db, event_id, phase="qualifier")
+    # Inline completed legs count (single query)
+    completed_legs_result = await db.execute(
+        select(func.count(func.distinct(TAGameCard.leg_number))).where(
+            TAGameCard.event_id == event_id,
+            TAGameCard.status == TAGameCardStatus.VALIDATED.value,
+        )
+    )
+    completed_legs = completed_legs_result.scalar() or 0
 
     # Get event type from event_type relationship
     event_type_code = "trout_area"  # Default
@@ -396,33 +380,26 @@ async def get_public_schedule(
     if ta_settings:
         total_legs = ta_settings.number_of_legs or 0
 
-    # Get completion stats per phase
-    phases = ["qualifier", "requalification", "semifinal", "final_grand", "final_small"]
-    phase_progress = {}
+    # Single query: completed legs, total legs (max leg_number), current leg
+    stats_query = select(
+        func.count(func.distinct(TAGameCard.leg_number)).filter(
+            TAGameCard.status == TAGameCardStatus.VALIDATED.value
+        ).label("completed_legs"),
+        func.max(TAGameCard.leg_number).label("max_leg"),
+    ).where(TAGameCard.event_id == event_id)
+    stats_result = await db.execute(stats_query)
+    stats_row = stats_result.one()
 
-    for p in phases:
-        completed = await get_completed_legs_count(db, event_id, phase=p)
-        total = await get_total_legs(db, event_id, phase=p)
-        if total > 0:
-            phase_progress[p] = {
-                "completed": completed,
-                "total": total,
-                "percent": round((completed / total) * 100, 1)
-            }
+    total_completed = stats_row.completed_legs or 0
+    total_all = stats_row.max_leg or 0
+    current_leg = stats_row.max_leg or 1
 
-    # Overall progress
-    total_completed = await get_completed_legs_count(db, event_id)
-    total_all = await get_total_legs(db, event_id)
     progress_percent = 0
     if total_all > 0:
         progress_percent = round((total_completed / total_all) * 100, 1)
 
-    # Current leg (highest leg number in the event)
-    current_leg_query = select(func.max(TAGameCard.leg_number)).where(
-        TAGameCard.event_id == event_id,
-    )
-    result = await db.execute(current_leg_query)
-    current_leg = result.scalar() or 1
+    # TAGameCard has no phase column, so per-phase breakdown is not meaningful
+    phase_progress = {}
 
     return PublicScheduleResponse(
         event_id=event_id,
