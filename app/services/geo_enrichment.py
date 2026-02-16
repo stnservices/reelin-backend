@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 # ip-api.com batch endpoint: POST up to 100 IPs, 45 req/min on free tier
 BATCH_URL = "http://ip-api.com/batch"
-FIELDS = "status,country,countryCode,regionName,city,isp,proxy,hosting"
+FIELDS = "query,status,country,countryCode,regionName,city,isp,proxy,hosting"
 TIMEOUT = 10.0
 
 
