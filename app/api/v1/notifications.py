@@ -322,16 +322,22 @@ async def delete_notification(
 
 @router.delete("", response_model=MessageResponse)
 async def delete_all_read_notifications(
+    all: bool = Query(False, description="Delete all notifications, not just read ones"),
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(get_current_user),
 ):
     """
-    Delete all read notifications for current user.
+    Delete notifications for current user.
+
+    By default deletes only read notifications.
+    Pass ?all=true to delete all notifications (read + unread).
     """
     query = select(Notification).where(
         Notification.user_id == current_user.id,
-        Notification.is_read == True,
     )
+    if not all:
+        query = query.where(Notification.is_read == True)
+
     result = await db.execute(query)
     notifications = result.scalars().all()
 
@@ -340,7 +346,8 @@ async def delete_all_read_notifications(
 
     await db.commit()
 
-    return {"message": f"Deleted {len(notifications)} read notifications"}
+    label = "all" if all else "read"
+    return {"message": f"Deleted {len(notifications)} {label} notifications"}
 
 
 # ============================================================================
