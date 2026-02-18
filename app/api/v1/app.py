@@ -33,7 +33,6 @@ class VersionCheckResponse(BaseModel):
     store_url: str
     release_notes: Optional[str] = None
     force_update_message: Optional[str] = None
-    ads_enabled: bool = True
 
 
 def compare_versions(v1: str, v2: str) -> int:
@@ -112,7 +111,6 @@ async def version_check(
         )
         release_notes = app_settings.release_notes
         force_update_message = app_settings.force_update_message
-        ads_enabled = app_settings.ads_enabled
     except Exception:
         # Fallback to .env settings if database fails
         env_settings = get_settings()
@@ -129,7 +127,6 @@ async def version_check(
         )
         release_notes = None
         force_update_message = None
-        ads_enabled = True  # Default to enabled if database fails
 
     # Determine update status
     update_required = compare_versions(current_version, min_version) < 0
@@ -153,5 +150,4 @@ async def version_check(
         store_url=store_url,
         release_notes=release_notes if update_available else None,
         force_update_message=force_update_message if update_required else None,
-        ads_enabled=ads_enabled,
     )

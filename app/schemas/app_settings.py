@@ -16,7 +16,6 @@ class AppSettingsResponse(BaseModel):
     play_store_url: str
     release_notes: Optional[str] = None
     force_update_message: Optional[str] = None
-    ads_enabled: bool = True
     updated_at: datetime
     updated_by_id: Optional[int] = None
 
@@ -66,8 +65,4 @@ class AppSettingsUpdate(BaseModel):
         None,
         max_length=500,
         description="Message shown when force update is required"
-    )
-    ads_enabled: Optional[bool] = Field(
-        None,
-        description="Global toggle to enable/disable ads for all users"
     )
