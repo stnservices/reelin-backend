@@ -170,7 +170,7 @@ async def get_top_anglers(
     years_query = text("""
         SELECT DISTINCT EXTRACT(YEAR FROM start_date)::integer as year
         FROM events
-        WHERE is_national_event = TRUE AND status = 'completed'
+        WHERE is_national_event = TRUE AND status = 'completed' AND is_test = FALSE
         ORDER BY year DESC
     """)
     years_result = await db.execute(years_query)
