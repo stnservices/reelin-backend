@@ -468,7 +468,7 @@ async def unban_user(
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(AdminOnly),
 ):
-    """Unban a user. Does NOT auto-activate."""
+    """Unban a user and reactivate their account."""
     result = await db.execute(select(UserAccount).where(UserAccount.id == user_id))
     user = result.scalar_one_or_none()
     if not user:
@@ -479,6 +479,7 @@ async def unban_user(
     user.is_banned = False
     user.banned_at = None
     user.ban_reason = None
+    user.is_active = True
 
     log_event(
         db,
@@ -488,4 +489,4 @@ async def unban_user(
     )
 
     await db.commit()
-    return {"message": "User unbanned (account remains inactive until manually activated)", "user_id": user_id}
+    return {"message": "User unbanned and reactivated", "user_id": user_id}
