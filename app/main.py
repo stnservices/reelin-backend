@@ -1,5 +1,6 @@
 """FastAPI application entry point."""
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -50,6 +51,39 @@ if settings.sentry_dsn:
     )
 
 
+async def _daily_deletion_cleanup():
+    """Background loop: process expired account deletions once per day at ~3 AM UTC."""
+    from datetime import datetime, timedelta, timezone
+
+    # Wait 60s after startup to let the app fully initialize
+    await asyncio.sleep(60)
+
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            # Calculate seconds until next 3:00 AM UTC
+            tomorrow_3am = now.replace(hour=3, minute=0, second=0, microsecond=0)
+            if now.hour >= 3:
+                tomorrow_3am += timedelta(days=1)
+            wait_seconds = (tomorrow_3am - now).total_seconds()
+            logger.info(f"Account deletion cleanup: next run in {wait_seconds / 3600:.1f}h")
+            await asyncio.sleep(wait_seconds)
+
+            # Run the cleanup
+            from app.database import async_session_maker
+            from app.services.account_deletion import account_deletion_service
+
+            async with async_session_maker() as db:
+                count = await account_deletion_service.process_expired_deletions(db)
+                logger.info(f"Account deletion cleanup: processed {count} expired accounts")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Account deletion cleanup failed: {e}", exc_info=True)
+            # On error, retry in 1 hour instead of waiting until next 3 AM
+            await asyncio.sleep(3600)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler for startup/shutdown events."""
@@ -58,9 +92,20 @@ async def lifespan(app: FastAPI):
         # In development, create tables automatically
         await init_db()
 
+    # Start daily account deletion cleanup (production only)
+    deletion_task = None
+    if not settings.debug:
+        deletion_task = asyncio.create_task(_daily_deletion_cleanup())
+
     yield
 
-    # Shutdown (nothing needed)
+    # Shutdown
+    if deletion_task:
+        deletion_task.cancel()
+        try:
+            await deletion_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(

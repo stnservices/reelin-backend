@@ -266,7 +266,8 @@ workers:
   # ---------------------------------------------------------------------------
   # Celery Beat (Scheduled Tasks) - Optional
   # ---------------------------------------------------------------------------
-  # Uncomment if you have scheduled tasks (cron jobs)
+  # Daily scheduled tasks run via FastAPI startup loop (see app/main.py).
+  # Uncomment below only if you need a dedicated beat process.
   # - name: celery-beat
   #   github:
   #     repo: stnservices/reelin-backend
