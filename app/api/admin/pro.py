@@ -1647,6 +1647,17 @@ async def force_recover_user(
         )
 
 
+@router.post("/deleted-users/{user_id}/anonymize")
+async def anonymize_user(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+) -> dict:
+    """Manually anonymize a single user's account. Admin only."""
+    result = await account_deletion_service.permanently_anonymize(user_id, db)
+    return result
+
+
 @router.post("/deleted-users/process-expired")
 async def process_expired_deletions(
     db: AsyncSession = Depends(get_db),
