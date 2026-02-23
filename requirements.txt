@@ -49,7 +49,6 @@ slowapi==0.1.9
 # Redis and Celery
 redis==5.2.1
 celery[redis]==5.4.0
-gevent==24.2.1
 nest-asyncio==1.6.0
 
 # Payments
