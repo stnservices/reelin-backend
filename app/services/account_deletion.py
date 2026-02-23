@@ -552,9 +552,11 @@ class AccountDeletionService:
             .where(OrganizerBillingProfile.user_id == user_id)
             .values(
                 legal_name=f"{FALLEN_ANGLER_NAME} (Deleted)",
-                billing_address=None,
-                billing_city=None,
-                billing_postal_code=None,
+                billing_address_line1="[deleted]",
+                billing_address_line2=None,
+                billing_city="[deleted]",
+                billing_county=None,
+                billing_postal_code="00000",
                 billing_email=anonymized_email,
                 billing_phone=None,
                 # Keep tax_id/CNP for legal compliance but mark as inactive
