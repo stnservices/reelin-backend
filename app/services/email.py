@@ -184,6 +184,17 @@ class EmailService:
                 f"If you didn't request this, please ignore this email.\n\n"
                 f"Thanks,\nThe {site_name} team"
             )
+        elif template_name == "account_deleted":
+            return (
+                f"Your {site_name} account has been deleted\n\n"
+                f"Hi {context.get('first_name', 'there')},\n\n"
+                f"Your {site_name} account has been permanently deleted as requested. "
+                f"All your personal data has been anonymized in accordance with GDPR regulations.\n\n"
+                f"This action is irreversible. If you wish to use {site_name} again in the future, "
+                f"you are welcome to create a new account.\n\n"
+                f"We're sorry to see you go. Thank you for being part of {site_name}.\n\n"
+                f"The {site_name} team"
+            )
         else:
             return f"Email from {site_name}"
 
@@ -216,6 +227,28 @@ class EmailService:
         return self.send_email(
             to_email=to_email,
             subject=f"Activate your {self.settings.site_name} account",
+            html_content=html_content,
+            text_content=text_content,
+        )
+
+    def send_account_deleted_email(
+        self,
+        to_email: str,
+        first_name: str,
+    ) -> bool:
+        """
+        Send notification that user's account has been permanently deleted.
+
+        Must be called BEFORE the email is anonymized.
+        """
+        html_content, text_content = self.render_template(
+            "account_deleted",
+            first_name=first_name,
+        )
+
+        return self.send_email(
+            to_email=to_email,
+            subject=f"Your {self.settings.site_name} account has been deleted",
             html_content=html_content,
             text_content=text_content,
         )

@@ -389,6 +389,25 @@ class AccountDeletionService:
         anonymized_email = f"deleted_{user_id}_{anonymous_uuid}@deleted.reelin.app"
 
         # ============================================================
+        # 0. SEND NOTIFICATION EMAIL (before PII is wiped)
+        # ============================================================
+        try:
+            from app.services.email import get_email_service
+            email_service = get_email_service()
+            # Get first name from profile
+            profile_q = await db.execute(
+                select(UserProfile).where(UserProfile.user_id == user_id)
+            )
+            user_profile = profile_q.scalar_one_or_none()
+            first_name = user_profile.first_name if user_profile else "there"
+            email_service.send_account_deleted_email(
+                to_email=user.email,
+                first_name=first_name,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send account deleted email to user {user_id}: {e}")
+
+        # ============================================================
         # 1. ANONYMIZE USER ACCOUNT
         # ============================================================
         old_avatar_url = user.avatar_url
@@ -427,7 +446,7 @@ class AccountDeletionService:
         old_profile_picture_url = None
         if profile:
             old_profile_picture_url = profile.profile_picture_url
-            profile.first_name = FALLEN_ANGLER_NAME
+            profile.first_name = f"{FALLEN_ANGLER_NAME} #{user_id}"
             profile.last_name = ""
             profile.phone = None
             profile.bio = None
@@ -516,7 +535,7 @@ class AccountDeletionService:
             update(OrganizerMessage)
             .where(OrganizerMessage.sender_id == user_id)
             .values(
-                sender_name=FALLEN_ANGLER_NAME,
+                sender_name=f"{FALLEN_ANGLER_NAME} #{user_id}",
                 sender_email=anonymized_email,
                 sender_phone=None
             )
@@ -528,7 +547,7 @@ class AccountDeletionService:
             update(AdminMessage)
             .where(AdminMessage.sender_id == user_id)
             .values(
-                sender_name=FALLEN_ANGLER_NAME,
+                sender_name=f"{FALLEN_ANGLER_NAME} #{user_id}",
                 sender_email=anonymized_email,
                 sender_phone=None
             )
@@ -632,7 +651,7 @@ class AccountDeletionService:
             action="account_permanently_deleted",
             details={
                 "anonymized_email": anonymized_email,
-                "display_name": FALLEN_ANGLER_NAME,
+                "display_name": f"{FALLEN_ANGLER_NAME} #{user_id}",
                 "original_deletion_scheduled_at": user.deletion_scheduled_at.isoformat() if user.deletion_scheduled_at else None,
                 "deletion_stats": deletion_stats
             },
@@ -656,7 +675,7 @@ class AccountDeletionService:
             "message": "Account permanently anonymized",
             "anonymized_at": datetime.now(timezone.utc),
             "anonymized_email": anonymized_email,
-            "display_name": FALLEN_ANGLER_NAME,
+            "display_name": f"{FALLEN_ANGLER_NAME} #{user_id}",
             "deletion_stats": deletion_stats
         }
 
