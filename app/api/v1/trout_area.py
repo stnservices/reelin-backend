@@ -4811,25 +4811,27 @@ async def export_standings_csv(
 
     # Header
     writer.writerow([
-        "Rank", "Draw #", "Name",
+        "Rank", "Name",
         "Points", "Catches", "Victories", "Ties", "Losses",
         "Matches Played", "Win Rate %"
     ])
 
     # Data rows
     for idx, ranking in enumerate(rankings, 1):
-        matches_played = ranking.get("victories", 0) + ranking.get("ties", 0) + ranking.get("losses", 0)
-        win_rate = (ranking.get("victories", 0) / matches_played * 100) if matches_played > 0 else 0
+        ties = ranking.get("ties_with_fish", 0) + ranking.get("ties_without_fish", 0)
+        losses = ranking.get("losses_with_fish", 0) + ranking.get("losses_without_fish", 0)
+        victories = ranking.get("victories", 0)
+        matches_played = ranking.get("matches_played", 0)
+        win_rate = (victories / matches_played * 100) if matches_played > 0 else 0
 
         writer.writerow([
-            idx,
-            ranking.get("draw_number", ""),
-            ranking.get("full_name", ranking.get("user_name", f"User {ranking.get('user_id', '')}")),
-            ranking.get("total_points", 0),
-            ranking.get("captures", ranking.get("total_catches", 0)),
-            ranking.get("victories", 0),
-            ranking.get("ties", 0),
-            ranking.get("losses", 0),
+            ranking.get("rank", idx),
+            ranking.get("user_name", f"User {ranking.get('user_id', '')}"),
+            ranking.get("points", 0),
+            ranking.get("captures", 0),
+            victories,
+            ties,
+            losses,
             matches_played,
             f"{win_rate:.1f}",
         ])
@@ -4845,10 +4847,10 @@ async def export_standings_csv(
 
     for idx, ranking in enumerate(rankings, 1):
         writer.writerow([
-            idx,
-            ranking.get("full_name", ranking.get("user_name", f"User {ranking.get('user_id', '')}")),
-            ranking.get("total_points", 0),
-            ranking.get("captures", ranking.get("total_catches", 0)),
+            ranking.get("rank", idx),
+            ranking.get("user_name", f"User {ranking.get('user_id', '')}"),
+            ranking.get("points", 0),
+            ranking.get("captures", 0),
         ])
 
     # Return CSV file
