@@ -3271,40 +3271,16 @@ async def get_user_game_cards(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """
-    Get game cards for a specific user (admin/validator access).
+    Get game cards for a specific user.
 
     If user_id is not provided, returns cards for current user.
-    Requires validator/organizer/admin permissions to fetch other users' cards.
+    Any authenticated user can view — standings are public competition data.
     """
     event = await get_ta_event(event_id, db, request)
 
     target_user_id = user_id if user_id else current_user.id
 
-    # If fetching another user's cards, check permissions
-    if target_user_id != current_user.id:
-        # Check if current user is organizer, validator, or admin
-        user_roles = set(current_user.profile.roles or []) if current_user.profile else set()
-        is_admin = "administrator" in user_roles
-        is_organizer = "organizer" in user_roles
-        is_event_owner = event.created_by_id == current_user.id
-
-        # Also allow if current user is enrolled in the same event (public competition data)
-        is_participant = False
-        if not (is_admin or is_organizer or is_event_owner):
-            enrollment_check = await db.execute(
-                select(EventEnrollment.id).where(
-                    EventEnrollment.event_id == event_id,
-                    EventEnrollment.user_id == current_user.id,
-                    EventEnrollment.status == "approved",
-                )
-            )
-            is_participant = enrollment_check.scalar() is not None
-
-        if not (is_admin or is_organizer or is_event_owner or is_participant):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to view other users' game cards",
-            )
+    # Any authenticated user can view game cards — standings are public competition data
 
     query = (
         select(TAGameCard)
