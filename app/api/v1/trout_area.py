@@ -1280,11 +1280,15 @@ async def update_event_settings(
         # Map API field names to model field names
         model_field = field_mappings.get(field, field)
 
-        if hasattr(settings, model_field):
-            if field == "pairing_algorithm" and value:
-                setattr(settings, model_field, value.value if hasattr(value, "value") else value)
-            else:
-                setattr(settings, model_field, value)
+        if field == "pairing_algorithm" and value:
+            # Persist in additional_rules JSONB (no DB column exists)
+            algo_value = value.value if hasattr(value, "value") else value
+            settings.additional_rules = {
+                **(settings.additional_rules or {}),
+                "pairing_algorithm": algo_value,
+            }
+        elif hasattr(settings, model_field):
+            setattr(settings, model_field, value)
 
     settings.updated_at = datetime.now(timezone.utc)
     await db.commit()
@@ -2117,6 +2121,7 @@ async def generate_lineups(
         "draw_completed": True,
         "total_legs": total_legs,
         "matches_per_leg": matches_per_leg,
+        "pairing_algorithm": data.algorithm.value if hasattr(data.algorithm, 'value') else data.algorithm,
         # Backwards compatibility
         "total_rounds": total_legs,
         "matches_per_round": matches_per_leg,

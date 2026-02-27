@@ -277,6 +277,7 @@ class TAEventSettingsResponse(BaseModel):
             data["total_legs"] = add_rules.get("total_legs", add_rules.get("total_rounds"))
             data["matches_per_leg"] = add_rules.get("matches_per_leg", add_rules.get("matches_per_round"))
             data["bracket_config"] = add_rules.get("bracket_config", {})
+            data["pairing_algorithm"] = add_rules.get("pairing_algorithm", "round_robin_full")
             return data
         return values
 
