@@ -632,13 +632,17 @@ async def _sync_ta_standings_to_firebase(db: AsyncSession, event_id: int) -> Non
         current_leg_result = await db.execute(current_leg_query)
         current_leg = current_leg_result.scalar() or 1
 
+        # Bulk-fetch all profiles (avoids N+1 per-standing query)
+        user_ids = [s.user_id for s in standings_rows]
+        profiles_result = await db.execute(
+            select(UserProfile).where(UserProfile.user_id.in_(user_ids))
+        )
+        profiles_by_user = {p.user_id: p for p in profiles_result.scalars().all()}
+
         # Build standings list with display names
         standings_list = []
         for standing in standings_rows:
-            profile_query = select(UserProfile).where(UserProfile.user_id == standing.user_id)
-            profile_result = await db.execute(profile_query)
-            profile = profile_result.scalar_one_or_none()
-
+            profile = profiles_by_user.get(standing.user_id)
             display_name = profile.full_name if profile else f"User {standing.user_id}"
 
             standings_list.append({
@@ -734,8 +738,8 @@ async def update_standings_for_match(
         enrollment = enrollments[competitor_id]
         points = point_values.get(outcome_code, Decimal("0"))
 
-        # Get or create standing (upsert to handle concurrent match completions)
-        await db.execute(
+        # Get or create standing (upsert + RETURNING to avoid separate SELECT)
+        upsert_stmt = (
             pg_insert(TAQualifierStanding)
             .values(
                 event_id=match.event_id,
@@ -753,14 +757,13 @@ async def update_standings_for_match(
                 losses_without_fish=0,
                 leg_results={},
             )
-            .on_conflict_do_nothing(index_elements=["event_id", "user_id"])
+            .on_conflict_do_update(
+                index_elements=["event_id", "user_id"],
+                set_={"enrollment_id": enrollment.id},
+            )
+            .returning(TAQualifierStanding)
         )
-
-        standing_query = select(TAQualifierStanding).where(
-            TAQualifierStanding.event_id == match.event_id,
-            TAQualifierStanding.user_id == competitor_id,
-        )
-        standing_result = await db.execute(standing_query)
+        standing_result = await db.execute(upsert_stmt)
         standing = standing_result.scalar_one()
 
         # Update totals

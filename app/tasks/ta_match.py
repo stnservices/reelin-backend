@@ -1,8 +1,13 @@
 """Celery tasks for TA leg completion background work.
 
-Defers heavy operations (stats recalculation, Firebase sync) off the
-request path to improve validate_opponent_card response times.
+Defers heavy operations (Firebase sync) off the request path to improve
+validate_opponent_card response times.
 Only fires when an entire leg completes (all matches validated).
+
+Note: Lifetime stats (UserEventTypeStats) are NOT recalculated here — they
+are computed once at event stop via recalculate_event_stats.delay(event_id)
+in events.py. TA standings (TAQualifierStanding) are updated inline in the
+request path via update_standings_for_match().
 """
 
 import logging
@@ -19,8 +24,7 @@ def ta_leg_completed(self, event_id: int, leg_number: int):
     """
     Background work after a TA leg completes (all matches validated).
 
-    1. Update user stats for ALL competitors in this leg
-    2. Sync TA standings to Firebase
+    Syncs TA standings to Firebase for real-time web updates.
     """
     try:
         return _sync_ta_leg_completed(event_id, leg_number)
@@ -32,45 +36,18 @@ def ta_leg_completed(self, event_id: int, leg_number: int):
 
 
 def _sync_ta_leg_completed(event_id: int, leg_number: int) -> dict:
-    from app.services.statistics_service import StatisticsService
     from app.services.firebase_leaderboard_service import sync_ta_standings_to_firebase
     from sqlalchemy import select, func
     from app.models.trout_area import (
-        TAMatch, TAQualifierStanding, TAEventSettings,
+        TAQualifierStanding, TAEventSettings,
         TAGameCard, TAGameCardStatus,
     )
     from app.models.user import UserProfile
 
     with SyncSessionLocal() as db:
-        results = {"stats_updated": [], "firebase_synced": False, "leg_number": leg_number}
+        results = {"firebase_synced": False, "leg_number": leg_number}
 
-        # 1. Find all unique competitor IDs from matches in this leg
-        matches_result = db.execute(
-            select(TAMatch.competitor_a_id, TAMatch.competitor_b_id).where(
-                TAMatch.event_id == event_id,
-                TAMatch.leg_number == leg_number,
-            )
-        )
-        rows = matches_result.all()
-
-        user_ids = set()
-        for row in rows:
-            if row.competitor_a_id:
-                user_ids.add(row.competitor_a_id)
-            if row.competitor_b_id:
-                user_ids.add(row.competitor_b_id)
-
-        # 2. Update stats for all competitors in this leg
-        for user_id in user_ids:
-            try:
-                StatisticsService.update_user_stats_for_event_sync(db, user_id, event_id)
-                results["stats_updated"].append(user_id)
-            except Exception as e:
-                logger.error(f"Stats update failed for user {user_id}: {e}")
-
-        db.commit()
-
-        # 3. Sync TA standings to Firebase
+        # Sync TA standings to Firebase
         try:
             standings_rows = db.execute(
                 select(TAQualifierStanding).where(
