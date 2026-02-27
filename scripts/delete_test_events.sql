@@ -15,7 +15,9 @@ INSERT INTO target_events (id) VALUES
     (236),
     (237),
     (239),
-    (240)
+    (240),
+    (241),
+    (242)
 ;
 
 -- Bail out if no events specified

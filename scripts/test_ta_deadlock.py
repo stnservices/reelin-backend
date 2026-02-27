@@ -42,6 +42,7 @@ class Config:
     concurrency_batch: int = 15
     num_legs: int = 3
     max_pressure: bool = False
+    realistic: bool = False
     skip_verify: bool = False
 
 
@@ -57,6 +58,8 @@ def parse_args() -> Config:
     p.add_argument("--num-legs", type=int, default=Config.num_legs)
     p.add_argument("--max-pressure", action="store_true",
                    help="Fire ALL validate calls simultaneously (no batching)")
+    p.add_argument("--realistic", action="store_true",
+                   help="Simulate real event: pairs one at a time with 2-8s human delays")
     p.add_argument("--skip-verify", action="store_true",
                    help="Skip post-test correctness checks")
     args = p.parse_args()
@@ -70,6 +73,7 @@ def parse_args() -> Config:
         concurrency_batch=args.concurrency_batch,
         num_legs=args.num_legs,
         max_pressure=args.max_pressure,
+        realistic=args.realistic,
         skip_verify=args.skip_verify,
     )
 
@@ -85,6 +89,7 @@ def make_metrics(cfg: Config) -> dict:
         "legs": {},
         "submit": {"ok": 0, "errors": 0, "exceptions": 0, "latencies_ms": []},
         "validate": {"ok": 0, "errors": 0, "exceptions": 0, "latencies_ms": []},
+        "catches": {"total": 0, "per_card": []},
         "error_details": [],
         "deadlocks": {"submit": 0, "validate": 0, "details": []},
     }
@@ -237,6 +242,8 @@ async def submit_card(client, cfg: Config, event_id, card_id, catches, token, la
     metrics["submit"]["latencies_ms"].append(ms)
     if resp.status_code == 200:
         metrics["submit"]["ok"] += 1
+        metrics["catches"]["total"] += catches
+        metrics["catches"]["per_card"].append(catches)
     else:
         metrics["submit"]["errors"] += 1
         detail = ""
@@ -485,6 +492,83 @@ async def process_leg_max_pressure(client, cfg: Config, event_id, tokens, user_c
     return leg_metrics
 
 
+async def process_leg_realistic(client, cfg: Config, event_id, tokens, user_cards, leg_number, metrics):
+    """Realistic mode: pairs submit+validate one at a time with random human-like delays."""
+    print(f"\n{'─' * 50}")
+    print(f"  LEG {leg_number} [REALISTIC]")
+    print(f"{'─' * 50}")
+
+    leg_metrics = {"submit_ok": 0, "submit_err": 0, "validate_ok": 0, "validate_err": 0}
+
+    pairs = find_pairs_for_leg(user_cards, leg_number, "draft")
+    print(f"  Draft pairs: {len(pairs)}")
+
+    if not pairs:
+        print(f"  No pairs for leg {leg_number}, skipping")
+        return leg_metrics
+
+    # Shuffle pairs — in a real event, matches don't finish in order
+    random.shuffle(pairs)
+
+    leg_start = time.monotonic()
+    sub_ok_before = metrics["submit"]["ok"]
+    sub_err_before = metrics["submit"]["errors"]
+    val_ok_before = metrics["validate"]["ok"]
+    val_err_before = metrics["validate"]["errors"]
+
+    for i, (ea, ca, eb, cb) in enumerate(pairs):
+        idx = i + 1
+        catches_a = random.randint(0, 12)
+        catches_b = random.randint(0, 12)
+
+        # ── Both players submit (nearly simultaneously, like tapping in the app) ──
+        delay_between_players = random.uniform(0.5, 2.0)
+        await submit_card(client, cfg, event_id, ca["id"], catches_a, tokens[ea], f"L{leg_number}P{idx}A", metrics)
+        await asyncio.sleep(delay_between_players)
+        await submit_card(client, cfg, event_id, cb["id"], catches_b, tokens[eb], f"L{leg_number}P{idx}B", metrics)
+
+        # ── Wait a bit, then both validate (opponent validates your card) ──
+        delay_before_validate = random.uniform(2.0, 6.0)
+        print(f"    pair {idx}/{len(pairs)}: submitted, waiting {delay_before_validate:.1f}s before validate...")
+        await asyncio.sleep(delay_before_validate)
+
+        # Re-fetch this pair's cards to get updated status
+        user_cards[ea] = await get_game_cards(client, cfg, event_id, tokens[ea])
+        user_cards[eb] = await get_game_cards(client, cfg, event_id, tokens[eb])
+
+        # Find the updated cards for this match
+        fresh_ca = next((c for c in user_cards[ea] if c["id"] == ca["id"]), ca)
+        fresh_cb = next((c for c in user_cards[eb] if c["id"] == cb["id"]), cb)
+
+        if fresh_ca["status"] == "submitted" and fresh_cb["status"] == "submitted":
+            await validate_card(client, cfg, event_id, fresh_cb["id"], tokens[ea], f"L{leg_number}P{idx}A->B", metrics)
+            delay_between_validates = random.uniform(0.5, 3.0)
+            await asyncio.sleep(delay_between_validates)
+            await validate_card(client, cfg, event_id, fresh_ca["id"], tokens[eb], f"L{leg_number}P{idx}B->A", metrics)
+        else:
+            print(f"    pair {idx}: unexpected status A={fresh_ca['status']} B={fresh_cb['status']}, skipping validate")
+
+        # ── Delay before next pair (simulates next match finishing) ──
+        if i < len(pairs) - 1:
+            delay_next = random.uniform(3.0, 8.0)
+            print(f"    pair {idx} done, next pair in {delay_next:.1f}s")
+            await asyncio.sleep(delay_next)
+
+    leg_ms = (time.monotonic() - leg_start) * 1000
+    leg_metrics["submit_ok"] = metrics["submit"]["ok"] - sub_ok_before
+    leg_metrics["submit_err"] = metrics["submit"]["errors"] - sub_err_before
+    leg_metrics["validate_ok"] = metrics["validate"]["ok"] - val_ok_before
+    leg_metrics["validate_err"] = metrics["validate"]["errors"] - val_err_before
+    print(f"  Leg {leg_number} done: submit={leg_metrics['submit_ok']}/{leg_metrics['submit_err']}"
+          f"  validate={leg_metrics['validate_ok']}/{leg_metrics['validate_err']} ({leg_ms / 1000:.1f}s)")
+
+    # Re-fetch for next leg
+    for email in tokens:
+        user_cards[email] = await get_game_cards(client, cfg, event_id, tokens[email])
+
+    return leg_metrics
+
+
 # ── Correctness Verification ────────────────────────────────────
 
 
@@ -668,7 +752,8 @@ def print_summary_table(cfg: Config, metrics: dict, verification_checks: list[di
     print(f"\n{'═' * 58}")
     print(f"  PERFORMANCE")
     print(f"{'═' * 58}")
-    print(f"  Mode:     {'max-pressure' if cfg.max_pressure else 'batched'}")
+    mode = 'max-pressure' if cfg.max_pressure else 'realistic' if cfg.realistic else 'batched'
+    print(f"  Mode:     {mode}")
     print(f"  Users:    {cfg.num_users}   Legs: {cfg.num_legs}")
     print(f"  Requests: {total_reqs}  OK: {total_ok}  Errors: {total_err}  Exceptions: {total_exc}")
     print(f"  Deadlock 500s: submit={dl['submit']}  validate={dl['validate']}")
@@ -679,10 +764,27 @@ def print_summary_table(cfg: Config, metrics: dict, verification_checks: list[di
         print(f"  Leg {leg}: submit={lm.get('submit_ok', 0)}/{lm.get('submit_err', 0)}"
               f"  validate={lm.get('validate_ok', 0)}/{lm.get('validate_err', 0)}")
 
+    # Timing
+    t_start = metrics.get("test_start")
+    t_end = metrics.get("test_end")
+    if t_start and t_end:
+        start_dt = datetime.fromisoformat(t_start)
+        end_dt = datetime.fromisoformat(t_end)
+        elapsed = (end_dt - start_dt).total_seconds()
+        print(f"  Duration: {elapsed:.1f}s")
+
     if submit_stats:
         print(f"  Submit   p50={submit_stats['p50_ms']}ms  p90={submit_stats['p90_ms']}ms  max={submit_stats['max_ms']}ms")
     if validate_stats:
         print(f"  Validate p50={validate_stats['p50_ms']}ms  p90={validate_stats['p90_ms']}ms  max={validate_stats['max_ms']}ms")
+
+    # Catches
+    catch_data = metrics.get("catches", {})
+    per_card = catch_data.get("per_card", [])
+    if per_card:
+        avg_catch = sum(per_card) / len(per_card)
+        print(f"  Catches: {catch_data['total']} total, avg {avg_catch:.1f}/card, "
+              f"min {min(per_card)}, max {max(per_card)}")
 
     if verification_checks is not None:
         print(f"{'═' * 58}")
@@ -718,9 +820,10 @@ def print_summary_table(cfg: Config, metrics: dict, verification_checks: list[di
 # ── Main ────────────────────────────────────────────────────────
 
 
-async def run_stress_test(client, cfg: Config, event_id, tokens, metrics):
+async def run_stress_test(client, cfg: Config, event_id, tokens, emails, metrics):
     print("\n" + "=" * 60)
-    print(f"Phase 3: Leg-by-Leg Stress Test {'[MAX PRESSURE]' if cfg.max_pressure else ''}")
+    mode_tag = '[MAX PRESSURE]' if cfg.max_pressure else '[REALISTIC]' if cfg.realistic else ''
+    print(f"Phase 3: Leg-by-Leg Stress Test {mode_tag}")
     print("=" * 60)
 
     metrics["test_start"] = datetime.now(timezone.utc).isoformat()
@@ -742,9 +845,23 @@ async def run_stress_test(client, cfg: Config, event_id, tokens, metrics):
     print(f"  Legs: {legs_sorted}")
     metrics["total_cards"] = total_cards
 
-    leg_processor = process_leg_max_pressure if cfg.max_pressure else process_leg
+    if cfg.max_pressure:
+        leg_processor = process_leg_max_pressure
+    elif cfg.realistic:
+        leg_processor = process_leg_realistic
+    else:
+        leg_processor = process_leg
+
+    last_refresh = time.monotonic()
 
     for leg in legs_sorted:
+        # Refresh tokens if >10 min since last refresh (realistic mode runs long)
+        if time.monotonic() - last_refresh > 600:
+            print(f"\n  Refreshing tokens (>10 min elapsed)...")
+            tokens = await refresh_tokens_parallel(client, cfg, emails)
+            print(f"  {len(tokens)} tokens refreshed")
+            last_refresh = time.monotonic()
+
         leg_result = await leg_processor(client, cfg, event_id, tokens, user_cards, leg, metrics)
         metrics["legs"][str(leg)] = leg_result
 
@@ -759,7 +876,7 @@ async def main():
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         print("=" * 60)
-        mode_label = "MAX PRESSURE" if cfg.max_pressure else "batched"
+        mode_label = "MAX PRESSURE" if cfg.max_pressure else "REALISTIC" if cfg.realistic else "batched"
         print(f"TA Stress Test — {cfg.num_users} users, {cfg.num_legs} legs, {mode_label}")
         print("=" * 60)
 
@@ -795,7 +912,7 @@ async def main():
             print("ERROR: Need at least 2 users"); sys.exit(1)
 
         # Run stress test
-        tokens = await run_stress_test(client, cfg, event_id, tokens, metrics)
+        tokens = await run_stress_test(client, cfg, event_id, tokens, emails, metrics)
 
         # Correctness verification
         verification_checks = None
