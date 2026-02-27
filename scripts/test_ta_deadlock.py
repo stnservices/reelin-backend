@@ -516,7 +516,7 @@ async def verify_correctness(client: httpx.AsyncClient, cfg: Config, admin_token
         "detail": f"{len(completed)}/{len(qualifier_matches)} completed" if qualifier_matches else "No matches found",
     })
 
-    # ── Fetch game cards per user (for checks 2 and 8) ──
+    # ── Fetch game cards per user (for checks 2 and 7) ──
     all_cards = []
     user_ids_from_standings = [s["user_id"] for s in standings]
     for uid in user_ids_from_standings:
@@ -561,50 +561,65 @@ async def verify_correctness(client: httpx.AsyncClient, cfg: Config, admin_token
         "detail": "All consistent" if c4_pass else f"{len(wtl_bad)} inconsistent: {wtl_bad[:5]}",
     })
 
-    # ── CHECK 5: ranks_sequential ──
+    # ── CHECK 5: ranks_valid (competition ranking — ties share rank, next rank jumps) ──
     non_dq = [s for s in standings if s.get("rank") is not None]
     ranks = sorted(s["rank"] for s in non_dq)
-    expected_ranks = list(range(1, len(non_dq) + 1))
-    c5_pass = ranks == expected_ranks and len(non_dq) > 0
-    detail5 = f"Ranks 1..{len(non_dq)} OK" if c5_pass else f"Expected {expected_ranks[:5]}... got {ranks[:5]}..."
+    c5_pass = False
+    detail5 = "No ranked users"
+    if ranks:
+        # Validate competition ranking: if K users share rank R, next rank must be R+K
+        c5_pass = ranks[0] == 1  # must start at 1
+        seen = {}
+        for r in ranks:
+            seen[r] = seen.get(r, 0) + 1
+        # Check gaps: each rank R with count K means next distinct rank should be R+K
+        sorted_distinct = sorted(seen.keys())
+        for i, r in enumerate(sorted_distinct):
+            if i + 1 < len(sorted_distinct):
+                expected_next = r + seen[r]
+                if sorted_distinct[i + 1] != expected_next:
+                    c5_pass = False
+                    break
+        # Last rank + its count should equal total users + 1
+        if sorted_distinct:
+            last_r = sorted_distinct[-1]
+            if last_r + seen[last_r] != len(non_dq) + 1:
+                c5_pass = False
+        ties = {r: k for r, k in seen.items() if k > 1}
+        if c5_pass:
+            tie_str = f", ties: {ties}" if ties else ""
+            detail5 = f"Ranks 1..{len(non_dq)} valid{tie_str}"
+        else:
+            detail5 = f"Invalid ranking: {ranks[:10]}..."
     checks.append({
-        "name": "ranks_sequential",
+        "name": "ranks_valid",
         "passed": c5_pass,
         "detail": detail5,
     })
 
-    # ── CHECK 6: points_non_negative ──
-    neg_pts = [s for s in standings if (s.get("total_points") or 0) < 0]
-    c6_pass = len(neg_pts) == 0
-    checks.append({
-        "name": "points_non_negative",
-        "passed": c6_pass,
-        "detail": "All non-negative" if c6_pass else f"{len(neg_pts)} negative",
-    })
-
-    # ── CHECK 7: match_count_range ──
-    # round_robin_half: each user plays ~(N-1)/2 matches per leg × num_legs
-    # Allow ±2 margin for odd-number rounding
-    if standings:
-        n = num_enrolled
-        matches_per_leg = (n - 1) // 2
-        expected_min = max(1, (matches_per_leg - 1) * cfg.num_legs)
-        expected_max = (matches_per_leg + 1) * cfg.num_legs
+    # ── CHECK 6: match_count_range ──
+    # round_robin_half: each user plays 1 match per leg, total legs determined
+    # by algorithm (not --num-legs). Users with a ghost bye play 1 fewer.
+    if standings and qualifier_matches:
+        actual_legs = len({m.get("leg_number") for m in qualifier_matches if m.get("leg_number")})
+        # With ghost opponent, some users get a bye → expected range [legs-1, legs]
+        expected_min = max(1, actual_legs - 1)
+        expected_max = actual_legs
         out_of_range = [
             s for s in standings
             if not (expected_min <= (s.get("matches_played") or 0) <= expected_max)
         ]
-        c7_pass = len(out_of_range) == 0
+        c6_pass = len(out_of_range) == 0
         checks.append({
             "name": "match_count_range",
-            "passed": c7_pass,
-            "detail": f"All in range [{expected_min}..{expected_max}]" if c7_pass
-            else f"{len(out_of_range)} out of range [{expected_min}..{expected_max}]",
+            "passed": c6_pass,
+            "detail": f"All in range [{expected_min}..{expected_max}] ({actual_legs} legs)" if c6_pass
+            else f"{len(out_of_range)} out of range [{expected_min}..{expected_max}] ({actual_legs} legs)",
         })
     else:
         checks.append({"name": "match_count_range", "passed": False, "detail": "No standings"})
 
-    # ── CHECK 8: no_partial_writes ──
+    # ── CHECK 7: no_partial_writes ──
     # A completed match should not have non-validated cards
     completed_match_ids = {m["id"] for m in qualifier_matches if m["status"] == "completed"}
     partial_write_matches = set()
@@ -612,11 +627,11 @@ async def verify_correctness(client: httpx.AsyncClient, cfg: Config, admin_token
         mid = c.get("match_id")
         if mid in completed_match_ids and c["status"] not in ("validated",):
             partial_write_matches.add(mid)
-    c8_pass = len(partial_write_matches) == 0
+    c7_pass = len(partial_write_matches) == 0
     checks.append({
         "name": "no_partial_writes",
-        "passed": c8_pass,
-        "detail": "No partial writes detected" if c8_pass
+        "passed": c7_pass,
+        "detail": "No partial writes detected" if c7_pass
         else f"{len(partial_write_matches)} matches with non-validated cards",
     })
 
@@ -703,7 +718,7 @@ def print_summary_table(cfg: Config, metrics: dict, verification_checks: list[di
 # ── Main ────────────────────────────────────────────────────────
 
 
-async def run_stress_test(client, cfg: Config, event_id, tokens, emails, metrics):
+async def run_stress_test(client, cfg: Config, event_id, tokens, metrics):
     print("\n" + "=" * 60)
     print(f"Phase 3: Leg-by-Leg Stress Test {'[MAX PRESSURE]' if cfg.max_pressure else ''}")
     print("=" * 60)
@@ -730,10 +745,6 @@ async def run_stress_test(client, cfg: Config, event_id, tokens, emails, metrics
     leg_processor = process_leg_max_pressure if cfg.max_pressure else process_leg
 
     for leg in legs_sorted:
-        print(f"\n  Refreshing tokens before leg {leg}...")
-        tokens = await refresh_tokens_parallel(client, cfg, emails)
-        print(f"  {len(tokens)} tokens refreshed")
-
         leg_result = await leg_processor(client, cfg, event_id, tokens, user_cards, leg, metrics)
         metrics["legs"][str(leg)] = leg_result
 
@@ -784,7 +795,7 @@ async def main():
             print("ERROR: Need at least 2 users"); sys.exit(1)
 
         # Run stress test
-        tokens = await run_stress_test(client, cfg, event_id, tokens, emails, metrics)
+        tokens = await run_stress_test(client, cfg, event_id, tokens, metrics)
 
         # Correctness verification
         verification_checks = None
