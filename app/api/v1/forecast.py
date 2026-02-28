@@ -1,5 +1,6 @@
 """Fishing Forecast API endpoints."""
 
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -8,9 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.dependencies import get_current_user_optional
 from app.models import UserAccount
+from app.models.forecast import ForecastQuery
 from app.schemas.forecast import ForecastResponse
 from app.services.forecast_service import forecast_service
 from app.api.v1.pro import is_user_pro
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/forecast", tags=["Forecast"])
 
@@ -63,6 +67,21 @@ async def get_fishing_forecast(
         # Keep major periods, clear minor periods for free users
         forecast["minor_periods"] = []
 
+    try:
+        query_log = ForecastQuery(
+            user_id=current_user.id if current_user else None,
+            latitude=lat,
+            longitude=lng,
+            timezone=timezone,
+            days=actual_days,
+            score=forecast.get("current_score"),
+        )
+        db.add(query_log)
+        await db.commit()
+    except Exception:
+        logger.exception("Failed to log forecast query")
+        await db.rollback()
+
     return ForecastResponse(**forecast)
 
 
@@ -70,6 +89,7 @@ async def get_fishing_forecast(
 async def get_simple_score(
     lat: float = Query(..., ge=-90, le=90),
     lng: float = Query(..., ge=-180, le=180),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get just the current fishing score (lightweight endpoint).
@@ -82,6 +102,18 @@ async def get_simple_score(
         days=1,
         include_hourly=False,
     )
+
+    try:
+        query_log = ForecastQuery(
+            latitude=lat,
+            longitude=lng,
+            score=forecast.get("current_score"),
+        )
+        db.add(query_log)
+        await db.commit()
+    except Exception:
+        logger.exception("Failed to log forecast score query")
+        await db.rollback()
 
     return {
         "score": forecast.get("current_score", 50),

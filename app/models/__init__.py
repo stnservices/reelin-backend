@@ -57,6 +57,7 @@ from app.models.news import News
 from app.models.hall_of_fame import HallOfFameEntry
 from app.models.route_history import RouteHistory
 from app.models.audit import AuditLog, UserDevice, UserSuspiciousFlag
+from app.models.forecast import ForecastQuery
 
 # Minigame
 from app.models.minigame import MinigameScore
@@ -210,6 +211,8 @@ __all__ = [
     "AuditLog",
     "UserDevice",
     "UserSuspiciousFlag",
+    # Forecast
+    "ForecastQuery",
     # Minigame
     "MinigameScore",
     # Trout Area (TA)
