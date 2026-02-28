@@ -520,32 +520,22 @@ class TAMatch(Base):
 
     def calculate_outcome(
         self,
-        point_config: Optional["TAEventPointConfig"] = None,
+        point_config: "TAEventPointConfig",
     ) -> None:
         """
         Calculate match outcome based on catches.
 
         Args:
-            point_config: Optional custom point configuration.
-                         If not provided, uses default point values.
+            point_config: Point configuration (per-event or global defaults).
         """
         if self.competitor_a_catches is None or self.competitor_b_catches is None:
             return
 
-        # Get point values from config or use defaults
-        if point_config:
-            victory_pts = point_config.victory_points
-            tie_pts = point_config.tie_points
-            tie_zero_pts = point_config.tie_zero_points
-            loss_pts = point_config.loss_points
-            loss_zero_pts = point_config.loss_zero_points
-        else:
-            # Default point values
-            victory_pts = Decimal("3.0")
-            tie_pts = Decimal("1.5")
-            tie_zero_pts = Decimal("1.0")
-            loss_pts = Decimal("0.5")
-            loss_zero_pts = Decimal("0.0")
+        victory_pts = point_config.victory_points
+        tie_pts = point_config.tie_points
+        tie_zero_pts = point_config.tie_zero_points
+        loss_pts = point_config.loss_points
+        loss_zero_pts = point_config.loss_zero_points
 
         a_catches = self.competitor_a_catches
         b_catches = self.competitor_b_catches

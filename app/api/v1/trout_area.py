@@ -675,7 +675,7 @@ async def _sync_ta_standings_to_firebase(db: AsyncSession, event_id: int) -> Non
 async def update_standings_for_match(
     db: AsyncSession,
     match: TAMatch,
-    point_config: Optional[TAEventPointConfig] = None,
+    point_config: TAEventPointConfig,
     skip_rank_recalculation: bool = False,
 ) -> dict:
     """
@@ -691,7 +691,7 @@ async def update_standings_for_match(
     Args:
         db: Database session
         match: The completed match
-        point_config: Optional custom point configuration
+        point_config: Point configuration (per-event or global defaults)
         skip_rank_recalculation: Skip rank recalculation (for batch operations)
 
     Returns:
@@ -700,23 +700,14 @@ async def update_standings_for_match(
     if match.status != TAMatchStatus.COMPLETED.value:
         return {"leg_complete": False, "leg_number": None, "ranks_updated": False}
 
-    # Get point values (default if no config)
+    # Get point values from config
     point_values = {
-        "V": Decimal("3.0"),
-        "T": Decimal("1.5"),
-        "T0": Decimal("1.0"),
-        "L": Decimal("0.5"),
-        "L0": Decimal("0.0"),
+        "V": point_config.victory_points,
+        "T": point_config.tie_points,
+        "T0": point_config.tie_zero_points,
+        "L": point_config.loss_points,
+        "L0": point_config.loss_zero_points,
     }
-
-    if point_config:
-        point_values = {
-            "V": point_config.victory_points,
-            "T": point_config.tie_points,
-            "T0": point_config.tie_zero_points,
-            "L": point_config.loss_points,
-            "L0": point_config.loss_zero_points,
-        }
 
     # Get enrollments for both users
     enrollment_query = select(EventEnrollment).where(
@@ -970,6 +961,30 @@ async def get_global_point_defaults(db: AsyncSession) -> dict:
     return result_dict
 
 
+async def get_effective_point_config(db: AsyncSession, event_id: int) -> TAEventPointConfig:
+    """
+    Get point config for an event. Returns per-event config if it exists,
+    otherwise creates a transient TAEventPointConfig from ta_points_rules defaults.
+    """
+    query = select(TAEventPointConfig).where(TAEventPointConfig.event_id == event_id)
+    result = await db.execute(query)
+    config = result.scalar_one_or_none()
+
+    if config:
+        return config
+
+    # Build from global defaults (queries ta_points_rules table)
+    defaults = await get_global_point_defaults(db)
+    return TAEventPointConfig(
+        event_id=event_id,
+        victory_points=defaults["victory_points"],
+        tie_points=defaults["tie_points"],
+        tie_zero_points=defaults["tie_zero_points"],
+        loss_points=defaults["loss_points"],
+        loss_zero_points=defaults["loss_zero_points"],
+    )
+
+
 @router.get("/point-defaults", response_model=TAGlobalPointDefaultsResponse)
 async def get_point_defaults(
     db: AsyncSession = Depends(get_db),
@@ -1138,7 +1153,7 @@ async def update_ta_point_config(
     }
 
 
-@router.delete("/events/{event_id}/point-config", response_model=MessageResponse)
+@router.delete("/events/{event_id}/point-config", response_model=TAEventPointConfigResponse)
 async def reset_ta_point_config(
     event_id: int,
     request: Request,
@@ -1146,9 +1161,9 @@ async def reset_ta_point_config(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """
-    Reset point configuration to defaults by deleting custom config.
+    Reset point configuration to global defaults.
 
-    After reset, the event will use the global default point values.
+    The row is preserved — values are overwritten with the current global defaults.
     """
     # Verify event exists and is TA
     event = await get_ta_event(event_id, db, request, require_settings=False)
@@ -1156,17 +1171,41 @@ async def reset_ta_point_config(
     # Guard: Point config can only be modified in Draft status
     require_draft_status(event, action="reset point configuration")
 
-    # Delete custom config if exists
+    defaults = await get_global_point_defaults(db)
+
+    # Get or create the config row
     query = select(TAEventPointConfig).where(TAEventPointConfig.event_id == event_id)
     result = await db.execute(query)
     config = result.scalar_one_or_none()
 
     if config:
-        await db.delete(config)
-        await db.commit()
-        return {"message": "Point configuration reset to defaults"}
+        config.victory_points = defaults["victory_points"]
+        config.tie_points = defaults["tie_points"]
+        config.tie_zero_points = defaults["tie_zero_points"]
+        config.loss_points = defaults["loss_points"]
+        config.loss_zero_points = defaults["loss_zero_points"]
+    else:
+        config = TAEventPointConfig(
+            event_id=event_id,
+            victory_points=defaults["victory_points"],
+            tie_points=defaults["tie_points"],
+            tie_zero_points=defaults["tie_zero_points"],
+            loss_points=defaults["loss_points"],
+            loss_zero_points=defaults["loss_zero_points"],
+        )
+        db.add(config)
 
-    return {"message": "Event was already using default point values"}
+    await db.commit()
+    await db.refresh(config)
+
+    return {
+        "victory_points": config.victory_points,
+        "tie_points": config.tie_points,
+        "tie_zero_points": config.tie_zero_points,
+        "loss_points": config.loss_points,
+        "loss_zero_points": config.loss_zero_points,
+        "is_default": True,
+    }
 
 
 # =============================================================================
@@ -2634,10 +2673,8 @@ async def edit_match_results(
             detail=get_error_message("ta_match_not_found", request),
         )
 
-    # Get point config for this event (custom or defaults)
-    point_config_query = select(TAEventPointConfig).where(TAEventPointConfig.event_id == event_id)
-    point_result = await db.execute(point_config_query)
-    point_config = point_result.scalar_one_or_none()
+    # Get point config for this event (custom or global defaults)
+    point_config = await get_effective_point_config(db, event_id)
 
     # Store previous values for audit
     update_data = data.model_dump(exclude_unset=True)
@@ -2924,11 +2961,7 @@ async def submit_game_card(
                         match.competitor_a_catches = 0  # Ghost always 0
 
                     # Calculate outcome using point config
-                    point_config_query = select(TAEventPointConfig).where(
-                        TAEventPointConfig.event_id == event_id
-                    )
-                    point_result = await db.execute(point_config_query)
-                    point_config = point_result.scalar_one_or_none()
+                    point_config = await get_effective_point_config(db, event_id)
                     match.calculate_outcome(point_config)
 
                     # Mark match as completed
@@ -3169,9 +3202,7 @@ async def validate_opponent_card(
                     # Calculate outcome on ORM object (pure computation)
                     match.competitor_a_catches = a_catches
                     match.competitor_b_catches = b_catches
-                    point_config_query = select(TAEventPointConfig).where(TAEventPointConfig.event_id == event_id)
-                    point_result = await db.execute(point_config_query)
-                    point_config = point_result.scalar_one_or_none()
+                    point_config = await get_effective_point_config(db, event_id)
                     match.calculate_outcome(point_config)
 
                     # Save computed values before UPDATE expires ORM state
@@ -3482,11 +3513,7 @@ async def admin_update_game_card(
             match.completed_at = datetime.now(timezone.utc)
 
             # Get point config and calculate outcomes
-            point_config_query = select(TAEventPointConfig).where(
-                TAEventPointConfig.event_id == card.event_id
-            )
-            point_result = await db.execute(point_config_query)
-            point_config = point_result.scalar_one_or_none()
+            point_config = await get_effective_point_config(db, card.event_id)
             match.calculate_outcome(point_config)
 
             # Auto-update standings when match completes
@@ -3514,11 +3541,7 @@ async def admin_update_game_card(
                 match.completed_at = datetime.now(timezone.utc)
 
                 # Get point config and calculate outcomes
-                point_config_query = select(TAEventPointConfig).where(
-                    TAEventPointConfig.event_id == card.event_id
-                )
-                point_result = await db.execute(point_config_query)
-                point_config = point_result.scalar_one_or_none()
+                point_config = await get_effective_point_config(db, card.event_id)
                 match.calculate_outcome(point_config)
 
                 # Auto-update standings when match completes
