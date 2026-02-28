@@ -97,10 +97,11 @@ class ForecastService:
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as e:
-            logger.error(f"Solunar API error: {e}")
+            status = getattr(getattr(e, 'response', None), 'status_code', None)
+            logger.warning(f"Solunar API unavailable: status={status} url={url} err={e}")
             return None
         except Exception as e:
-            logger.error(f"Solunar fetch error: {e}")
+            logger.warning(f"Solunar fetch failed: url={url} err={e}")
             return None
 
     # === OpenWeatherMap API ===
