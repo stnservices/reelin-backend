@@ -38,12 +38,15 @@ def _extract_enrichment(log: AuditLog) -> dict:
     d = log.details or {}
     parsed_ua = d.get("parsed_ua") or {}
     enrichment = d.get("enrichment") or {}
+    device_info = d.get("device_info") or {}
     return {
         "browser_name": parsed_ua.get("browser_name"),
         "browser_version": parsed_ua.get("browser_version"),
-        "os_name": parsed_ua.get("os_name"),
-        "os_version": parsed_ua.get("os_version"),
+        "os_name": device_info.get("os") or parsed_ua.get("os_name"),
+        "os_version": device_info.get("version") or parsed_ua.get("os_version"),
         "device_type": parsed_ua.get("device_type"),
+        "device_brand": device_info.get("brand"),
+        "device_model": device_info.get("model"),
         "country": enrichment.get("country"),
         "country_code": enrichment.get("country_code"),
         "city": enrichment.get("city"),

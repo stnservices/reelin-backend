@@ -121,6 +121,7 @@ async def _audit_oauth_login(request_or_none, db, user, provider: str):
         ip=ctx["ip"],
         user_agent=ctx["user_agent"],
         device_id=ctx["device_id"],
+        device_info=ctx["device_info"],
         details={"provider": provider},
         success=True,
     )

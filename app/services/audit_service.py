@@ -142,6 +142,7 @@ def log_event(
     ip: Optional[str] = None,
     user_agent: Optional[str] = None,
     device_id: Optional[str] = None,
+    device_info: Optional[dict] = None,
     details: Optional[dict] = None,
     risk_level: str = "low",
     success: Optional[bool] = None,
@@ -153,6 +154,10 @@ def log_event(
     # Parse user-agent if provided
     if user_agent:
         details["parsed_ua"] = parse_user_agent(user_agent)
+
+    # Store structured device info from X-Device-Info header
+    if device_info:
+        details["device_info"] = device_info
 
     # Store success flag
     if success is not None:

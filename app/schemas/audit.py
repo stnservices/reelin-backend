@@ -31,6 +31,8 @@ class EnrichedAuditLogResponse(AuditLogResponse):
     os_name: Optional[str] = None
     os_version: Optional[str] = None
     device_type: Optional[str] = None
+    device_brand: Optional[str] = None
+    device_model: Optional[str] = None
     country: Optional[str] = None
     country_code: Optional[str] = None
     city: Optional[str] = None

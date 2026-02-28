@@ -126,6 +126,7 @@ async def register(
         ip=ctx["ip"],
         user_agent=ctx["user_agent"],
         device_id=ctx["device_id"],
+        device_info=ctx["device_info"],
         success=True,
     )
     if ctx["device_id"]:
@@ -204,6 +205,7 @@ async def login(
             ip=ctx["ip"],
             user_agent=ctx["user_agent"],
             device_id=ctx["device_id"],
+            device_info=ctx["device_info"],
             details={"attempted_email": credentials.email},
             risk_level="medium",
             success=False,
@@ -272,6 +274,7 @@ async def login(
         ip=ctx["ip"],
         user_agent=ctx["user_agent"],
         device_id=ctx["device_id"],
+        device_info=ctx["device_info"],
         success=True,
     )
     is_new_device = False
@@ -453,6 +456,7 @@ async def logout(
             ip=ctx["ip"],
             user_agent=ctx["user_agent"],
             device_id=ctx["device_id"],
+            device_info=ctx["device_info"],
         )
         await db.commit()
         try:
