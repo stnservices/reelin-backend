@@ -608,6 +608,17 @@ def send_new_event_notification(
 
             eligible_user_ids = []
 
+            # Batch-load user countries for all pref users that need country check
+            country_by_user_id = {}
+            if country_id:
+                pref_user_ids = [p.user_id for p in all_prefs if p.notify_events_from_country]
+                if pref_user_ids:
+                    country_result = db.execute(
+                        select(UserProfile.user_id, UserProfile.country_id)
+                        .where(UserProfile.user_id.in_(pref_user_ids))
+                    )
+                    country_by_user_id = dict(country_result.all())
+
             for pref in all_prefs:
                 # Skip the organizer themselves
                 if pref.user_id == organizer_id:
@@ -627,12 +638,7 @@ def send_new_event_notification(
 
                 # Check country preference
                 if pref.notify_events_from_country and country_id:
-                    # Get user's country
-                    profile_result = db.execute(
-                        select(UserProfile.country_id)
-                        .where(UserProfile.user_id == pref.user_id)
-                    )
-                    user_country = profile_result.scalar()
+                    user_country = country_by_user_id.get(pref.user_id)
                     if user_country and user_country != country_id:
                         continue
 

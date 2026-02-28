@@ -77,12 +77,21 @@ async def list_rules(
     result = await db.execute(query)
     rules = result.scalars().all()
 
-    # Get usage counts for each rule
+    # Batch-load usage counts for all rules on this page
+    rule_ids = [r.id for r in rules]
+    counts_by_rule_id = {}
+    if rule_ids:
+        usage_query = (
+            select(Event.rule_id, func.count(Event.id))
+            .where(Event.rule_id.in_(rule_ids))
+            .group_by(Event.rule_id)
+        )
+        usage_result = await db.execute(usage_query)
+        counts_by_rule_id = dict(usage_result.all())
+
     items = []
     for rule in rules:
-        usage_query = select(func.count(Event.id)).where(Event.rule_id == rule.id)
-        usage_result = await db.execute(usage_query)
-        usage_count = usage_result.scalar() or 0
+        usage_count = counts_by_rule_id.get(rule.id, 0)
         items.append(rule_to_response(rule, usage_count))
 
     return RuleListResponse(

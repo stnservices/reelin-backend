@@ -321,11 +321,29 @@ async def list_subscriptions(
     result = await db.execute(query)
     users = result.scalars().all()
 
+    # Batch-load active grants for all users on this page
+    user_ids = [u.id for u in users]
+    grants_by_user_id = {}
+    if user_ids:
+        now_ts = datetime.now(timezone.utc)
+        grants_query = select(ProGrant).where(
+            and_(
+                ProGrant.user_id.in_(user_ids),
+                ProGrant.is_active == True,
+                or_(
+                    ProGrant.expires_at.is_(None),
+                    ProGrant.expires_at > now_ts,
+                ),
+            )
+        )
+        grants_result = await db.execute(grants_query)
+        for g in grants_result.scalars().all():
+            grants_by_user_id[g.user_id] = g
+
     # Format response
     items = []
     for user in users:
-        # Check if user has manual grant
-        grant = await check_user_has_active_grant(db, user.id)
+        grant = grants_by_user_id.get(user.id)
 
         items.append(SubscriptionListItem(
             id=user.id,
@@ -704,13 +722,32 @@ async def list_users_pro_status(
     result = await db.execute(query)
     users = result.scalars().all()
 
+    # Batch-load active grants for all users on this page
+    user_ids = [u.id for u in users]
+    grants_by_user_id = {}
+    if user_ids:
+        now = datetime.now(timezone.utc)
+        grants_query = select(ProGrant).where(
+            and_(
+                ProGrant.user_id.in_(user_ids),
+                ProGrant.is_active == True,
+                or_(
+                    ProGrant.expires_at.is_(None),
+                    ProGrant.expires_at > now,
+                ),
+            )
+        )
+        grants_result = await db.execute(grants_query)
+        for g in grants_result.scalars().all():
+            grants_by_user_id[g.user_id] = g
+    else:
+        now = datetime.now(timezone.utc)
+
     # Format response
     items = []
-    now = datetime.now(timezone.utc)
 
     for user in users:
-        # Check for active grant
-        grant = await check_user_has_active_grant(db, user.id)
+        grant = grants_by_user_id.get(user.id)
 
         # Skip if filtering for manual grants and user doesn't have one
         if filter == ProStatusFilter.MANUAL_GRANTS and not grant:

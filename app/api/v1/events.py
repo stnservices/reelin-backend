@@ -1190,11 +1190,14 @@ async def create_event(
 
     # Add fish scoring configurations if provided
     if event_data.fish_scoring:
+        # Batch-load valid fish IDs
+        requested_fish_ids = [fs.fish_id for fs in event_data.fish_scoring]
+        valid_fish_query = select(Fish.id).where(Fish.id.in_(requested_fish_ids))
+        valid_fish_result = await db.execute(valid_fish_query)
+        valid_fish_ids = set(valid_fish_result.scalars().all())
+
         for idx, fish_scoring_data in enumerate(event_data.fish_scoring):
-            # Verify fish exists
-            fish_query = select(Fish).where(Fish.id == fish_scoring_data.fish_id)
-            fish_result = await db.execute(fish_query)
-            if fish_result.scalar_one_or_none():
+            if fish_scoring_data.fish_id in valid_fish_ids:
                 fish_scoring = EventFishScoring(
                     event_id=event.id,
                     fish_id=fish_scoring_data.fish_id,

@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import select, update, delete, or_, and_
+from sqlalchemy import select, update, delete, or_, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import UserAccount, UserProfile
@@ -699,11 +699,11 @@ class AccountDeletionService:
         grace_period_days = await self.get_grace_period_days(db)
 
         # Count total
-        count_query = select(UserAccount).where(
+        count_query = select(func.count(UserAccount.id)).where(
             UserAccount.deletion_scheduled_at.isnot(None)
         )
         count_result = await db.execute(count_query)
-        total = len(count_result.scalars().all())
+        total = count_result.scalar() or 0
 
         # Get paginated results
         query = (
@@ -758,9 +758,9 @@ class AccountDeletionService:
             Paginated list of deleted users
         """
         # Count total
-        count_query = select(UserProfile).where(UserProfile.is_deleted == True)
+        count_query = select(func.count(UserProfile.user_id)).where(UserProfile.is_deleted == True)
         count_result = await db.execute(count_query)
-        total = len(count_result.scalars().all())
+        total = count_result.scalar() or 0
 
         # Get paginated results
         query = (
