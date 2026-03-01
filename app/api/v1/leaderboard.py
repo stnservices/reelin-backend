@@ -74,6 +74,7 @@ class ScoringCalculator:
                 "counted_catches": 0,
                 "species_bonus": 0,
                 "breakdown": {},
+                "scored_catches": [],
             }
 
         # Group catches by fish species
@@ -89,6 +90,7 @@ class ScoringCalculator:
 
         total_points = 0
         counted_catches = 0
+        scored_catches = []
         breakdown = {}
 
         # Check for top_x_overall scoring (handles both 'top_x_overall' and 'sf_top_x_overall')
@@ -108,6 +110,7 @@ class ScoringCalculator:
 
                 total_points += points
                 counted_catches += 1
+                scored_catches.append(catch)
                 fish_id = catch.fish_id
                 if fish_id not in breakdown:
                     breakdown[fish_id] = {"catches_counted": 0, "points": 0}
@@ -130,6 +133,7 @@ class ScoringCalculator:
                     elif fish_config:
                         species_points += fish_config.under_min_length_points
                     counted += 1
+                    scored_catches.append(catch)
 
                 breakdown[fish_id] = {
                     "catches_counted": counted,
@@ -152,6 +156,7 @@ class ScoringCalculator:
         return {
             "total_points": total_points,
             "counted_catches": counted_catches,
+            "scored_catches": scored_catches,
             "species_bonus": species_bonus,
             "breakdown": breakdown,
             "num_species": num_species,
@@ -414,13 +419,6 @@ async def _get_individual_leaderboard(
     scoreboards = scoreboard_result.scalars().all()
     user_penalty_points = {sb.user_id: sb.penalty_points for sb in scoreboards}
 
-    # Get fish scoring configs to determine accountable min lengths
-    fish_scoring_query = select(EventFishScoring).where(
-        EventFishScoring.event_id == event.id
-    )
-    fish_scoring_result = await db.execute(fish_scoring_query)
-    fish_scoring_configs = {fs.fish_id: fs.accountable_min_length for fs in fish_scoring_result.scalars().all()}
-
     # Group catches by user (excluding disqualified from rankings)
     user_catches: dict[int, list[Catch]] = {}
     disqualified_catches: dict[int, list[Catch]] = {}
@@ -442,16 +440,13 @@ async def _get_individual_leaderboard(
         score_data = calculator.calculate_score(catches)
         user = catches[0].user  # All catches have same user
 
-        # Find best ACCOUNTABLE catch (length >= min_length for that species)
-        accountable_catches = [
-            c for c in catches
-            if c.length >= fish_scoring_configs.get(c.fish_id, 0)
-        ]
-        best_catch = max(accountable_catches, key=lambda c: c.length) if accountable_catches else None
+        # Best catch — always the longest, regardless of min length
+        best_catch = max(catches, key=lambda c: c.length) if catches else None
 
-        # Calculate average catch length (for tiebreaker)
-        total_length = sum(c.length for c in catches)
-        average_catch = round(total_length / len(catches), 2) if catches else 0.0
+        # Average catch length — based on scored catches only
+        scored_catches = score_data["scored_catches"]
+        scored_total_length = sum(c.length for c in scored_catches)
+        average_catch = round(scored_total_length / len(scored_catches), 2) if scored_catches else 0.0
 
         # First catch time (earliest wins in tiebreaker)
         first_catch_time = min(
@@ -495,9 +490,9 @@ async def _get_individual_leaderboard(
 
         user_scores.append(entry)
 
-    # Sort with 6-level tiebreaker chain (matching old system)
+    # Sort with 6-level tiebreaker chain
     # 1. Total points (highest), 2. Counted catches (highest), 3. Species count (highest)
-    # 4. Best catch (highest), 5. Average catch (highest), 6. First catch time (earliest)
+    # 4. Best catch (highest), 5. Average scored catch (highest), 6. First catch time (earliest)
     user_scores.sort(key=lambda x: (
         -x["total_points"],
         -x["counted_catches"],
@@ -525,14 +520,11 @@ async def _get_individual_leaderboard(
         score_data = calculator.calculate_score(catches)
         user = catches[0].user
 
-        # Find best ACCOUNTABLE catch
-        accountable_catches_dq = [
-            c for c in catches
-            if c.length >= fish_scoring_configs.get(c.fish_id, 0)
-        ]
-        best_catch = max(accountable_catches_dq, key=lambda c: c.length) if accountable_catches_dq else None
-        total_length = sum(c.length for c in catches)
-        average_catch = round(total_length / len(catches), 2) if catches else 0.0
+        # Best catch — always the longest, regardless of min length
+        best_catch = max(catches, key=lambda c: c.length) if catches else None
+        scored_catches = score_data["scored_catches"]
+        scored_total_length = sum(c.length for c in scored_catches)
+        average_catch = round(scored_total_length / len(scored_catches), 2) if scored_catches else 0.0
 
         dq_info = disqualified_info.get(user_id, {})
 
@@ -683,12 +675,6 @@ async def _get_team_leaderboard(
     user_penalty_points = {sb.user_id: sb.penalty_points for sb in scoreboards}
 
     # Get fish scoring configs to determine accountable min lengths
-    fish_scoring_query = select(EventFishScoring).where(
-        EventFishScoring.event_id == event.id
-    )
-    fish_scoring_result = await db.execute(fish_scoring_query)
-    fish_scoring_configs = {fs.fish_id: fs.accountable_min_length for fs in fish_scoring_result.scalars().all()}
-
     # Get all teams for this event with their members (including user profiles)
     teams_query = (
         select(Team)
@@ -758,12 +744,8 @@ async def _get_team_leaderboard(
     for team_id, catches in team_catches.items():
         score_data = calculator.calculate_score(catches)
 
-        # Find best ACCOUNTABLE catch (length >= min_length for that species)
-        accountable_catches_team = [
-            c for c in catches
-            if c.length >= fish_scoring_configs.get(c.fish_id, 0)
-        ]
-        best_catch = max(accountable_catches_team, key=lambda c: c.length) if accountable_catches_team else None
+        # Best catch — always the longest, regardless of min length
+        best_catch = max(catches, key=lambda c: c.length) if catches else None
 
         # Update member catch counts
         members_with_counts = []
@@ -772,9 +754,10 @@ async def _get_team_leaderboard(
             member_copy["catches_count"] = user_catch_counts.get(member["user_id"], 0)
             members_with_counts.append(member_copy)
 
-        # Calculate average catch length (for tiebreaker)
-        total_length = sum(c.length for c in catches)
-        average_catch = round(total_length / len(catches), 2) if catches else 0.0
+        # Average catch length — based on scored catches only
+        scored_catches = score_data["scored_catches"]
+        scored_total_length = sum(c.length for c in scored_catches)
+        average_catch = round(scored_total_length / len(scored_catches), 2) if scored_catches else 0.0
 
         # First catch time (earliest wins in tiebreaker)
         first_catch_time = min(
@@ -896,9 +879,9 @@ async def _get_team_leaderboard(
                 "has_followed_member": has_followed_member,
             })
 
-    # Sort with 6-level tiebreaker chain (matching old system)
+    # Sort with 6-level tiebreaker chain
     # 1. Total points (highest), 2. Counted catches (highest), 3. Species count (highest)
-    # 4. Best catch (highest), 5. Average catch (highest), 6. First catch time (earliest)
+    # 4. Best catch (highest), 5. Average scored catch (highest), 6. First catch time (earliest)
     team_scores.sort(key=lambda x: (
         -x["total_points"],
         -x["counted_catches"],
