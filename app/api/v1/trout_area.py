@@ -4776,98 +4776,292 @@ async def get_event_statistics(
 
 
 @router.get("/events/{event_id}/standings/export")
-async def export_standings_csv(
+async def export_standings_excel(
     event_id: int,
     request: Request,
     current_user: UserAccount = Depends(EventOwnerOrAdmin()),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Export TA standings to CSV.
+    Export TA standings to multi-sheet Excel (.xlsx).
 
-    Includes:
-    - QUALIFIER PHASE: Rankings from qualifier legs
-    - FINAL RANKING: Overall standings with points, catches, wins/ties/losses
+    Sheet 1 — Qualifier Standings: rankings from qualifier matches only.
+    Sheet 2 — TA Standings (if knockout enabled): knockout match details per
+              phase + final rankings.
     """
     from fastapi.responses import StreamingResponse
-    from io import StringIO
-    import csv
+    from openpyxl import Workbook
+    from openpyxl.styles import PatternFill, Font, Alignment
+    from io import BytesIO
     from app.services.ta_ranking import TARankingService
+    from app.models.trout_area import (
+        TAMatch, TAKnockoutBracket, TATournamentPhase,
+    )
 
     event = await get_ta_event(event_id, db, request, require_settings=False)
     event_name_safe = sanitize_filename(event.name) if event.name else f"Event_{event_id}"
     start_date_str = event.start_date.strftime("%d%m%Y") if event.start_date else "nodate"
+    settings = event.ta_settings
 
-    # Get rankings
     ranking_service = TARankingService(db)
-    rankings = await ranking_service.compute_leg_ranking(event_id)
 
-    # Create CSV content
-    output = StringIO()
-    writer = csv.writer(output)
+    # ── helpers ──
+    wb = Workbook()
+    header_font = Font(bold=True, size=12)
+    bold_font = Font(bold=True)
+    title_font = Font(bold=True, size=14)
+    header_fill = PatternFill(fill_type="solid", start_color="D9E1F2", end_color="D9E1F2")
 
-    # === SECTION: Event Info ===
-    writer.writerow(["TA Competition Results"])
-    writer.writerow(["Event:", event.name or f"Event {event_id}"])
-    writer.writerow(["Export Date:", datetime.now().strftime("%Y-%m-%d %H:%M")])
-    writer.writerow([])
+    def auto_width(ws):
+        for col in ws.columns:
+            max_len = 0
+            col_letter = col[0].column_letter
+            for cell in col:
+                if cell.value is not None:
+                    max_len = max(max_len, len(str(cell.value)))
+            ws.column_dimensions[col_letter].width = min(max_len + 3, 40)
 
-    # === SECTION: Qualifier Phase Rankings ===
-    writer.writerow(["=== QUALIFIER PHASE RANKINGS ==="])
-    writer.writerow([])
+    # ===================== SHEET 1: Qualifier Standings =====================
+    ws_qual = wb.active
+    ws_qual.title = "Qualifier Standings"
 
-    # Header
-    writer.writerow([
-        "Rank", "Name",
-        "Points", "Catches", "Victories", "Ties", "Losses",
-        "Matches Played", "Win Rate %"
-    ])
+    # Event info header rows
+    ws_qual.cell(row=1, column=1, value="TA Competition Results").font = title_font
+    ws_qual.cell(row=2, column=1, value="Event:").font = bold_font
+    ws_qual.cell(row=2, column=2, value=event.name or f"Event {event_id}")
+    if event.start_date:
+        ws_qual.cell(row=3, column=1, value="Date:").font = bold_font
+        ws_qual.cell(row=3, column=2, value=event.start_date.strftime("%d/%m/%Y"))
+    ws_qual.cell(row=4, column=1, value="Export Date:").font = bold_font
+    ws_qual.cell(row=4, column=2, value=datetime.now().strftime("%Y-%m-%d %H:%M"))
 
-    # Data rows
-    for idx, ranking in enumerate(rankings, 1):
+    # Qualifier rankings (phase="qualifier" to isolate qualifier matches)
+    qualifier_rankings = await ranking_service.compute_leg_ranking(
+        event_id, phase="qualifier"
+    )
+
+    qual_headers = [
+        "Rank", "Name", "Points", "Catches", "Victories",
+        "Ties", "Losses", "Matches Played", "Win Rate %",
+    ]
+    row = 6
+    for col_idx, h in enumerate(qual_headers, 1):
+        cell = ws_qual.cell(row=row, column=col_idx, value=h)
+        cell.font = bold_font
+        cell.fill = header_fill
+
+    for idx, ranking in enumerate(qualifier_rankings, 1):
+        row += 1
         ties = ranking.get("ties_with_fish", 0) + ranking.get("ties_without_fish", 0)
         losses = ranking.get("losses_with_fish", 0) + ranking.get("losses_without_fish", 0)
         victories = ranking.get("victories", 0)
         matches_played = ranking.get("matches_played", 0)
         win_rate = (victories / matches_played * 100) if matches_played > 0 else 0
 
-        writer.writerow([
+        values = [
             ranking.get("rank", idx),
             ranking.get("user_name", f"User {ranking.get('user_id', '')}"),
-            ranking.get("points", 0),
+            float(ranking.get("points", 0)),
             ranking.get("captures", 0),
             victories,
             ties,
             losses,
             matches_played,
-            f"{win_rate:.1f}",
-        ])
+            round(win_rate, 1),
+        ]
+        for col_idx, val in enumerate(values, 1):
+            ws_qual.cell(row=row, column=col_idx, value=val)
 
-    writer.writerow([])
+    auto_width(ws_qual)
 
-    # === SECTION: Final Ranking (same as qualifier for now) ===
-    writer.writerow(["=== FINAL RANKING ==="])
-    writer.writerow([])
-    writer.writerow([
-        "Position", "Name", "Total Points", "Total Catches"
-    ])
+    # ===================== SHEET 2: TA Standings (knockout) =====================
+    has_knockout = settings and settings.has_knockout_stage
+    if has_knockout:
+        ws_ko = wb.create_sheet(title="TA Standings")
 
-    for idx, ranking in enumerate(rankings, 1):
-        writer.writerow([
-            ranking.get("rank", idx),
-            ranking.get("user_name", f"User {ranking.get('user_id', '')}"),
-            ranking.get("points", 0),
-            ranking.get("captures", 0),
-        ])
+        # Fetch all knockout matches
+        knockout_phases = [
+            TATournamentPhase.REQUALIFICATION.value,
+            TATournamentPhase.SEMIFINAL.value,
+            TATournamentPhase.FINAL_GRAND.value,
+            TATournamentPhase.FINAL_SMALL.value,
+        ]
+        ko_query = (
+            select(TAMatch)
+            .where(
+                TAMatch.event_id == event_id,
+                TAMatch.phase.in_(knockout_phases),
+            )
+            .order_by(TAMatch.phase, TAMatch.leg_number, TAMatch.match_number)
+        )
+        ko_result = await db.execute(ko_query)
+        ko_matches = ko_result.scalars().all()
 
-    # Return CSV file
+        # Bulk-fetch competitor profiles
+        competitor_ids = set()
+        for m in ko_matches:
+            if m.competitor_a_id:
+                competitor_ids.add(m.competitor_a_id)
+            if m.competitor_b_id:
+                competitor_ids.add(m.competitor_b_id)
+
+        if competitor_ids:
+            profiles_result = await db.execute(
+                select(UserProfile).where(UserProfile.user_id.in_(competitor_ids))
+            )
+            profiles = {p.user_id: p for p in profiles_result.scalars().all()}
+        else:
+            profiles = {}
+
+        def get_display_name(user_id):
+            if not user_id:
+                return "TBD"
+            p = profiles.get(user_id)
+            if p:
+                return f"{p.first_name} {p.last_name}".strip()
+            return f"User {user_id}"
+
+        # Group matches by phase
+        from collections import defaultdict
+        matches_by_phase = defaultdict(list)
+        for m in ko_matches:
+            matches_by_phase[m.phase].append(m)
+
+        phase_labels = {
+            TATournamentPhase.REQUALIFICATION.value: "REQUALIFICATION",
+            TATournamentPhase.SEMIFINAL.value: "SEMIFINALS",
+            TATournamentPhase.FINAL_GRAND.value: "GRAND FINAL (Finala Mare)",
+            TATournamentPhase.FINAL_SMALL.value: "SMALL FINAL (Finala Mica)",
+        }
+
+        # Phase order for display
+        phase_order = [
+            TATournamentPhase.REQUALIFICATION.value,
+            TATournamentPhase.SEMIFINAL.value,
+            TATournamentPhase.FINAL_GRAND.value,
+            TATournamentPhase.FINAL_SMALL.value,
+        ]
+
+        row = 1
+        match_headers = [
+            "Match #", "Competitor A", "Catches A",
+            "Competitor B", "Catches B", "Winner",
+        ]
+
+        for phase_val in phase_order:
+            phase_matches = matches_by_phase.get(phase_val, [])
+            if not phase_matches:
+                continue
+
+            # Phase title row
+            title_cell = ws_ko.cell(
+                row=row, column=1, value=phase_labels.get(phase_val, phase_val)
+            )
+            title_cell.font = header_font
+
+            row += 1
+            # Match table headers
+            for col_idx, h in enumerate(match_headers, 1):
+                cell = ws_ko.cell(row=row, column=col_idx, value=h)
+                cell.font = bold_font
+                cell.fill = header_fill
+
+            for match in phase_matches:
+                row += 1
+                # Determine winner
+                winner_name = ""
+                if match.competitor_a_outcome_code == "V":
+                    winner_name = get_display_name(match.competitor_a_id)
+                elif match.competitor_b_outcome_code == "V":
+                    winner_name = get_display_name(match.competitor_b_id)
+
+                values = [
+                    match.match_number or "",
+                    get_display_name(match.competitor_a_id),
+                    match.competitor_a_catches if match.competitor_a_catches is not None else "",
+                    get_display_name(match.competitor_b_id),
+                    match.competitor_b_catches if match.competitor_b_catches is not None else "",
+                    winner_name,
+                ]
+                for col_idx, val in enumerate(values, 1):
+                    ws_ko.cell(row=row, column=col_idx, value=val)
+
+            # Blank separator row
+            row += 2
+
+        # ── Final Rankings section ──
+        title_cell = ws_ko.cell(row=row, column=1, value="FINAL RANKINGS")
+        title_cell.font = header_font
+        row += 1
+
+        final_headers = ["Position", "Name", "Points", "Catches"]
+        for col_idx, h in enumerate(final_headers, 1):
+            cell = ws_ko.cell(row=row, column=col_idx, value=h)
+            cell.font = bold_font
+            cell.fill = header_fill
+
+        # Check if bracket is completed for final standings
+        bracket_query = select(TAKnockoutBracket).where(
+            TAKnockoutBracket.event_id == event_id,
+            TAKnockoutBracket.is_completed == True,
+        )
+        bracket_result = await db.execute(bracket_query)
+        bracket = bracket_result.scalar_one_or_none()
+
+        if bracket and bracket.final_standings:
+            # Positions 1-4 from bracket final_standings, then 5+ from qualifier order
+            final_standings = bracket.final_standings  # {"1": user_id, ...}
+
+            # Build combined ranking with qualifier data for points/catches
+            all_rankings = await ranking_service.compute_leg_ranking(event_id)
+            ranking_by_user = {r["user_id"]: r for r in all_rankings}
+
+            used_ids = set()
+            position = 1
+            # First: knockout positions (1-4)
+            for pos_str in sorted(final_standings.keys(), key=int):
+                uid = final_standings[pos_str]
+                used_ids.add(uid)
+                r = ranking_by_user.get(uid, {})
+                row += 1
+                ws_ko.cell(row=row, column=1, value=position)
+                ws_ko.cell(row=row, column=2, value=get_display_name(uid))
+                ws_ko.cell(row=row, column=3, value=float(r.get("points", 0)))
+                ws_ko.cell(row=row, column=4, value=r.get("captures", 0))
+                position += 1
+
+            # Then: remaining competitors in qualifier rank order
+            for r in all_rankings:
+                if r["user_id"] not in used_ids:
+                    row += 1
+                    ws_ko.cell(row=row, column=1, value=position)
+                    ws_ko.cell(row=row, column=2, value=r.get("user_name", f"User {r['user_id']}"))
+                    ws_ko.cell(row=row, column=3, value=float(r.get("points", 0)))
+                    ws_ko.cell(row=row, column=4, value=r.get("captures", 0))
+                    position += 1
+        else:
+            # Bracket not completed — show combined ranking (all matches)
+            all_rankings = await ranking_service.compute_leg_ranking(event_id)
+            for idx, r in enumerate(all_rankings, 1):
+                row += 1
+                ws_ko.cell(row=row, column=1, value=r.get("rank", idx))
+                ws_ko.cell(row=row, column=2, value=r.get("user_name", f"User {r['user_id']}"))
+                ws_ko.cell(row=row, column=3, value=float(r.get("points", 0)))
+                ws_ko.cell(row=row, column=4, value=r.get("captures", 0))
+
+        auto_width(ws_ko)
+
+    # Save and return
+    output = BytesIO()
+    wb.save(output)
     output.seek(0)
-    filename = f"{event_name_safe}_{start_date_str}_TA_Standings.csv"
+
+    filename = f"{event_name_safe}_{start_date_str}_TA_Standings.xlsx"
 
     return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 
