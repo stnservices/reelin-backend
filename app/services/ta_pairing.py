@@ -429,7 +429,7 @@ class TAPairingService:
 
             # Pair position i with position N-1-i (Berger opposite-pairing)
             num_pairs = n // 2
-            anchor_sector = leg % num_pairs  # sector the anchor pair occupies this leg
+            anchor_sector = (leg * 3) % num_pairs  # step=3 minimises max seat repeat (4x vs 16x with step=1)
             for pair_idx in range(num_pairs):
                 p_a = arrangement[pair_idx]
                 p_b = arrangement[n - 1 - pair_idx]
