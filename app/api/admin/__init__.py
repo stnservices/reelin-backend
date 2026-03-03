@@ -12,6 +12,7 @@ from app.api.admin.pro import router as pro_router
 from app.api.admin.ml_models import router as ml_models_router
 from app.api.admin.ml_predictions import router as ml_predictions_router
 from app.api.admin.audit import router as audit_router
+from app.api.admin.events import router as events_router
 
 router = APIRouter(tags=["Admin"])
 
@@ -25,3 +26,4 @@ router.include_router(pro_router, prefix="/pro")
 router.include_router(ml_models_router, prefix="/ml")
 router.include_router(ml_predictions_router, prefix="/ml/predictions")
 router.include_router(audit_router, prefix="/audit")
+router.include_router(events_router, prefix="/events")
