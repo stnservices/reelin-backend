@@ -31,7 +31,7 @@ import json
 
 class PairingAlgorithm(str, Enum):
     """Available pairing algorithms for TA events."""
-    ROUND_ROBIN_FULL = "round_robin_full"      # N legs - extended, MORE matches
+    ROUND_ROBIN_FULL = "round_robin_full"      # N-1 legs — true round-robin, every participant faces every other exactly once
     ROUND_ROBIN_HALF = "round_robin_half"      # N/2 legs - standard TA format
     ROUND_ROBIN_CUSTOM = "round_robin_custom"  # User-specified number of legs
     SIMPLE_PAIRS = "simple_pairs"              # Single leg pairing
@@ -219,28 +219,29 @@ class TAPairingService:
         real_n = len(participants)
 
         # Calculate number of legs based on algorithm
-        # FULL = N legs (extended, more matches - rotation continues/repeats)
+        # FULL = N-1 legs — true round-robin (Berger table)
         # HALF = N/2 legs (standard TA format)
         # CUSTOM = user-specified (up to N legs)
 
         if algorithm == PairingAlgorithm.ROUND_ROBIN_FULL:
-            # Extended: N legs (double the standard, rotation continues)
-            num_rounds = n
+            # True round-robin: N-1 legs, every participant faces every other exactly once
+            num_rounds = n - 1
+            rounds = self._generate_berger_round_robin(num_rounds)
         elif algorithm == PairingAlgorithm.ROUND_ROBIN_HALF:
             # Standard TA: N/2 legs
             num_rounds = n // 2
+            rounds = self._generate_round_robin(num_rounds)
         elif algorithm == PairingAlgorithm.ROUND_ROBIN_CUSTOM:
             if custom_rounds is None:
                 raise ValueError("custom_rounds required for ROUND_ROBIN_CUSTOM")
             # Allow up to N legs for custom
             num_rounds = min(custom_rounds, n)
+            rounds = self._generate_round_robin(num_rounds)
         elif algorithm == PairingAlgorithm.SIMPLE_PAIRS:
             num_rounds = 1
+            rounds = self._generate_round_robin(num_rounds)
         else:
             raise ValueError(f"Unknown algorithm: {algorithm}")
-
-        # Generate matches using circle method
-        rounds = self._generate_round_robin(num_rounds)
 
         # Build participant schedules
         participant_schedule = self._build_participant_schedule(rounds)
@@ -394,6 +395,70 @@ class TAPairingService:
 
         return rounds
 
+    def _generate_berger_round_robin(self, num_rounds: int) -> list[list[Match]]:
+        """
+        Generate true round-robin pairings using the Berger table algorithm.
+
+        Used exclusively by ROUND_ROBIN_FULL to give every participant exactly
+        N-1 legs, each against a unique opponent.
+
+        Algorithm:
+        - Fix ghost (or last participant) as anchor at virtual position 0
+        - Rotate remaining N-1 participants counterclockwise by one step each leg
+        - Pair position i with position N-1-i across the circle
+        - Assign pairs to adjacent seat pairs (1,2), (3,4), etc. in order
+        """
+        n = len(self.participants)  # always even (ghost added if needed)
+        rounds = []
+
+        # Anchor: ghost if present, otherwise last participant
+        if self.ghost:
+            anchor = self.ghost
+            rotating = [p for p in self.participants if not p.is_ghost]
+        else:
+            anchor = self.participants[-1]
+            rotating = self.participants[:-1]
+
+        for leg in range(num_rounds):
+            round_matches = []
+            match_num = 1
+
+            # Build arrangement: anchor at pos 0, remaining rotated left by `leg`
+            rotated = rotating[leg:] + rotating[:leg]
+            arrangement = [anchor] + rotated  # positions 0 .. N-1
+
+            # Pair position i with position N-1-i (Berger opposite-pairing)
+            for pair_idx in range(n // 2):
+                p_a = arrangement[pair_idx]
+                p_b = arrangement[n - 1 - pair_idx]
+
+                seat_a = pair_idx * 2 + 1
+                seat_b = pair_idx * 2 + 2
+
+                is_ghost = p_a.is_ghost or p_b.is_ghost
+                ghost_side = None
+                if p_a.is_ghost:
+                    ghost_side = 'A'
+                elif p_b.is_ghost:
+                    ghost_side = 'B'
+
+                match = Match(
+                    round_number=leg + 1,
+                    match_number=match_num,
+                    seat_a=seat_a,
+                    seat_b=seat_b,
+                    participant_a=p_a,
+                    participant_b=p_b,
+                    is_ghost_match=is_ghost,
+                    ghost_side=ghost_side,
+                )
+                round_matches.append(match)
+                match_num += 1
+
+            rounds.append(round_matches)
+
+        return rounds
+
     def _build_participant_schedule(self, rounds: list[list[Match]]) -> dict:
         """Build schedule showing each participant's opponents."""
         schedule = {p.name: [] for p in self.participants}
@@ -426,11 +491,11 @@ class TAPairingService:
         """Get information about available algorithms."""
         return {
             PairingAlgorithm.ROUND_ROBIN_FULL: {
-                "name": "Extended TA (Full)",
-                "description": "Extended TA format - N legs for MORE matches (rotation continues)",
-                "formula": "N legs for N participants",
-                "use_case": "Longer events, organizers want more matches per participant",
-                "duration_example": "20 participants = 20 legs × 15min = ~5 hours",
+                "name": "Full Round-Robin",
+                "description": "Full round-robin — everyone plays everyone exactly once (N-1 legs)",
+                "formula": "N-1 legs for N participants",
+                "use_case": "Complete round-robin, every participant faces every other exactly once",
+                "duration_example": "20 participants = 19 legs × 15min = ~4.75 hours",
             },
             PairingAlgorithm.ROUND_ROBIN_HALF: {
                 "name": "Standard TA",
@@ -468,8 +533,8 @@ class TAPairingService:
         n = num_participants if num_participants % 2 == 0 else num_participants + 1
 
         if algorithm == PairingAlgorithm.ROUND_ROBIN_FULL:
-            # Extended: N legs (more matches)
-            num_legs = n
+            # N-1 legs — true round-robin
+            num_legs = n - 1
         elif algorithm == PairingAlgorithm.ROUND_ROBIN_HALF:
             # Standard TA: N/2 legs
             num_legs = n // 2

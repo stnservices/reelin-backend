@@ -1877,7 +1877,7 @@ async def generate_lineups(
     3. Game cards for each match
 
     Supports:
-    - round_robin_full: Everyone plays everyone (N-1 rounds)
+    - round_robin_full: Full round-robin — everyone plays everyone exactly once (N-1 legs)
     - round_robin_half: Everyone plays half the field (N/2 rounds)
     - round_robin_custom: Specify exact number of rounds
     - simple_pairs: Single round n/2 pairing
@@ -1997,16 +1997,13 @@ async def generate_lineups(
     if settings:
         settings.number_of_legs = total_legs
 
-    # Build participant lookup by name for later use
-    # The pairing service assigns IDs 1-N to participants
+    # Build participant lookup — primary key: user_id (unique), secondary: name
     participant_lookup = {}
     for i, p in enumerate(participants):
         p["draw_number"] = i + 1
         p["is_ghost"] = False
-        participant_lookup[f"P{i + 1}"] = p
-        # Use the name from pairing service's participant list
-        if i < len(pairing_service.participants):
-            participant_lookup[pairing_service.participants[i].name] = p
+        participant_lookup[p["user_id"]] = p      # primary: user_id (unique)
+        participant_lookup[p["name"]] = p         # secondary: name (kept for ghost lookup)
 
     # Add ghost to lookup if present
     if has_ghost:
@@ -2042,11 +2039,9 @@ async def generate_lineups(
 
         # Process each match in this round
         for match in round_matches:
-            # Get participant info from lookup
-            p_a_name = match.participant_a.name
-            p_b_name = match.participant_b.name
-            p_a = participant_lookup.get(p_a_name) or participant_lookup.get(repr(match.participant_a))
-            p_b = participant_lookup.get(p_b_name) or participant_lookup.get(repr(match.participant_b))
+            # Resolve by participant.id (1-indexed = draw_number) — avoids name collisions
+            p_a = participant_lookup.get("GHOST") if match.participant_a.is_ghost else participants[match.participant_a.id - 1]
+            p_b = participant_lookup.get("GHOST") if match.participant_b.is_ghost else participants[match.participant_b.id - 1]
 
             if p_a:
                 seat_assignments[p_a.get("draw_number", match.seat_a)] = match.seat_a
@@ -2087,11 +2082,9 @@ async def generate_lineups(
         for match_idx, pairing_match in enumerate(round_matches):
             match_num = match_idx + 1
 
-            # Get participant info from pairing result
-            p_a_name = pairing_match.participant_a.name
-            p_b_name = pairing_match.participant_b.name
-            p_a = participant_lookup.get(p_a_name) or participant_lookup.get(repr(pairing_match.participant_a))
-            p_b = participant_lookup.get(p_b_name) or participant_lookup.get(repr(pairing_match.participant_b))
+            # Resolve by participant.id (1-indexed = draw_number) — avoids name collisions
+            p_a = participant_lookup.get("GHOST") if pairing_match.participant_a.is_ghost else participants[pairing_match.participant_a.id - 1]
+            p_b = participant_lookup.get("GHOST") if pairing_match.participant_b.is_ghost else participants[pairing_match.participant_b.id - 1]
 
             # Handle case where participant not found (shouldn't happen)
             if p_a is None:
