@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.core.permissions import AdminOnly
+from app.models.enrollment import EventEnrollment
 from app.models.event import Event, EventFishScoring, EventSpeciesBonusPoints, EventPrize, EventScoringRule
 from app.models.trout_area import TAEventSettings, TAEventPointConfig
 from app.models.user import UserAccount
@@ -32,6 +33,7 @@ class EventCloneRequest(BaseModel):
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
     registration_deadline: Optional[datetime] = None
+    include_enrollments: bool = False
 
 
 class EventCloneResponse(BaseModel):
@@ -247,6 +249,24 @@ async def clone_event(
             bonus_points=rule.bonus_points,
             points_formula=rule.points_formula,
         ))
+
+    if data.include_enrollments:
+        enr_res = await db.execute(
+            select(EventEnrollment).where(
+                EventEnrollment.event_id == event_id,
+                EventEnrollment.status == "approved",
+            )
+        )
+        for enr in enr_res.scalars().all():
+            db.add(EventEnrollment(
+                event_id=new_event.id,
+                user_id=enr.user_id,
+                status="approved",
+                draw_number=None,
+                enrollment_number=None,
+                enrolled_at=now,
+                updated_at=now,
+            ))
 
     await db.commit()
     await db.refresh(new_event)
