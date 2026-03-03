@@ -428,12 +428,15 @@ class TAPairingService:
             arrangement = [anchor] + rotated  # positions 0 .. N-1
 
             # Pair position i with position N-1-i (Berger opposite-pairing)
-            for pair_idx in range(n // 2):
+            num_pairs = n // 2
+            for pair_idx in range(num_pairs):
                 p_a = arrangement[pair_idx]
                 p_b = arrangement[n - 1 - pair_idx]
 
-                seat_a = pair_idx * 2 + 1
-                seat_b = pair_idx * 2 + 2
+                # Rotate sectors each leg so no participant is stuck at the same seat
+                rotated_sector = (pair_idx + leg) % num_pairs
+                seat_a = rotated_sector * 2 + 1
+                seat_b = rotated_sector * 2 + 2
 
                 is_ghost = p_a.is_ghost or p_b.is_ghost
                 ghost_side = None
