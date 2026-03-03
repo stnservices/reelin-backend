@@ -372,6 +372,8 @@ class MLService:
         if model is None:
             return None
 
+        start_time = time.time()
+
         try:
             # Predict for each hour of the day
             results = []
@@ -396,6 +398,17 @@ class MLService:
 
             # Sort by probability descending
             results.sort(key=lambda x: x["probability"], reverse=True)
+
+            if model_id:
+                await self._log_prediction(
+                    model_id=model_id,
+                    user_id=user_id,
+                    entity_type="prediction",
+                    entity_id=0,
+                    score=results[0]["probability"] if results else 0,
+                    elapsed_ms=(time.time() - start_time) * 1000,
+                )
+
             return results
 
         except Exception as e:
@@ -416,6 +429,8 @@ class MLService:
 
         if model is None:
             return None
+
+        start_time = time.time()
 
         try:
             # Load label encoder
@@ -459,7 +474,19 @@ class MLService:
 
             # Sort and take top-k
             results.sort(key=lambda x: x["probability"], reverse=True)
-            return results[:top_k]
+            top_results = results[:top_k]
+
+            if model_id:
+                await self._log_prediction(
+                    model_id=model_id,
+                    user_id=user_id,
+                    entity_type="prediction",
+                    entity_id=0,
+                    score=top_results[0]["probability"] if top_results else 0,
+                    elapsed_ms=(time.time() - start_time) * 1000,
+                )
+
+            return top_results
 
         except Exception as e:
             logger.error(f"Species prediction error: {e}")
@@ -474,6 +501,7 @@ class MLService:
         Returns predicted attendance count.
         """
         model, scaler, feature_names, model_id = await self.load_active_model("analytics_predictions")
+        start_time = time.time()
 
         # For analytics, we need to load the specific attendance model
         if model is None:
@@ -505,10 +533,22 @@ class MLService:
 
             predicted = model.predict(X)[0]
 
-            return {
+            result = {
                 "predicted_attendance": max(0, int(round(predicted))),
                 "confidence": "medium",  # Could be calculated from model
             }
+
+            if model_id:
+                await self._log_prediction(
+                    model_id=model_id,
+                    user_id=0,
+                    entity_type="event_attendance",
+                    entity_id=0,
+                    score=float(predicted),
+                    elapsed_ms=(time.time() - start_time) * 1000,
+                )
+
+            return result
 
         except Exception as e:
             logger.error(f"Attendance prediction error: {e}")
@@ -522,21 +562,29 @@ class MLService:
         Predict user's likely finish bracket in an event.
         Returns predicted bracket (Winner/Podium/Top10/Other).
         """
-        import os
-        performance_path = "models/analytics_predictions/performance_model.joblib"
-        scaler_path = "models/analytics_predictions/performance_scaler.joblib"
-        features_path = "models/analytics_predictions/performance_features.txt"
+        model, scaler, feature_names, model_id = await self.load_active_model("analytics_performance")
+        start_time = time.time()
 
-        if not os.path.exists(performance_path):
-            return None
+        if model is None:
+            # Fallback to disk
+            import os
+            performance_path = "models/analytics_predictions/performance_model.joblib"
+            scaler_path = "models/analytics_predictions/performance_scaler.joblib"
+            features_path = "models/analytics_predictions/performance_features.txt"
+
+            if not os.path.exists(performance_path):
+                return None
+
+            try:
+                model = joblib.load(performance_path)
+                scaler = joblib.load(scaler_path) if os.path.exists(scaler_path) else None
+                with open(features_path) as f:
+                    feature_names = [line.strip() for line in f if line.strip()]
+            except Exception as e:
+                logger.error(f"Failed to load performance model: {e}")
+                return None
 
         try:
-            import joblib
-            model = joblib.load(performance_path)
-            scaler = joblib.load(scaler_path) if os.path.exists(scaler_path) else None
-            with open(features_path) as f:
-                feature_names = [line.strip() for line in f if line.strip()]
-
             feature_vector = [user_features.get(fname, 0) for fname in feature_names]
             X = np.array([feature_vector])
 
@@ -550,7 +598,7 @@ class MLService:
             brackets = ["winner", "podium", "top_10", "other"]
             bracket = brackets[predicted_class] if predicted_class < len(brackets) else "other"
 
-            return {
+            result = {
                 "predicted_bracket": bracket,
                 "confidence": float(max(probas)),
                 "probabilities": {
@@ -560,6 +608,18 @@ class MLService:
                     "other": float(probas[3]) if len(probas) > 3 else 0,
                 },
             }
+
+            if model_id:
+                await self._log_prediction(
+                    model_id=model_id,
+                    user_id=0,
+                    entity_type="performance",
+                    entity_id=0,
+                    score=float(max(probas)),
+                    elapsed_ms=(time.time() - start_time) * 1000,
+                )
+
+            return result
 
         except Exception as e:
             logger.error(f"Performance prediction error: {e}")
