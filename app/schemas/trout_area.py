@@ -52,6 +52,7 @@ class PairingAlgorithmAPI(str, Enum):
     ROUND_ROBIN_HALF = "round_robin_half"
     ROUND_ROBIN_CUSTOM = "round_robin_custom"
     SIMPLE_PAIRS = "simple_pairs"
+    TEAM_ROUND_ROBIN = "team_round_robin"
 
 
 # =============================================================================

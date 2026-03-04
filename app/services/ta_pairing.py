@@ -27,6 +27,7 @@ from enum import Enum
 from typing import Optional
 import math
 import json
+from fastapi import HTTPException
 
 
 class PairingAlgorithm(str, Enum):
@@ -35,6 +36,7 @@ class PairingAlgorithm(str, Enum):
     ROUND_ROBIN_HALF = "round_robin_half"      # N/2 legs - standard TA format
     ROUND_ROBIN_CUSTOM = "round_robin_custom"  # User-specified number of legs
     SIMPLE_PAIRS = "simple_pairs"              # Single leg pairing
+    TEAM_ROUND_ROBIN = "team_round_robin"      # Under construction
 
 
 @dataclass
@@ -240,6 +242,8 @@ class TAPairingService:
         elif algorithm == PairingAlgorithm.SIMPLE_PAIRS:
             num_rounds = 1
             rounds = self._generate_round_robin(num_rounds)
+        elif algorithm == PairingAlgorithm.TEAM_ROUND_ROBIN:
+            raise HTTPException(status_code=400, detail="Team Round Robin pairing is not yet available.")
         else:
             raise ValueError(f"Unknown algorithm: {algorithm}")
 
@@ -520,6 +524,12 @@ class TAPairingService:
                 "formula": "1 leg only",
                 "use_case": "Very quick events, single round",
                 "duration_example": "20 participants = 1 leg × 15min = 15min",
+            },
+            PairingAlgorithm.TEAM_ROUND_ROBIN: {
+                "name": "Team Round Robin",
+                "description": "Pairs teams as units — each team occupies consecutive seats and rotates as a block each leg.",
+                "min_participants": 4,
+                "under_construction": True,
             },
         }
 

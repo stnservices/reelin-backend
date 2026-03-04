@@ -594,6 +594,7 @@ def map_pairing_algorithm(api_algo: PairingAlgorithmAPI) -> PairingAlgorithm:
         PairingAlgorithmAPI.ROUND_ROBIN_HALF: PairingAlgorithm.ROUND_ROBIN_HALF,
         PairingAlgorithmAPI.ROUND_ROBIN_CUSTOM: PairingAlgorithm.ROUND_ROBIN_CUSTOM,
         PairingAlgorithmAPI.SIMPLE_PAIRS: PairingAlgorithm.SIMPLE_PAIRS,
+        PairingAlgorithmAPI.TEAM_ROUND_ROBIN: PairingAlgorithm.TEAM_ROUND_ROBIN,
     }
     return mapping[api_algo]
 
