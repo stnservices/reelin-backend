@@ -428,22 +428,14 @@ class TAPairingService:
             arrangement = [anchor] + rotated  # positions 0 .. N-1
 
             # Pair position i with position N-1-i (Berger opposite-pairing)
-            num_pairs = n // 2
-            anchor_sector = (leg * 3) % num_pairs  # step=3 minimises max seat repeat (4x vs 16x with step=1)
-            for pair_idx in range(num_pairs):
+            for pair_idx in range(n // 2):
                 p_a = arrangement[pair_idx]
                 p_b = arrangement[n - 1 - pair_idx]
 
-                # Swap anchor pair into a rotating sector; only the one displaced pair
-                # moves to sector 0 — all others keep their natural sector.
-                if pair_idx == 0:
-                    sector = anchor_sector
-                elif pair_idx == anchor_sector:
-                    sector = 0
-                else:
-                    sector = pair_idx
-                seat_a = sector * 2 + 1
-                seat_b = sector * 2 + 2
+                # Seat = draw_number + leg, wrapping through all n seats.
+                # Each angler advances by 1 peg per leg — smooth movement along the shore.
+                seat_a = (p_a.id - 1 + leg) % n + 1
+                seat_b = (p_b.id - 1 + leg) % n + 1
 
                 is_ghost = p_a.is_ghost or p_b.is_ghost
                 ghost_side = None
