@@ -432,9 +432,9 @@ class TAPairingService:
                 p_a = arrangement[pair_idx]
                 p_b = arrangement[n - 1 - pair_idx]
 
-                # Sector rotates +1 each leg so all pairs advance through the bank together.
+                # Sector rotates +3 each leg to prevent Berger rotation cancellation.
                 # seat_a and seat_b are always adjacent (2k+1 and 2k+2).
-                sector = (pair_idx + leg) % (n // 2)
+                sector = (pair_idx + 3 * leg) % (n // 2)
                 seat_a = sector * 2 + 1
                 seat_b = sector * 2 + 2
 
