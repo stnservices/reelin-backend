@@ -432,10 +432,11 @@ class TAPairingService:
                 p_a = arrangement[pair_idx]
                 p_b = arrangement[n - 1 - pair_idx]
 
-                # Seat = draw_number + leg, wrapping through all n seats.
-                # Each angler advances by 1 peg per leg — smooth movement along the shore.
-                seat_a = (p_a.id - 1 + leg) % n + 1
-                seat_b = (p_b.id - 1 + leg) % n + 1
+                # Sector rotates +1 each leg so all pairs advance through the bank together.
+                # seat_a and seat_b are always adjacent (2k+1 and 2k+2).
+                sector = (pair_idx + leg) % (n // 2)
+                seat_a = sector * 2 + 1
+                seat_b = sector * 2 + 2
 
                 is_ghost = p_a.is_ghost or p_b.is_ghost
                 ghost_side = None
