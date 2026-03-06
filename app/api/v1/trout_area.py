@@ -4408,8 +4408,21 @@ async def get_standings(
         items = non_dq_items + dq_items
     else:
         # For qualifier phase (or no phase), compute on-the-fly from matches
+        # If knockout bracket is completed, include all phases in stats (matches old behavior)
+        compute_phase = "qualifier"
+        if not phase and settings.has_knockout_stage:
+            from app.models.trout_area import TAKnockoutBracket as _KOBracket
+            _ko_result = await db.execute(
+                select(_KOBracket.id).where(
+                    _KOBracket.event_id == event_id,
+                    _KOBracket.is_completed == True,
+                )
+            )
+            if _ko_result.scalar_one_or_none() is not None:
+                compute_phase = None  # All phases — includes knockout match stats
+
         ranking_service = TARankingService(db)
-        rankings = await ranking_service.compute_leg_ranking(event_id, phase="qualifier")
+        rankings = await ranking_service.compute_leg_ranking(event_id, phase=compute_phase)
 
         # Story 12.6: Get DQ status for all users
         user_ids = [r["user_id"] for r in rankings]
