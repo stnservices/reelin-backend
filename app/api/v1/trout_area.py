@@ -4407,22 +4407,10 @@ async def get_standings(
         # Story 12.6: DQ users appear at bottom
         items = non_dq_items + dq_items
     else:
-        # For qualifier phase (or no phase), compute on-the-fly from matches
-        # If knockout bracket is completed, include all phases in stats (matches old behavior)
-        compute_phase = "qualifier"
-        if not phase and settings.has_knockout_stage:
-            from app.models.trout_area import TAKnockoutBracket as _KOBracket
-            _ko_result = await db.execute(
-                select(_KOBracket.id).where(
-                    _KOBracket.event_id == event_id,
-                    _KOBracket.is_completed == True,
-                )
-            )
-            if _ko_result.scalar_one_or_none() is not None:
-                compute_phase = None  # All phases — includes knockout match stats
-
+        # For qualifier phase (or no phase), compute on-the-fly from qualifier matches only
+        # Knockout results are shown separately in the bracket section
         ranking_service = TARankingService(db)
-        rankings = await ranking_service.compute_leg_ranking(event_id, phase=compute_phase)
+        rankings = await ranking_service.compute_leg_ranking(event_id, phase="qualifier")
 
         # Story 12.6: Get DQ status for all users
         user_ids = [r["user_id"] for r in rankings]
@@ -4482,46 +4470,8 @@ async def get_standings(
     else:
         available_phases = ["qualifier"]
 
-    # Check if knockout bracket is completed - apply final standings from knockout
-    # Only apply when no specific phase requested (default view after tournament ends)
-    # Stale brackets are prevented by cleanup in generate_lineups()
-    if settings.has_knockout_stage and not phase:
-        from app.models.trout_area import TAKnockoutBracket
-        bracket_query = select(TAKnockoutBracket).where(
-            TAKnockoutBracket.event_id == event_id,
-            TAKnockoutBracket.is_completed == True,
-        )
-        bracket_result = await db.execute(bracket_query)
-        bracket = bracket_result.scalar_one_or_none()
-
-        if bracket and bracket.final_standings:
-            # Reorder items based on knockout final_standings (positions 1-4)
-            final_standings = bracket.final_standings  # {"1": user_id, "2": user_id, ...}
-            user_id_to_item = {item.user_id: item for item in items}
-
-            reordered_items = []
-            used_user_ids = set()
-
-            # First, add knockout placements (1st through 4th)
-            for position in ["1", "2", "3", "4"]:
-                if position in final_standings:
-                    user_id = final_standings[position]
-                    if user_id in user_id_to_item:
-                        item = user_id_to_item[user_id]
-                        item.rank = int(position)  # Override rank with knockout placement
-                        reordered_items.append(item)
-                        used_user_ids.add(user_id)
-
-            # Then add remaining participants (5th onwards) in original order
-            remaining_rank = len(reordered_items) + 1
-            for item in items:
-                if item.user_id not in used_user_ids:
-                    if item.rank is not None:  # Not DQ
-                        item.rank = remaining_rank
-                        remaining_rank += 1
-                    reordered_items.append(item)
-
-            items = reordered_items
+    # Knockout results are shown in the bracket section — no overlay needed here
+    # Standings always reflect qualifier performance (who qualified for knockout)
 
     return {
         "items": items,
