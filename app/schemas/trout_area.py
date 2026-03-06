@@ -413,6 +413,16 @@ class TAMatchResponse(TAMatchBase):
     player_a_avatar: Optional[str] = None
     player_b_avatar: Optional[str] = None
 
+    # Game card summary (populated from game_cards relationship)
+    player_a_submitted: Optional[bool] = None
+    player_b_submitted: Optional[bool] = None
+    player_a_validated: Optional[bool] = None       # Was A's catches validated by B?
+    player_b_validated: Optional[bool] = None       # Was B's catches validated by A?
+    player_a_card_catches: Optional[int] = None     # A's self-reported catches (from game card)
+    player_b_card_catches: Optional[int] = None     # B's self-reported catches (from game card)
+    player_a_i_validated: Optional[bool] = None     # Did A validate B's catches?
+    player_b_i_validated: Optional[bool] = None     # Did B validate A's catches?
+
 
 class TAMatchDetailResponse(TAMatchResponse):
     """Detailed response schema for TA match with game cards."""

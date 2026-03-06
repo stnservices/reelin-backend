@@ -1341,6 +1341,27 @@ async def update_event_settings(
 
 
 # =============================================================================
+# Game Card Summary Helper
+# =============================================================================
+
+def _game_card_summary(match) -> dict:
+    """Extract game card submission/validation status for a match."""
+    result = {}
+    for card in (match.game_cards or []):
+        if card.user_id == match.competitor_a_id:
+            result['player_a_submitted'] = card.is_submitted
+            result['player_a_validated'] = card.is_validated
+            result['player_a_card_catches'] = card.my_catches
+            result['player_a_i_validated'] = card.i_validated_opponent
+        elif card.user_id == match.competitor_b_id:
+            result['player_b_submitted'] = card.is_submitted
+            result['player_b_validated'] = card.is_validated
+            result['player_b_card_catches'] = card.my_catches
+            result['player_b_i_validated'] = card.i_validated_opponent
+    return result
+
+
+# =============================================================================
 # Schedule Endpoints (for mobile app)
 # =============================================================================
 
@@ -1366,6 +1387,7 @@ async def get_event_schedule(
         .options(
             selectinload(TAMatch.competitor_a).selectinload(UserAccount.profile),
             selectinload(TAMatch.competitor_b).selectinload(UserAccount.profile),
+            selectinload(TAMatch.game_cards),
         )
         .where(TAMatch.event_id == event_id)
         .order_by(TAMatch.round_number, TAMatch.match_number)
@@ -1429,6 +1451,7 @@ async def get_event_schedule(
             player_b_name=match.competitor_b.profile.full_name if match.competitor_b and match.competitor_b.profile else None,
             player_a_avatar=match.competitor_a.effective_avatar_url if match.competitor_a else None,
             player_b_avatar=match.competitor_b.effective_avatar_url if match.competitor_b else None,
+            **_game_card_summary(match),
         )
         legs_dict[leg_key].append(match_data)
 
@@ -2245,6 +2268,7 @@ async def list_matches(
         .options(
             selectinload(TAMatch.competitor_a).selectinload(UserAccount.profile),
             selectinload(TAMatch.competitor_b).selectinload(UserAccount.profile),
+            selectinload(TAMatch.game_cards),
         )
         .where(TAMatch.event_id == event_id)
     )
@@ -2303,6 +2327,7 @@ async def list_matches(
             player_b_name=player_b_name,
             player_a_avatar=player_a_avatar,
             player_b_avatar=player_b_avatar,
+            **_game_card_summary(match),
         )
         items.append(item)
 
@@ -2741,6 +2766,13 @@ async def edit_match_results(
     await db.commit()
     await db.refresh(match)
 
+    # Load game cards for summary fields
+    gc_query = select(TAGameCard).where(TAGameCard.match_id == match_id)
+    gc_result = await db.execute(gc_query)
+    gc_cards = gc_result.scalars().all()
+    # Attach temporarily for _game_card_summary helper
+    match.game_cards = gc_cards
+
     # Build response with correct field mappings
     return {
         "id": match.id,
@@ -2762,6 +2794,7 @@ async def edit_match_results(
         "started_at": match.started_at,
         "completed_at": match.completed_at,
         "created_at": match.created_at,
+        **_game_card_summary(match),
     }
 
 
