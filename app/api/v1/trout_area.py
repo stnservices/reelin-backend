@@ -1936,6 +1936,10 @@ async def generate_lineups(
     await db.execute(
         TAQualifierStanding.__table__.delete().where(TAQualifierStanding.event_id == event_id)
     )
+    # Delete knockout bracket (stale from previous generation)
+    await db.execute(
+        TAKnockoutBracket.__table__.delete().where(TAKnockoutBracket.event_id == event_id)
+    )
     # Delete matches
     await db.execute(
         TAMatch.__table__.delete().where(TAMatch.event_id == event_id)
@@ -4466,7 +4470,9 @@ async def get_standings(
         available_phases = ["qualifier"]
 
     # Check if knockout bracket is completed - apply final standings from knockout
-    if settings.has_knockout_stage and not phase:
+    # Only apply when no specific phase requested (default view after tournament ends)
+    current_phase_val = settings.additional_rules.get("current_phase", "qualifier") if settings.additional_rules else "qualifier"
+    if settings.has_knockout_stage and not phase and current_phase_val != "qualifier":
         from app.models.trout_area import TAKnockoutBracket
         bracket_query = select(TAKnockoutBracket).where(
             TAKnockoutBracket.event_id == event_id,
