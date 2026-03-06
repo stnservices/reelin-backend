@@ -3530,12 +3530,12 @@ async def admin_update_game_card(
         # Handle BYE matches (ghost opponent) - complete immediately
         if card.is_ghost_opponent:
             # For BYE: user wins by default with their catches vs 0
-            if match.player_a_id == card.user_id:
-                match.player_a_catches = card.my_catches
-                match.player_b_catches = 0
+            if match.competitor_a_id == card.user_id:
+                match.competitor_a_catches = card.my_catches
+                match.competitor_b_catches = 0
             else:
-                match.player_b_catches = card.my_catches
-                match.player_a_catches = 0
+                match.competitor_b_catches = card.my_catches
+                match.competitor_a_catches = 0
             match.status = TAMatchStatus.COMPLETED.value
             match.completed_at = datetime.now(timezone.utc)
 
@@ -3562,8 +3562,8 @@ async def admin_update_game_card(
 
             if opp_card and opp_card.is_validated and opp_card.i_validated_opponent:
                 # Both cards validated, update match
-                match.player_a_catches = card.my_catches if match.player_a_id == card.user_id else opp_card.my_catches
-                match.player_b_catches = opp_card.my_catches if match.player_a_id == card.user_id else card.my_catches
+                match.competitor_a_catches = card.my_catches if match.competitor_a_id == card.user_id else opp_card.my_catches
+                match.competitor_b_catches = opp_card.my_catches if match.competitor_a_id == card.user_id else card.my_catches
                 match.status = TAMatchStatus.COMPLETED.value
                 match.completed_at = datetime.now(timezone.utc)
 
