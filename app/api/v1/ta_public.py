@@ -27,7 +27,6 @@ from app.models.trout_area import (
     TAEventSettings,
     TAMatch,
     TAGameCard,
-    TAQualifierStanding,
     TAKnockoutBracket,
     TATournamentPhase,
     TAMatchStatus,
@@ -301,55 +300,36 @@ async def get_public_standings(
     """
     await verify_public_event(db, event_id)
 
-    # Get standings from database (TAQualifierStanding is only for qualifier phase)
-    query = select(TAQualifierStanding).where(
-        TAQualifierStanding.event_id == event_id
-    ).order_by(TAQualifierStanding.rank)
-
-    result = await db.execute(query)
-    standings_rows = result.scalars().all()
+    # Compute standings on-the-fly from completed qualifier matches
+    from app.services.ta_ranking import TARankingService
+    ranking_service = TARankingService(db)
+    rankings = await ranking_service.compute_leg_ranking(event_id, phase="qualifier")
 
     # Get previous positions for change calculation
     previous_positions = await get_previous_standings(event_id)
 
-    # Bulk-fetch all user profiles in one query
-    user_ids = [s.user_id for s in standings_rows]
-    if user_ids:
-        profiles_result = await db.execute(
-            select(UserProfile).where(UserProfile.user_id.in_(user_ids))
-        )
-        profiles_by_user = {p.user_id: p for p in profiles_result.scalars().all()}
-    else:
-        profiles_by_user = {}
-
-    # Build response with user display names
+    # Build response — compute_leg_ranking already includes user_name/user_avatar
     standings_list = []
-    for standing in standings_rows:
-        profile = profiles_by_user.get(standing.user_id)
-
-        display_name = f"User {standing.user_id}"  # Fallback
-        avatar_url = None
-
-        if profile:
-            display_name = profile.full_name or f"User {standing.user_id}"
-            avatar_url = profile.profile_picture_url
+    for ranking in rankings:
+        rank = ranking.get("rank", 0)
+        user_id = ranking["user_id"]
 
         # Calculate position change
-        prev_rank = previous_positions.get(standing.user_id)
+        prev_rank = previous_positions.get(user_id)
         position_change = 0
         if prev_rank is not None:
-            position_change = prev_rank - standing.rank  # Positive = moved up
+            position_change = prev_rank - rank  # Positive = moved up
 
         standings_list.append({
-            "rank": standing.rank,
-            "user_id": standing.user_id,
-            "display_name": display_name,
-            "avatar_url": avatar_url,
-            "points": float(standing.total_points),
-            "total_catches": standing.total_fish_caught,
-            "victories": standing.total_victories,
-            "ties": (standing.ties_with_fish or 0) + (standing.ties_without_fish or 0),
-            "losses": (standing.losses_with_fish or 0) + (standing.losses_without_fish or 0),
+            "rank": rank,
+            "user_id": user_id,
+            "display_name": ranking.get("user_name") or f"User {user_id}",
+            "avatar_url": ranking.get("user_avatar"),
+            "points": float(ranking["points"]),
+            "total_catches": ranking["captures"],
+            "victories": ranking["victories"],
+            "ties": ranking["ties_with_fish"] + ranking["ties_without_fish"],
+            "losses": ranking["losses_with_fish"] + ranking["losses_without_fish"],
             "position_change": position_change,
         })
 
@@ -444,43 +424,29 @@ async def get_public_bracket(
             detail="No knockout bracket for this event"
         )
 
-    # Get top 6 from qualifier standings
-    qualifier_query = select(TAQualifierStanding).where(
-        TAQualifierStanding.event_id == event_id,
-        TAQualifierStanding.rank <= 6,
-    ).order_by(TAQualifierStanding.rank)
+    # Compute top 6 from qualifier standings on-the-fly
+    from app.services.ta_ranking import TARankingService
+    ranking_service = TARankingService(db)
+    rankings = await ranking_service.compute_leg_ranking(event_id, phase="qualifier")
+    top_6_rankings = [r for r in rankings if r.get("rank", 0) <= 6]
 
-    result = await db.execute(qualifier_query)
-    qualifier_standings = result.scalars().all()
-
-    # Bulk-fetch profiles for qualifier top 6
-    q_user_ids = [s.user_id for s in qualifier_standings]
-    if q_user_ids:
-        q_profiles_result = await db.execute(
-            select(UserProfile).where(UserProfile.user_id.in_(q_user_ids))
-        )
-        q_profiles_by_user = {p.user_id: p for p in q_profiles_result.scalars().all()}
-    else:
-        q_profiles_by_user = {}
-
-    # Build top 6 with display names
+    # Build top 6 with display names (compute_leg_ranking already includes user_name/user_avatar)
     qualifier_top_6 = []
-    for standing in qualifier_standings:
-        profile = q_profiles_by_user.get(standing.user_id)
-
-        display_name = profile.full_name if profile else f"User {standing.user_id}"
+    for ranking in top_6_rankings:
+        rank = ranking.get("rank", 0)
+        user_id = ranking["user_id"]
 
         advances_to = "eliminated"
-        if standing.rank <= 2:
-            advances_to = f"semifinal_{['a', 'b'][standing.rank - 1]}"
-        elif standing.rank <= 6:
+        if rank <= 2:
+            advances_to = f"semifinal_{['a', 'b'][rank - 1]}"
+        elif rank <= 6:
             advances_to = "requalification"
 
         qualifier_top_6.append({
-            "position": standing.rank,
-            "user_id": standing.user_id,
-            "display_name": display_name,
-            "points": float(standing.total_points),
+            "position": rank,
+            "user_id": user_id,
+            "display_name": ranking.get("user_name") or f"User {user_id}",
+            "points": float(ranking["points"]),
             "advances_to": advances_to,
         })
 

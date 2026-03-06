@@ -672,6 +672,18 @@ async def _sync_ta_standings_to_firebase(db: AsyncSession, event_id: int) -> Non
         logger.error(f"Failed to sync TA standings to Firebase for event {event_id}: {e}")
 
 
+async def _check_leg_complete(db: AsyncSession, event_id: int, leg_number: int) -> bool:
+    """Check if all matches in a leg are completed."""
+    result = await db.execute(
+        select(func.count(TAMatch.id)).where(
+            TAMatch.event_id == event_id,
+            TAMatch.leg_number == leg_number,
+            TAMatch.status != TAMatchStatus.COMPLETED.value,
+        )
+    )
+    return (result.scalar() or 0) == 0
+
+
 async def rebuild_standings(db: AsyncSession, event_id: int, leg_number: int | None = None) -> dict:
     """
     Delete all standings and rebuild from completed matches. Idempotent.
@@ -2755,11 +2767,8 @@ async def edit_match_results(
         # Cascade updates to downstream phases if this is a knockout match
         cascade_result = await _cascade_knockout_update(db, event_id, match)
 
-        # Rebuild qualifier standings from all completed matches
-        standings_result = await rebuild_standings(db, event_id, match.leg_number)
-
         # Defer stats + Firebase sync to Celery (only when full leg completes)
-        if standings_result.get("leg_complete"):
+        if await _check_leg_complete(db, event_id, match.leg_number):
             from app.tasks.ta_match import ta_leg_completed
             ta_leg_completed.delay(event_id, match.leg_number)
 
@@ -2993,12 +3002,10 @@ async def submit_game_card(
                     match.status = TAMatchStatus.COMPLETED.value
                     match.completed_at = now
 
-                    # Rebuild standings after ghost match completion
-                    standings_result = await rebuild_standings(db, event_id, match.leg_number)
                     await _cascade_knockout_update(db, event_id, match)
 
                     # Defer stats + Firebase sync to Celery (only when full leg completes)
-                    if standings_result.get("leg_complete"):
+                    if await _check_leg_complete(db, event_id, match.leg_number):
                         from app.tasks.ta_match import ta_leg_completed
                         ta_leg_completed.delay(event_id, match.leg_number)
         else:
@@ -3259,11 +3266,10 @@ async def validate_opponent_card(
                         # Refresh match ORM state after explicit UPDATE
                         await db.refresh(match)
 
-                        standings_result = await rebuild_standings(db, event_id, match.leg_number)
                         await _cascade_knockout_update(db, event_id, match)
 
                         # Defer heavy work (stats + Firebase sync) to Celery (only when full leg completes)
-                        if standings_result.get("leg_complete"):
+                        if await _check_leg_complete(db, event_id, match.leg_number):
                             from app.tasks.ta_match import ta_leg_completed
                             ta_leg_completed.delay(event_id, match.leg_number)
         else:
@@ -3541,12 +3547,10 @@ async def admin_update_game_card(
             point_config = await get_effective_point_config(db, card.event_id)
             match.calculate_outcome(point_config)
 
-            # Rebuild standings after BYE match completion
-            standings_result = await rebuild_standings(db, card.event_id, match.leg_number)
             await _cascade_knockout_update(db, card.event_id, match)
 
             # Defer stats + Firebase sync to Celery (only when full leg completes)
-            if standings_result.get("leg_complete"):
+            if await _check_leg_complete(db, card.event_id, match.leg_number):
                 from app.tasks.ta_match import ta_leg_completed
                 ta_leg_completed.delay(card.event_id, match.leg_number)
         else:
@@ -3569,12 +3573,10 @@ async def admin_update_game_card(
                 point_config = await get_effective_point_config(db, card.event_id)
                 match.calculate_outcome(point_config)
 
-                # Rebuild standings after both-validated match completion
-                standings_result = await rebuild_standings(db, card.event_id, match.leg_number)
                 await _cascade_knockout_update(db, card.event_id, match)
 
                 # Defer stats + Firebase sync to Celery (only when full leg completes)
-                if standings_result.get("leg_complete"):
+                if await _check_leg_complete(db, card.event_id, match.leg_number):
                     from app.tasks.ta_match import ta_leg_completed
                     ta_leg_completed.delay(card.event_id, match.leg_number)
 
@@ -3732,17 +3734,12 @@ async def generate_knockout_bracket(
         await db.delete(existing_bracket)
         await db.flush()
 
-    # Get standings sorted by rank
-    standings_query = (
-        select(TAQualifierStanding)
-        .options(selectinload(TAQualifierStanding.user).selectinload(UserAccount.profile))
-        .where(TAQualifierStanding.event_id == event_id)
-        .order_by(TAQualifierStanding.rank)
-    )
-    standings_result = await db.execute(standings_query)
-    standings = standings_result.scalars().all()
+    # Compute standings on-the-fly from completed qualifier matches
+    from app.services.ta_ranking import TARankingService
+    ranking_service = TARankingService(db)
+    rankings = await ranking_service.compute_leg_ranking(event_id, phase="qualifier")
 
-    if len(standings) < 4:
+    if len(rankings) < 4:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Need at least 4 participants for knockout bracket",
@@ -3750,8 +3747,8 @@ async def generate_knockout_bracket(
 
     # Build seeds map
     seeds = {}
-    for standing in standings:
-        seeds[str(standing.rank)] = standing.user_id
+    for r in rankings:
+        seeds[str(r["rank"])] = r["user_id"]
 
     # Create bracket record
     bracket = TAKnockoutBracket(
@@ -4406,47 +4403,46 @@ async def get_standings(
         # Story 12.6: DQ users appear at bottom
         items = non_dq_items + dq_items
     else:
-        # For qualifier phase (or no phase), use stored TAQualifierStanding
-        # Story 12.6: Include enrollment for DQ status
-        query = (
-            select(TAQualifierStanding)
-            .options(
-                selectinload(TAQualifierStanding.user).selectinload(UserAccount.profile),
-                selectinload(TAQualifierStanding.enrollment),
-            )
-            .where(TAQualifierStanding.event_id == event_id)
-            .order_by(TAQualifierStanding.rank)
-        )
-        result = await db.execute(query)
-        standings = result.scalars().all()
+        # For qualifier phase (or no phase), compute on-the-fly from matches
+        ranking_service = TARankingService(db)
+        rankings = await ranking_service.compute_leg_ranking(event_id, phase="qualifier")
 
-        # Story 12.6: Separate DQ and non-DQ users
+        # Story 12.6: Get DQ status for all users
+        user_ids = [r["user_id"] for r in rankings]
+        dq_query = (
+            select(EventEnrollment.user_id)
+            .where(
+                EventEnrollment.event_id == event_id,
+                EventEnrollment.user_id.in_(user_ids),
+                EventEnrollment.status == EnrollmentStatus.DISQUALIFIED.value,
+            )
+        )
+        dq_result = await db.execute(dq_query)
+        dq_user_ids = {row[0] for row in dq_result.fetchall()}
+
         dq_items = []
         non_dq_items = []
 
-        for standing in standings:
-            # Check DQ status from enrollment (Story 12.6)
-            is_dq = (
-                standing.enrollment is not None
-                and standing.enrollment.status == EnrollmentStatus.DISQUALIFIED.value
-            )
+        for ranking in rankings:
+            user_id = ranking["user_id"]
+            is_dq = user_id in dq_user_ids
 
             item = TAQualifierStandingResponse(
-                id=standing.id,
-                event_id=standing.event_id,
-                user_id=standing.user_id,
-                rank=None if is_dq else standing.rank,  # Story 12.6: No rank for DQ users
-                total_points=standing.total_points,
-                total_catches=standing.total_fish_caught,
-                total_length=0.0,  # Not used
-                matches_played=standing.total_matches,
-                victories=standing.total_victories,
-                ties=standing.total_ties,
-                losses=standing.total_losses,
-                updated_at=standing.updated_at,
-                user_name=standing.user.profile.full_name if standing.user and standing.user.profile else None,
-                user_avatar=standing.user.effective_avatar_url if standing.user else None,
-                is_disqualified=is_dq,  # Story 12.6
+                id=0,  # Computed on-the-fly, no stored ID
+                event_id=event_id,
+                user_id=user_id,
+                rank=None if is_dq else ranking.get("rank", 0),
+                total_points=ranking["points"],
+                total_catches=ranking["captures"],
+                total_length=0.0,
+                matches_played=ranking["matches_played"],
+                victories=ranking["victories"],
+                ties=ranking["ties_with_fish"] + ranking["ties_without_fish"],
+                losses=ranking["losses_with_fish"] + ranking["losses_without_fish"],
+                updated_at=datetime.now(timezone.utc),
+                user_name=ranking.get("user_name"),
+                user_avatar=ranking.get("user_avatar"),
+                is_disqualified=is_dq,
             )
 
             if is_dq:
