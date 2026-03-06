@@ -32,7 +32,6 @@ def sanitize_filename(name: str) -> str:
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select, and_, delete, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
@@ -673,164 +672,165 @@ async def _sync_ta_standings_to_firebase(db: AsyncSession, event_id: int) -> Non
         logger.error(f"Failed to sync TA standings to Firebase for event {event_id}: {e}")
 
 
-async def update_standings_for_match(
-    db: AsyncSession,
-    match: TAMatch,
-    point_config: TAEventPointConfig,
-    skip_rank_recalculation: bool = False,
-) -> dict:
+async def rebuild_standings(db: AsyncSession, event_id: int, leg_number: int | None = None) -> dict:
     """
-    Update standings for both competitors after a match completes.
+    Delete all standings and rebuild from completed matches. Idempotent.
 
-    This function:
-    1. Gets or creates standings for both players
-    2. Updates totals (points, catches, W/T/L breakdown)
-    3. Updates leg_results JSONB
-    4. Checks if leg is complete - only then recalculates ranks (Story 12.1 optimization)
-    5. Broadcasts SSE event when leg completes
+    At TA scale (16-32 players, ~30 matches), this is <50ms and eliminates
+    double-count bugs that the old incremental approach was susceptible to.
 
     Args:
         db: Database session
-        match: The completed match
-        point_config: Point configuration (per-event or global defaults)
-        skip_rank_recalculation: Skip rank recalculation (for batch operations)
+        event_id: The event to rebuild standings for
+        leg_number: If provided, checks whether this leg is fully complete
 
     Returns:
-        dict with leg_complete status and leg_number
+        dict with leg_complete status, leg_number, and ranks_updated
     """
-    if match.status != TAMatchStatus.COMPLETED.value:
-        return {"leg_complete": False, "leg_number": None, "ranks_updated": False}
-
-    # Get point values from config
-    point_values = {
-        "V": point_config.victory_points,
-        "T": point_config.tie_points,
-        "T0": point_config.tie_zero_points,
-        "L": point_config.loss_points,
-        "L0": point_config.loss_zero_points,
-    }
-
-    # Get enrollments for both users
-    enrollment_query = select(EventEnrollment).where(
-        EventEnrollment.event_id == match.event_id,
-        EventEnrollment.user_id.in_([match.competitor_a_id, match.competitor_b_id]),
-        EventEnrollment.status == "approved",
-    )
-    enrollment_result = await db.execute(enrollment_query)
-    enrollments = {e.user_id: e for e in enrollment_result.scalars().all()}
-
-    # Process each competitor
-    for competitor_id, catches, outcome_code in [
-        (match.competitor_a_id, match.competitor_a_catches or 0, match.competitor_a_outcome_code),
-        (match.competitor_b_id, match.competitor_b_catches or 0, match.competitor_b_outcome_code),
-    ]:
-        if not competitor_id or competitor_id not in enrollments:
-            continue
-
-        enrollment = enrollments[competitor_id]
-        points = point_values.get(outcome_code, Decimal("0"))
-
-        # Get or create standing (upsert + RETURNING to avoid separate SELECT)
-        upsert_stmt = (
-            pg_insert(TAQualifierStanding)
-            .values(
-                event_id=match.event_id,
-                user_id=competitor_id,
-                enrollment_id=enrollment.id,
-                total_points=Decimal("0"),
-                total_matches=0,
-                total_victories=0,
-                total_ties=0,
-                total_losses=0,
-                total_fish_caught=0,
-                ties_with_fish=0,
-                ties_without_fish=0,
-                losses_with_fish=0,
-                losses_without_fish=0,
-                leg_results={},
-            )
-            .on_conflict_do_update(
-                index_elements=["event_id", "user_id"],
-                set_={"enrollment_id": enrollment.id},
-            )
-            .returning(TAQualifierStanding)
+    # Get all completed matches
+    matches_result = await db.execute(
+        select(TAMatch).where(
+            TAMatch.event_id == event_id,
+            TAMatch.status == TAMatchStatus.COMPLETED.value,
         )
-        standing_result = await db.execute(upsert_stmt)
-        standing = standing_result.scalar_one()
+    )
+    matches = matches_result.scalars().all()
 
-        # Update totals
-        standing.total_points += points
-        standing.total_matches += 1
-        standing.total_fish_caught += catches
+    # Get user->enrollment mapping
+    enrollments_result = await db.execute(
+        select(EventEnrollment).where(
+            EventEnrollment.event_id == event_id,
+            EventEnrollment.status == "approved",
+        )
+    )
+    user_enrollment_map = {e.user_id: e.id for e in enrollments_result.scalars().all()}
 
-        # Update W/T/L counts
+    # Clear existing standings
+    await db.execute(
+        TAQualifierStanding.__table__.delete().where(TAQualifierStanding.event_id == event_id)
+    )
+
+    # Accumulate stats by user
+    user_stats: dict[int, dict] = {}
+
+    def _init_stats():
+        return {
+            "total_points": Decimal("0"),
+            "total_fish_caught": 0,
+            "total_matches": 0,
+            "total_victories": 0,
+            "total_ties": 0,
+            "total_losses": 0,
+            "ties_with_fish": 0,
+            "ties_without_fish": 0,
+            "losses_with_fish": 0,
+            "losses_without_fish": 0,
+            "leg_results": {},
+        }
+
+    def _accumulate(stats, catches, outcome_code, points, leg_num):
+        stats["total_points"] += points or Decimal("0")
+        stats["total_fish_caught"] += catches or 0
+        stats["total_matches"] += 1
+
         if outcome_code == "V":
-            standing.total_victories += 1
+            stats["total_victories"] += 1
         elif outcome_code == "T":
-            standing.total_ties += 1
-            standing.ties_with_fish += 1
+            stats["total_ties"] += 1
+            stats["ties_with_fish"] += 1
         elif outcome_code == "T0":
-            standing.total_ties += 1
-            standing.ties_without_fish += 1
+            stats["total_ties"] += 1
+            stats["ties_without_fish"] += 1
         elif outcome_code == "L":
-            standing.total_losses += 1
-            standing.losses_with_fish += 1
+            stats["total_losses"] += 1
+            stats["losses_with_fish"] += 1
         elif outcome_code == "L0":
-            standing.total_losses += 1
-            standing.losses_without_fish += 1
+            stats["total_losses"] += 1
+            stats["losses_without_fish"] += 1
 
         # Update leg_results JSONB
-        leg_key = str(match.leg_number)
-        leg_results = standing.leg_results or {}
-
-        if leg_key not in leg_results:
-            leg_results[leg_key] = {
-                "points": 0,
-                "victories": 0,
-                "ties": 0,
-                "losses": 0,
-                "fish": 0,
+        leg_key = str(leg_num)
+        if leg_key not in stats["leg_results"]:
+            stats["leg_results"][leg_key] = {
+                "points": 0, "victories": 0, "ties": 0, "losses": 0, "fish": 0,
             }
-
-        leg_results[leg_key]["points"] = float(leg_results[leg_key].get("points", 0)) + float(points)
-        leg_results[leg_key]["fish"] = leg_results[leg_key].get("fish", 0) + catches
-
+        leg_data = stats["leg_results"][leg_key]
+        leg_data["points"] = float(leg_data["points"]) + float(points or 0)
+        leg_data["fish"] = leg_data["fish"] + (catches or 0)
         if outcome_code == "V":
-            leg_results[leg_key]["victories"] = leg_results[leg_key].get("victories", 0) + 1
+            leg_data["victories"] += 1
         elif outcome_code in ["T", "T0"]:
-            leg_results[leg_key]["ties"] = leg_results[leg_key].get("ties", 0) + 1
+            leg_data["ties"] += 1
         elif outcome_code in ["L", "L0"]:
-            leg_results[leg_key]["losses"] = leg_results[leg_key].get("losses", 0) + 1
+            leg_data["losses"] += 1
 
-        standing.leg_results = leg_results
-        standing.updated_at = datetime.now(timezone.utc)
+    for match in matches:
+        if match.competitor_a_id:
+            if match.competitor_a_id not in user_stats:
+                user_stats[match.competitor_a_id] = _init_stats()
+            _accumulate(
+                user_stats[match.competitor_a_id],
+                match.competitor_a_catches,
+                match.competitor_a_outcome_code,
+                match.competitor_a_points,
+                match.leg_number,
+            )
+        if match.competitor_b_id:
+            if match.competitor_b_id not in user_stats:
+                user_stats[match.competitor_b_id] = _init_stats()
+            _accumulate(
+                user_stats[match.competitor_b_id],
+                match.competitor_b_catches,
+                match.competitor_b_outcome_code,
+                match.competitor_b_points,
+                match.leg_number,
+            )
+
+    # Create standing records
+    for user_id, stats in user_stats.items():
+        enrollment_id = user_enrollment_map.get(user_id)
+        if not enrollment_id:
+            continue
+        standing = TAQualifierStanding(
+            event_id=event_id,
+            user_id=user_id,
+            enrollment_id=enrollment_id,
+            rank=0,
+            total_points=stats["total_points"],
+            total_fish_caught=stats["total_fish_caught"],
+            total_matches=stats["total_matches"],
+            total_victories=stats["total_victories"],
+            total_ties=stats["total_ties"],
+            total_losses=stats["total_losses"],
+            ties_with_fish=stats["ties_with_fish"],
+            ties_without_fish=stats["ties_without_fish"],
+            losses_with_fish=stats["losses_with_fish"],
+            losses_without_fish=stats["losses_without_fish"],
+            leg_results=stats["leg_results"],
+        )
+        db.add(standing)
 
     await db.flush()
 
-    # Story 12.1: Only recalculate ranks when leg is complete (optimization)
-    leg_complete = False
-    ranks_updated = False
+    # Recalculate ranks
+    await recalculate_event_ranks(db, event_id)
 
-    if not skip_rank_recalculation:
-        # Single query: any incomplete matches left in this leg?
+    # Check leg completion
+    leg_complete = False
+    if leg_number is not None:
         incomplete_result = await db.execute(
             select(func.count(TAMatch.id)).where(
-                TAMatch.event_id == match.event_id,
-                TAMatch.leg_number == match.leg_number,
+                TAMatch.event_id == event_id,
+                TAMatch.leg_number == leg_number,
                 TAMatch.status != TAMatchStatus.COMPLETED.value,
             )
         )
         leg_complete = (incomplete_result.scalar() or 0) == 0
 
-        if leg_complete:
-            await recalculate_event_ranks(db, match.event_id)
-            ranks_updated = True
-
     return {
         "leg_complete": leg_complete,
-        "leg_number": match.leg_number,
-        "phase": match.phase,
-        "ranks_updated": ranks_updated,
+        "leg_number": leg_number,
+        "ranks_updated": True,
     }
 
 
@@ -2755,8 +2755,8 @@ async def edit_match_results(
         # Cascade updates to downstream phases if this is a knockout match
         cascade_result = await _cascade_knockout_update(db, event_id, match)
 
-        # Update qualifier standings (ties, losses breakdown)
-        standings_result = await update_standings_for_match(db, match, point_config)
+        # Rebuild qualifier standings from all completed matches
+        standings_result = await rebuild_standings(db, event_id, match.leg_number)
 
         # Defer stats + Firebase sync to Celery (only when full leg completes)
         if standings_result.get("leg_complete"):
@@ -2993,8 +2993,8 @@ async def submit_game_card(
                     match.status = TAMatchStatus.COMPLETED.value
                     match.completed_at = now
 
-                    # Auto-update standings for ghost match
-                    standings_result = await update_standings_for_match(db, match, point_config)
+                    # Rebuild standings after ghost match completion
+                    standings_result = await rebuild_standings(db, event_id, match.leg_number)
                     await _cascade_knockout_update(db, event_id, match)
 
                     # Defer stats + Firebase sync to Celery (only when full leg completes)
@@ -3259,7 +3259,7 @@ async def validate_opponent_card(
                         # Refresh match ORM state after explicit UPDATE
                         await db.refresh(match)
 
-                        standings_result = await update_standings_for_match(db, match, point_config)
+                        standings_result = await rebuild_standings(db, event_id, match.leg_number)
                         await _cascade_knockout_update(db, event_id, match)
 
                         # Defer heavy work (stats + Firebase sync) to Celery (only when full leg completes)
@@ -3541,8 +3541,8 @@ async def admin_update_game_card(
             point_config = await get_effective_point_config(db, card.event_id)
             match.calculate_outcome(point_config)
 
-            # Auto-update standings when match completes
-            standings_result = await update_standings_for_match(db, match, point_config)
+            # Rebuild standings after BYE match completion
+            standings_result = await rebuild_standings(db, card.event_id, match.leg_number)
             await _cascade_knockout_update(db, card.event_id, match)
 
             # Defer stats + Firebase sync to Celery (only when full leg completes)
@@ -3569,8 +3569,8 @@ async def admin_update_game_card(
                 point_config = await get_effective_point_config(db, card.event_id)
                 match.calculate_outcome(point_config)
 
-                # Auto-update standings when match completes
-                standings_result = await update_standings_for_match(db, match, point_config)
+                # Rebuild standings after both-validated match completion
+                standings_result = await rebuild_standings(db, card.event_id, match.leg_number)
                 await _cascade_knockout_update(db, card.event_id, match)
 
                 # Defer stats + Firebase sync to Celery (only when full leg completes)
@@ -3627,140 +3627,15 @@ async def recalculate_standings(
     This rebuilds the qualifier standings table from all completed matches.
     Useful after manual match edits or data corrections.
     """
-    from app.services.ta_ranking import TARankingService
-
     event = await get_ta_event(event_id, db, request)
 
-    # Get all completed matches
-    matches_query = select(TAMatch).where(
-        TAMatch.event_id == event_id,
-        TAMatch.status == TAMatchStatus.COMPLETED.value,
-    )
-    result = await db.execute(matches_query)
-    matches = result.scalars().all()
-
-    # Get user->enrollment mapping
-    from app.models.event import EventEnrollment
-    enrollments_query = select(EventEnrollment).where(
-        EventEnrollment.event_id == event_id,
-        EventEnrollment.status == "approved",
-    )
-    result = await db.execute(enrollments_query)
-    enrollments = result.scalars().all()
-    user_enrollment_map = {e.user_id: e.id for e in enrollments}
-
-    # Clear existing standings
-    await db.execute(
-        TAQualifierStanding.__table__.delete().where(TAQualifierStanding.event_id == event_id)
-    )
-
-    # Rebuild standings from matches
-    ranking_service = TARankingService(db)
-
-    # Accumulate stats by user
-    user_stats: dict[int, dict] = {}
-
-    for match in matches:
-        if match.competitor_a_id:
-            if match.competitor_a_id not in user_stats:
-                user_stats[match.competitor_a_id] = {
-                    "total_points": Decimal("0"),
-                    "total_fish_caught": 0,
-                    "total_matches": 0,
-                    "total_victories": 0,
-                    "total_ties": 0,
-                    "total_losses": 0,
-                    "ties_with_fish": 0,
-                    "ties_without_fish": 0,
-                    "losses_with_fish": 0,
-                    "losses_without_fish": 0,
-                }
-            stats = user_stats[match.competitor_a_id]
-            stats["total_points"] += match.competitor_a_points or Decimal("0")
-            stats["total_fish_caught"] += match.competitor_a_catches or 0
-            stats["total_matches"] += 1
-            if match.competitor_a_outcome_code == "V":
-                stats["total_victories"] += 1
-            elif match.competitor_a_outcome_code == "T":
-                stats["total_ties"] += 1
-                stats["ties_with_fish"] += 1
-            elif match.competitor_a_outcome_code == "T0":
-                stats["total_ties"] += 1
-                stats["ties_without_fish"] += 1
-            elif match.competitor_a_outcome_code == "L":
-                stats["total_losses"] += 1
-                stats["losses_with_fish"] += 1
-            elif match.competitor_a_outcome_code == "L0":
-                stats["total_losses"] += 1
-                stats["losses_without_fish"] += 1
-
-        if match.competitor_b_id:
-            if match.competitor_b_id not in user_stats:
-                user_stats[match.competitor_b_id] = {
-                    "total_points": Decimal("0"),
-                    "total_fish_caught": 0,
-                    "total_matches": 0,
-                    "total_victories": 0,
-                    "total_ties": 0,
-                    "total_losses": 0,
-                    "ties_with_fish": 0,
-                    "ties_without_fish": 0,
-                    "losses_with_fish": 0,
-                    "losses_without_fish": 0,
-                }
-            stats = user_stats[match.competitor_b_id]
-            stats["total_points"] += match.competitor_b_points or Decimal("0")
-            stats["total_fish_caught"] += match.competitor_b_catches or 0
-            stats["total_matches"] += 1
-            if match.competitor_b_outcome_code == "V":
-                stats["total_victories"] += 1
-            elif match.competitor_b_outcome_code == "T":
-                stats["total_ties"] += 1
-                stats["ties_with_fish"] += 1
-            elif match.competitor_b_outcome_code == "T0":
-                stats["total_ties"] += 1
-                stats["ties_without_fish"] += 1
-            elif match.competitor_b_outcome_code == "L":
-                stats["total_losses"] += 1
-                stats["losses_with_fish"] += 1
-            elif match.competitor_b_outcome_code == "L0":
-                stats["total_losses"] += 1
-                stats["losses_without_fish"] += 1
-
-    # Create standing records
-    for user_id, stats in user_stats.items():
-        enrollment_id = user_enrollment_map.get(user_id)
-        if not enrollment_id:
-            continue  # Skip users without enrollment
-
-        standing = TAQualifierStanding(
-            event_id=event_id,
-            user_id=user_id,
-            enrollment_id=enrollment_id,
-            rank=0,  # Will be calculated
-            total_points=stats["total_points"],
-            total_fish_caught=stats["total_fish_caught"],
-            total_matches=stats["total_matches"],
-            total_victories=stats["total_victories"],
-            total_ties=stats["total_ties"],
-            total_losses=stats["total_losses"],
-            ties_with_fish=stats["ties_with_fish"],
-            ties_without_fish=stats["ties_without_fish"],
-            losses_with_fish=stats["losses_with_fish"],
-            losses_without_fish=stats["losses_without_fish"],
-        )
-        db.add(standing)
-
-    await db.flush()
-
-    # Recalculate ranks
-    await ranking_service._recalculate_ranks(event_id)
+    result = await rebuild_standings(db, event_id)
     await db.commit()
 
     # Sync to Firebase for web real-time updates
     await _sync_ta_standings_to_firebase(db, event_id)
 
-    return {"message": f"Standings recalculated for {len(user_stats)} participants", "details": {"participants_ranked": len(user_stats)}}
+    return {"message": "Standings recalculated successfully"}
 
 
 @router.post(
