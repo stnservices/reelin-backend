@@ -4471,8 +4471,8 @@ async def get_standings(
 
     # Check if knockout bracket is completed - apply final standings from knockout
     # Only apply when no specific phase requested (default view after tournament ends)
-    current_phase_val = settings.additional_rules.get("current_phase", "qualifier") if settings.additional_rules else "qualifier"
-    if settings.has_knockout_stage and not phase and current_phase_val != "qualifier":
+    # Stale brackets are prevented by cleanup in generate_lineups()
+    if settings.has_knockout_stage and not phase:
         from app.models.trout_area import TAKnockoutBracket
         bracket_query = select(TAKnockoutBracket).where(
             TAKnockoutBracket.event_id == event_id,
