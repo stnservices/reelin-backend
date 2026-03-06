@@ -1344,10 +1344,10 @@ async def update_event_settings(
 # Game Card Summary Helper
 # =============================================================================
 
-def _game_card_summary(match) -> dict:
+def _game_card_summary(match, cards=None) -> dict:
     """Extract game card submission/validation status for a match."""
     result = {}
-    for card in (match.game_cards or []):
+    for card in (cards if cards is not None else match.game_cards or []):
         if card.user_id == match.competitor_a_id:
             result['player_a_submitted'] = card.is_submitted
             result['player_a_validated'] = card.is_validated
@@ -2770,8 +2770,6 @@ async def edit_match_results(
     gc_query = select(TAGameCard).where(TAGameCard.match_id == match_id)
     gc_result = await db.execute(gc_query)
     gc_cards = gc_result.scalars().all()
-    # Attach temporarily for _game_card_summary helper
-    match.game_cards = gc_cards
 
     # Build response with correct field mappings
     return {
@@ -2794,7 +2792,7 @@ async def edit_match_results(
         "started_at": match.started_at,
         "completed_at": match.completed_at,
         "created_at": match.created_at,
-        **_game_card_summary(match),
+        **_game_card_summary(match, cards=gc_cards),
     }
 
 
