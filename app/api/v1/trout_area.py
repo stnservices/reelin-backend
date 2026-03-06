@@ -3848,9 +3848,9 @@ async def generate_knockout_bracket(
         end_pos = direct_count + settings.requalification_slots
 
         requalification_positions = []
-        for standing in standings:
-            if start_pos <= standing.rank <= end_pos:
-                requalification_positions.append(standing)
+        for r in rankings:
+            if start_pos <= r["rank"] <= end_pos:
+                requalification_positions.append(r)
 
         # Create requalification matches (standard bracket seeding: 3v5, 4v6)
         # This ensures winners face the direct qualifiers fairly in semifinals:
@@ -3868,8 +3868,8 @@ async def generate_knockout_bracket(
                     phase=TATournamentPhase.REQUALIFICATION.value,
                     match_number=i + 1,
                     leg_number=next_leg,
-                    competitor_a_id=seed_a.user_id,
-                    competitor_b_id=seed_b.user_id,
+                    competitor_a_id=seed_a["user_id"],
+                    competitor_b_id=seed_b["user_id"],
                 )
                 matches_created.append(match)
 
@@ -3884,8 +3884,8 @@ async def generate_knockout_bracket(
     if settings.has_requalification and settings.requalification_slots > 0:
         # Use direct_to_semifinal config (how many bypass requalification)
         direct_count = getattr(settings, 'direct_to_semifinal', 2)
-        for standing in standings[:direct_count]:
-            semifinal_competitors.append(standing.user_id)
+        for r in rankings[:direct_count]:
+            semifinal_competitors.append(r["user_id"])
         # Requalification winners will be determined later
         # Use None placeholders — advance_requalification_to_semifinals will fill them
         requalification_winners = settings.requalification_slots // 2
@@ -3893,8 +3893,8 @@ async def generate_knockout_bracket(
             semifinal_competitors.append(None)
     else:
         # Top 4 go directly to semifinals
-        for standing in standings[:4]:
-            semifinal_competitors.append(standing.user_id)
+        for r in rankings[:4]:
+            semifinal_competitors.append(r["user_id"])
 
     # Semifinal bracket structure:
     # - SF1: Seed 1 vs Winner of Requalification Match 1 (3v5)
@@ -3962,9 +3962,9 @@ async def generate_knockout_bracket(
         # Top 4 in semifinals, rest get direct placement from 5th onwards
         placement_start = 5
 
-    for standing in standings:
-        if standing.rank >= placement_start:
-            direct_placements[str(standing.rank)] = standing.user_id
+    for r in rankings:
+        if r["rank"] >= placement_start:
+            direct_placements[str(r["rank"])] = r["user_id"]
 
     bracket.direct_placements = direct_placements
 
