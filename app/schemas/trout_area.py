@@ -435,6 +435,16 @@ class TAMatchListResponse(BaseModel):
     total: int
     by_leg: dict[int, list[TAMatchResponse]] = {}
 
+    @model_validator(mode="after")
+    def build_by_leg(self):
+        """Build by_leg grouping from items if not provided."""
+        if not self.by_leg and self.items:
+            grouped: dict[int, list[TAMatchResponse]] = {}
+            for item in self.items:
+                grouped.setdefault(item.leg_number, []).append(item)
+            self.by_leg = grouped
+        return self
+
 
 # =============================================================================
 # Game Card Schemas (Per-User, Per-Leg)

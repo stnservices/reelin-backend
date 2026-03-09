@@ -85,7 +85,6 @@ from app.schemas.trout_area import (
     # Match
     TAMatchResponse,
     TAMatchDetailResponse,
-    TAMatchListResponse,
     TAMatchResultUpdate,
     # Game Card
     TAGameCardResponse,
@@ -108,8 +107,6 @@ from app.schemas.trout_area import (
     # Algorithm Preview
     TAAlgorithmOption,
     TAAlgorithmPreviewResponse,
-    # Schedule
-    TAScheduleResponse,
     # Enums
     PairingAlgorithmAPI,
     TATournamentPhaseAPI,
@@ -1375,7 +1372,7 @@ def _game_card_summary(match, cards=None) -> dict:
 # Schedule Endpoints (for mobile app)
 # =============================================================================
 
-@router.get("/events/{event_id}/schedule", response_model=TAScheduleResponse)
+@router.get("/events/{event_id}/schedule", response_model=None)
 async def get_event_schedule(
     event_id: int,
     phase: Optional[TATournamentPhaseAPI] = None,
@@ -1454,9 +1451,9 @@ async def get_event_schedule(
             "player_a_outcome": match.competitor_a_outcome_code,
             "player_b_outcome": match.competitor_b_outcome_code,
             "status": match.status or TAMatchStatusAPI.SCHEDULED.value,
-            "started_at": match.started_at,
-            "completed_at": match.completed_at,
-            "created_at": match.created_at,
+            "started_at": match.started_at.isoformat() if match.started_at else None,
+            "completed_at": match.completed_at.isoformat() if match.completed_at else None,
+            "created_at": match.created_at.isoformat() if match.created_at else None,
             "player_a_name": match.competitor_a.profile.full_name if match.competitor_a and match.competitor_a.profile else None,
             "player_b_name": match.competitor_b.profile.full_name if match.competitor_b and match.competitor_b.profile else None,
             "player_a_avatar": match.competitor_a.effective_avatar_url if match.competitor_a else None,
@@ -1591,7 +1588,7 @@ async def get_my_current_match(
     )
 
 
-@router.get("/events/{event_id}/my-matches", response_model=TAMatchListResponse)
+@router.get("/events/{event_id}/my-matches", response_model=None)
 async def get_my_matches(
     event_id: int,
     request: Request,
@@ -1625,7 +1622,6 @@ async def get_my_matches(
 
     # Build response with user info
     items = []
-    by_leg: dict[int, list] = {}
 
     for match in matches:
         # Get player names from loaded relationships
@@ -1658,9 +1654,9 @@ async def get_my_matches(
             "player_a_outcome": match.competitor_a_outcome_code,
             "player_b_outcome": match.competitor_b_outcome_code,
             "status": match.status,
-            "started_at": match.started_at,
-            "completed_at": match.completed_at,
-            "created_at": match.created_at,
+            "started_at": match.started_at.isoformat() if match.started_at else None,
+            "completed_at": match.completed_at.isoformat() if match.completed_at else None,
+            "created_at": match.created_at.isoformat() if match.created_at else None,
             "player_a_name": player_a_name,
             "player_b_name": player_b_name,
             "player_a_avatar": player_a_avatar,
@@ -1668,10 +1664,10 @@ async def get_my_matches(
         }
         items.append(item)
 
-        leg_num = match.round_number
-        if leg_num not in by_leg:
-            by_leg[leg_num] = []
-        by_leg[leg_num].append(item)
+    # Build by_leg grouping from items (backwards compat)
+    by_leg: dict[int, list] = {}
+    for item in items:
+        by_leg.setdefault(item["leg_number"], []).append(item)
 
     return {
         "items": items,
@@ -2252,7 +2248,7 @@ async def generate_lineups(
 # Match Endpoints
 # =============================================================================
 
-@router.get("/events/{event_id}/matches", response_model=TAMatchListResponse)
+@router.get("/events/{event_id}/matches", response_model=None)
 async def list_matches(
     event_id: int,
     request: Request,
@@ -2301,7 +2297,6 @@ async def list_matches(
 
     # Build response with user info
     items = []
-    by_leg: dict[int, list] = {}
 
     for match in matches:
         # Get player names from loaded relationships
@@ -2334,9 +2329,9 @@ async def list_matches(
             "player_a_outcome": match.competitor_a_outcome_code,
             "player_b_outcome": match.competitor_b_outcome_code,
             "status": match.status,
-            "started_at": match.started_at,
-            "completed_at": match.completed_at,
-            "created_at": match.created_at,
+            "started_at": match.started_at.isoformat() if match.started_at else None,
+            "completed_at": match.completed_at.isoformat() if match.completed_at else None,
+            "created_at": match.created_at.isoformat() if match.created_at else None,
             "player_a_name": player_a_name,
             "player_b_name": player_b_name,
             "player_a_avatar": player_a_avatar,
@@ -2345,10 +2340,10 @@ async def list_matches(
         }
         items.append(item)
 
-        leg_num = match.round_number
-        if leg_num not in by_leg:
-            by_leg[leg_num] = []
-        by_leg[leg_num].append(item)
+    # Build by_leg grouping from items (backwards compat)
+    by_leg: dict[int, list] = {}
+    for item in items:
+        by_leg.setdefault(item["leg_number"], []).append(item)
 
     # Build response
     response = {
