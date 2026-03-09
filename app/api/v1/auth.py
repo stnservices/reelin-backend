@@ -25,7 +25,7 @@ from app.core.security import (
     get_password_hash,
     verify_password,
 )
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, invalidate_token_cache
 from app.models.user import UserAccount, UserProfile, TokenBlacklist
 from app.models.follow import UserFollow
 from app.schemas.user import (
@@ -383,6 +383,9 @@ async def refresh_token(
     )
     db.add(old_token_blacklist)
 
+    # Immediately invalidate cached auth for old refresh token
+    await invalidate_token_cache(token_jti)
+
     # Create new tokens - sub must be a string
     token_payload = {"sub": str(user_id)}
     new_access_token = create_access_token(token_payload)
@@ -446,6 +449,9 @@ async def logout(
             expires_at=datetime.fromtimestamp(token_exp, tz=timezone.utc),
         )
         db.add(blacklist_entry)
+
+        # Immediately invalidate cached auth for this token
+        await invalidate_token_cache(token_jti)
 
         # Audit: log logout
         ctx = audit_service.extract_request_context(request)

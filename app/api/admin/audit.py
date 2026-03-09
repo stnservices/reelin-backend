@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.core.permissions import AdminOnly
+from app.dependencies import invalidate_user_auth_cache
 from app.models.audit import AuditLog, UserDevice, UserSuspiciousFlag
 from app.models.user import UserAccount, UserProfile
 from app.schemas.audit import (
@@ -461,6 +462,7 @@ async def ban_user(
     )
 
     await db.commit()
+    await invalidate_user_auth_cache(user_id)
     return {"message": "User banned", "user_id": user_id}
 
 
@@ -492,4 +494,5 @@ async def unban_user(
     )
 
     await db.commit()
+    await invalidate_user_auth_cache(user_id)
     return {"message": "User unbanned and reactivated", "user_id": user_id}

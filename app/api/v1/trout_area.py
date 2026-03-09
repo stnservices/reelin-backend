@@ -35,10 +35,10 @@ from fastapi.responses import ORJSONResponse
 from sqlalchemy import func, select, and_, delete, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import joinedload, load_only, selectinload
 
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, get_current_user_id_cached
 from app.core.permissions import OrganizerOrAdmin, EventOwnerOrAdmin
 from app.core.i18n import get_error_message
 from app.core.exceptions import NotFoundError, ValidationError, ConflictError
@@ -1349,6 +1349,41 @@ async def update_event_settings(
 
 
 # =============================================================================
+# Shared load options for hot TA read endpoints (schedule, my-matches, list-matches)
+# Only hydrate columns actually used in response dicts — cuts ORM overhead ~50-85%
+# =============================================================================
+
+_MATCH_READ_OPTIONS = [
+    load_only(
+        TAMatch.id, TAMatch.event_id, TAMatch.phase,
+        TAMatch.round_number, TAMatch.match_number,
+        TAMatch.seat_a, TAMatch.seat_b,
+        TAMatch.competitor_a_id, TAMatch.competitor_b_id,
+        TAMatch.competitor_a_catches, TAMatch.competitor_b_catches,
+        TAMatch.competitor_a_points, TAMatch.competitor_b_points,
+        TAMatch.competitor_a_outcome_code, TAMatch.competitor_b_outcome_code,
+        TAMatch.status,
+        TAMatch.started_at, TAMatch.completed_at, TAMatch.created_at,
+    ),
+    selectinload(TAMatch.competitor_a).load_only(
+        UserAccount.id, UserAccount.avatar_url,
+    ).selectinload(UserAccount.profile).load_only(
+        UserProfile.first_name, UserProfile.last_name, UserProfile.profile_picture_url,
+    ),
+    selectinload(TAMatch.competitor_b).load_only(
+        UserAccount.id, UserAccount.avatar_url,
+    ).selectinload(UserAccount.profile).load_only(
+        UserProfile.first_name, UserProfile.last_name, UserProfile.profile_picture_url,
+    ),
+]
+
+_GAME_CARD_READ_OPTION = selectinload(TAMatch.game_cards).load_only(
+    TAGameCard.user_id, TAGameCard.is_submitted, TAGameCard.is_validated,
+    TAGameCard.my_catches, TAGameCard.i_validated_opponent,
+)
+
+
+# =============================================================================
 # Game Card Summary Helper
 # =============================================================================
 
@@ -1387,14 +1422,10 @@ async def get_event_schedule(
     organized by legs with match details.
     """
     # Skip get_ta_event() — pure read endpoint, empty match query = empty response
-    # Build match query
+    # Build match query with load_only() to reduce ORM hydration
     match_query = (
         select(TAMatch)
-        .options(
-            selectinload(TAMatch.competitor_a).selectinload(UserAccount.profile),
-            selectinload(TAMatch.competitor_b).selectinload(UserAccount.profile),
-            selectinload(TAMatch.game_cards),
-        )
+        .options(*_MATCH_READ_OPTIONS, _GAME_CARD_READ_OPTION)
         .where(TAMatch.event_id == event_id)
         .order_by(TAMatch.round_number, TAMatch.match_number)
     )
@@ -1523,7 +1554,7 @@ async def get_event_schedule(
 async def get_my_current_match(
     event_id: int,
     request: Request,
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
     db: AsyncSession = Depends(get_db),
 ) -> TAMatch:
     """
@@ -1544,7 +1575,7 @@ async def get_my_current_match(
         .where(
             TAMatch.event_id == event_id,
             TAMatch.status.in_([TAMatchStatus.IN_PROGRESS.value, TAMatchStatus.SCHEDULED.value]),
-            (TAMatch.competitor_a_id == current_user.id) | (TAMatch.competitor_b_id == current_user.id),
+            (TAMatch.competitor_a_id == user_id) | (TAMatch.competitor_b_id == user_id),
         )
         .order_by(TAMatch.round_number, TAMatch.match_number)
         .limit(1)
@@ -1591,7 +1622,7 @@ async def get_my_current_match(
 async def get_my_matches(
     event_id: int,
     request: Request,
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """
@@ -1601,16 +1632,13 @@ async def get_my_matches(
     This is used for the "Match History" view in the mobile app.
     """
     # Skip get_ta_event() — pure read endpoint, empty match query = empty response
-    # Find all matches where user is competitor A or B
+    # Find all matches where user is competitor A or B (load_only to reduce ORM hydration)
     match_query = (
         select(TAMatch)
-        .options(
-            selectinload(TAMatch.competitor_a).selectinload(UserAccount.profile),
-            selectinload(TAMatch.competitor_b).selectinload(UserAccount.profile),
-        )
+        .options(*_MATCH_READ_OPTIONS)
         .where(
             TAMatch.event_id == event_id,
-            (TAMatch.competitor_a_id == current_user.id) | (TAMatch.competitor_b_id == current_user.id),
+            (TAMatch.competitor_a_id == user_id) | (TAMatch.competitor_b_id == user_id),
         )
         .order_by(TAMatch.round_number, TAMatch.match_number)
     )
@@ -2272,11 +2300,7 @@ async def list_matches(
 
     query = (
         select(TAMatch)
-        .options(
-            selectinload(TAMatch.competitor_a).selectinload(UserAccount.profile),
-            selectinload(TAMatch.competitor_b).selectinload(UserAccount.profile),
-            selectinload(TAMatch.game_cards),
-        )
+        .options(*_MATCH_READ_OPTIONS, _GAME_CARD_READ_OPTION)
         .where(TAMatch.event_id == event_id)
     )
 

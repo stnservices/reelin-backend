@@ -41,7 +41,7 @@ if settings.sentry_dsn:
         dsn=settings.sentry_dsn,
         send_default_pii=True,
         traces_sample_rate=0.1,
-        profiles_sample_rate=0.1,
+        profiles_sample_rate=0.01,
         environment=settings.sentry_environment,
         release=f"reelin-backend@{settings.app_version}",
         integrations=[

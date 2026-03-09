@@ -192,6 +192,10 @@ class AccountDeletionService:
 
         await db.commit()
 
+        # Invalidate cached auth status
+        from app.dependencies import invalidate_user_auth_cache
+        await invalidate_user_auth_cache(user_id)
+
         logger.info(f"Account deletion scheduled for user {user_id}, permanent deletion at {permanent_deletion_at}")
 
         return {
@@ -283,6 +287,10 @@ class AccountDeletionService:
         db.add(audit_log)
 
         await db.commit()
+
+        # Invalidate cached auth status
+        from app.dependencies import invalidate_user_auth_cache
+        await invalidate_user_auth_cache(user_id)
 
         logger.info(f"Account deletion cancelled for user {user_id}")
 
