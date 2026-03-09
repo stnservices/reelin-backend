@@ -55,7 +55,7 @@ class UserAccount(Base):
         "UserProfile", back_populates="user", uselist=False, lazy="joined"
     )
     social_accounts: Mapped[List["SocialAccount"]] = relationship(
-        "SocialAccount", back_populates="user", lazy="selectin"
+        "SocialAccount", back_populates="user", lazy="noload"
     )
     notification_preferences: Mapped[Optional["UserNotificationPreferences"]] = relationship(
         "UserNotificationPreferences", back_populates="user", uselist=False, lazy="noload"
