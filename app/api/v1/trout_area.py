@@ -4720,8 +4720,9 @@ async def export_standings_excel(
     )
 
     qual_headers = [
-        "Rank", "Name", "Points", "Catches", "Victories",
-        "Ties", "Losses", "Matches Played", "Win Rate %",
+        "Rank", "Name", "Points", "Catches",
+        "W", "T", "T0", "L", "L0",
+        "Matches Played", "Win Rate %",
     ]
     row = 6
     for col_idx, h in enumerate(qual_headers, 1):
@@ -4731,9 +4732,11 @@ async def export_standings_excel(
 
     for idx, ranking in enumerate(qualifier_rankings, 1):
         row += 1
-        ties = ranking.get("ties_with_fish", 0) + ranking.get("ties_without_fish", 0)
-        losses = ranking.get("losses_with_fish", 0) + ranking.get("losses_without_fish", 0)
         victories = ranking.get("victories", 0)
+        ties_with_fish = ranking.get("ties_with_fish", 0)
+        ties_without_fish = ranking.get("ties_without_fish", 0)
+        losses_with_fish = ranking.get("losses_with_fish", 0)
+        losses_without_fish = ranking.get("losses_without_fish", 0)
         matches_played = ranking.get("matches_played", 0)
         win_rate = (victories / matches_played * 100) if matches_played > 0 else 0
 
@@ -4743,8 +4746,10 @@ async def export_standings_excel(
             float(ranking.get("points", 0)),
             ranking.get("captures", 0),
             victories,
-            ties,
-            losses,
+            ties_with_fish,
+            ties_without_fish,
+            losses_with_fish,
+            losses_without_fish,
             matches_played,
             round(win_rate, 1),
         ]
