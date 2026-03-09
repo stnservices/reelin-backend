@@ -31,6 +31,7 @@ def sanitize_filename(name: str) -> str:
     return name[:50]
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import ORJSONResponse
 from sqlalchemy import func, select, and_, delete, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1405,7 +1406,7 @@ async def get_event_schedule(
     matches = result.scalars().all()
 
     if not matches:
-        return {
+        return ORJSONResponse({
             "legs": [],
             "current_leg": None,
             "total_legs": 0,
@@ -1415,7 +1416,7 @@ async def get_event_schedule(
             "rounds": [],
             "current_round": None,
             "total_rounds": 0,
-        }
+        })
 
     # Group matches by (leg_number, phase) - different phases can have same leg numbers
     # Key: (leg_num, phase) -> list of matches
@@ -1505,7 +1506,7 @@ async def get_event_schedule(
     # Extract leg number from key for backwards compatibility (just the number)
     current_leg_num = current_leg_key[0] if current_leg_key else None
 
-    response = {
+    return ORJSONResponse({
         "legs": legs_list,
         "current_leg": current_leg_num,
         "total_legs": len(legs_list),
@@ -1515,9 +1516,7 @@ async def get_event_schedule(
         "rounds": legs_list,
         "current_round": current_leg_num,
         "total_rounds": len(legs_list),
-    }
-
-    return response
+    })
 
 
 @router.get("/events/{event_id}/my-match", response_model=TAMatchResponse)
@@ -1668,13 +1667,11 @@ async def get_my_matches(
     for item in items:
         by_leg.setdefault(item["leg_number"], []).append(item)
 
-    response = {
+    return ORJSONResponse({
         "items": items,
         "total": len(items),
         "by_leg": by_leg,
-    }
-
-    return response
+    })
 
 
 # =============================================================================
@@ -2271,7 +2268,7 @@ async def list_matches(
     cache_key = f"ta:matches:{event_id}:{phase.value if phase else 'all'}:{leg_number or 'all'}:{status_filter or 'all'}"
     cached = await redis_cache.get(cache_key)
     if cached:
-        return cached
+        return ORJSONResponse(cached)
 
     query = (
         select(TAMatch)
@@ -2355,7 +2352,7 @@ async def list_matches(
     # Cache for 5 seconds to prevent API loops
     await redis_cache.set(cache_key, response, ttl=5)
 
-    return response
+    return ORJSONResponse(response)
 
 
 # NOTE: This export route MUST be defined before /matches/{match_id} to avoid
