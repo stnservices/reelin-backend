@@ -1386,12 +1386,6 @@ async def get_event_schedule(
     organized by legs with match details.
     """
     # Skip get_ta_event() — pure read endpoint, empty match query = empty response
-    # Short-lived cache — schedule changes only on match start/complete
-    cache_key = f"ta:schedule:{event_id}:{phase.value if phase else 'all'}"
-    cached = await redis_cache.get(cache_key)
-    if cached:
-        return cached
-
     # Build match query
     match_query = (
         select(TAMatch)
@@ -1523,7 +1517,6 @@ async def get_event_schedule(
         "total_rounds": len(legs_list),
     }
 
-    await redis_cache.set(cache_key, response, ttl=5)
     return response
 
 
@@ -1609,12 +1602,6 @@ async def get_my_matches(
     This is used for the "Match History" view in the mobile app.
     """
     # Skip get_ta_event() — pure read endpoint, empty match query = empty response
-    # Short-lived cache — per-user match history
-    cache_key = f"ta:my_matches:{event_id}:{current_user.id}"
-    cached = await redis_cache.get(cache_key)
-    if cached:
-        return cached
-
     # Find all matches where user is competitor A or B
     match_query = (
         select(TAMatch)
@@ -1687,7 +1674,6 @@ async def get_my_matches(
         "by_leg": by_leg,
     }
 
-    await redis_cache.set(cache_key, response, ttl=5)
     return response
 
 
