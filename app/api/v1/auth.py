@@ -187,10 +187,13 @@ async def login(
             )
         logger.info(f"reCAPTCHA passed: action=login, score={score}")
 
-    # Find user by email
+    # Find user by email (with country/city for profile response)
     query = (
         select(UserAccount)
-        .options(selectinload(UserAccount.profile))
+        .options(
+            selectinload(UserAccount.profile).selectinload(UserProfile.country),
+            selectinload(UserAccount.profile).selectinload(UserProfile.city),
+        )
         .where(UserAccount.email == credentials.email)
     )
     result = await db.execute(query)

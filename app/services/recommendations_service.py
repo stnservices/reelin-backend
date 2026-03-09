@@ -8,7 +8,7 @@ from typing import Any, Optional
 from sqlalchemy import select, func, and_, distinct
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
 from app.models.catch import Catch
 from app.models.enrollment import EventEnrollment, EnrollmentStatus
@@ -1069,6 +1069,7 @@ class RecommendationsService:
         stmt = (
             select(UserAccount, UserProfile)
             .join(UserProfile, UserProfile.user_id == UserAccount.id)
+            .options(selectinload(UserProfile.city))
             .where(
                 UserAccount.id != current_user_id,
                 UserAccount.is_active.is_(True),

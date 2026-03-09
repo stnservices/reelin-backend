@@ -13,6 +13,7 @@ from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.core.security import decode_token
 from app.models.user import UserAccount, UserProfile, TokenBlacklist
+from app.models.location import Country, City
 from app.services.redis_cache import redis_cache
 
 logger = logging.getLogger(__name__)
@@ -220,10 +221,15 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Get user with profile (still DB — needed for ORM object downstream)
+    # Get user with profile + country/city (still DB — needed for ORM object downstream)
     user_query = (
         select(UserAccount)
-        .options(selectinload(UserAccount.profile))
+        .options(
+            selectinload(UserAccount.profile)
+            .selectinload(UserProfile.country),
+            selectinload(UserAccount.profile)
+            .selectinload(UserProfile.city),
+        )
         .where(UserAccount.id == user_id)
     )
     result = await db.execute(user_query)

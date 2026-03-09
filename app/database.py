@@ -50,7 +50,7 @@ if not os.getenv("CELERY_WORKER"):
     engine = create_async_engine(
         settings.database_url,
         echo=settings.debug,
-        pool_pre_ping=True,
+        pool_pre_ping=False,  # PgBouncer manages connection health
         pool_size=DB_POOL_SIZE,
         max_overflow=DB_MAX_OVERFLOW,
         pool_timeout=DB_POOL_TIMEOUT,

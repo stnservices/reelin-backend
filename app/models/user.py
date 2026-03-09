@@ -136,8 +136,8 @@ class UserProfile(Base):
 
     # Relationships
     user: Mapped["UserAccount"] = relationship("UserAccount", back_populates="profile")
-    country: Mapped[Optional["Country"]] = relationship("Country", lazy="joined")
-    city: Mapped[Optional["City"]] = relationship("City", lazy="joined")
+    country: Mapped[Optional["Country"]] = relationship("Country", lazy="noload")
+    city: Mapped[Optional["City"]] = relationship("City", lazy="noload")
 
     @property
     def full_name(self) -> str:

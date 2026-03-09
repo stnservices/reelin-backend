@@ -35,7 +35,7 @@ from fastapi.responses import ORJSONResponse
 from sqlalchemy import func, select, and_, delete, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload, load_only, selectinload
+from sqlalchemy.orm import joinedload, load_only, noload, selectinload
 
 from app.database import get_db
 from app.dependencies import get_current_user, get_current_user_id_cached
@@ -1369,12 +1369,12 @@ _MATCH_READ_OPTIONS = [
         UserAccount.id, UserAccount.avatar_url,
     ).selectinload(UserAccount.profile).load_only(
         UserProfile.first_name, UserProfile.last_name, UserProfile.profile_picture_url,
-    ),
+    ).noload(UserProfile.country).noload(UserProfile.city),
     selectinload(TAMatch.competitor_b).load_only(
         UserAccount.id, UserAccount.avatar_url,
     ).selectinload(UserAccount.profile).load_only(
         UserProfile.first_name, UserProfile.last_name, UserProfile.profile_picture_url,
-    ),
+    ).noload(UserProfile.country).noload(UserProfile.city),
 ]
 
 _GAME_CARD_READ_OPTION = selectinload(TAMatch.game_cards).load_only(
