@@ -1385,8 +1385,12 @@ async def get_event_schedule(
     This endpoint provides a structured view of the competition schedule,
     organized by legs with match details.
     """
-    event = await get_ta_event(event_id, db, request)
-    settings = event.ta_settings
+    # Skip get_ta_event() — pure read endpoint, empty match query = empty response
+    # Short-lived cache — schedule changes only on match start/complete
+    cache_key = f"ta:schedule:{event_id}:{phase.value if phase else 'all'}"
+    cached = await redis_cache.get(cache_key)
+    if cached:
+        return cached
 
     # Build match query
     match_query = (
@@ -1507,7 +1511,7 @@ async def get_event_schedule(
     # Extract leg number from key for backwards compatibility (just the number)
     current_leg_num = current_leg_key[0] if current_leg_key else None
 
-    return {
+    response = {
         "legs": legs_list,
         "current_leg": current_leg_num,
         "total_legs": len(legs_list),
@@ -1518,6 +1522,9 @@ async def get_event_schedule(
         "current_round": current_leg_num,
         "total_rounds": len(legs_list),
     }
+
+    await redis_cache.set(cache_key, response, ttl=5)
+    return response
 
 
 @router.get("/events/{event_id}/my-match", response_model=TAMatchResponse)
@@ -1601,7 +1608,12 @@ async def get_my_matches(
     Returns all matches where the user is a competitor, including completed matches.
     This is used for the "Match History" view in the mobile app.
     """
-    event = await get_ta_event(event_id, db, request)
+    # Skip get_ta_event() — pure read endpoint, empty match query = empty response
+    # Short-lived cache — per-user match history
+    cache_key = f"ta:my_matches:{event_id}:{current_user.id}"
+    cached = await redis_cache.get(cache_key)
+    if cached:
+        return cached
 
     # Find all matches where user is competitor A or B
     match_query = (
@@ -1669,11 +1681,14 @@ async def get_my_matches(
     for item in items:
         by_leg.setdefault(item["leg_number"], []).append(item)
 
-    return {
+    response = {
         "items": items,
         "total": len(items),
         "by_leg": by_leg,
     }
+
+    await redis_cache.set(cache_key, response, ttl=5)
+    return response
 
 
 # =============================================================================
@@ -2265,8 +2280,7 @@ async def list_matches(
     - leg: Filter by leg number (mansă)
     - status: Filter by match status
     """
-    await get_ta_event(event_id, db, request)
-
+    # Skip get_ta_event() — pure read endpoint, cache handles invalid IDs
     # Short-lived cache to prevent API loops from mobile clients
     cache_key = f"ta:matches:{event_id}:{phase.value if phase else 'all'}:{leg_number or 'all'}:{status_filter or 'all'}"
     cached = await redis_cache.get(cache_key)

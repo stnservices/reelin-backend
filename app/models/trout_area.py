@@ -381,7 +381,7 @@ class TAGameCard(Base):
     event: Mapped["Event"] = relationship("Event")
     match: Mapped["TAMatch"] = relationship("TAMatch", back_populates="game_cards")
     user: Mapped["UserAccount"] = relationship(
-        "UserAccount", foreign_keys=[user_id], lazy="joined"
+        "UserAccount", foreign_keys=[user_id], lazy="noload"
     )
     opponent: Mapped[Optional["UserAccount"]] = relationship(
         "UserAccount", foreign_keys=[opponent_id]
@@ -491,10 +491,10 @@ class TAMatch(Base):
     # Relationships
     event: Mapped["Event"] = relationship("Event", back_populates="ta_matches")
     competitor_a: Mapped[Optional["UserAccount"]] = relationship(
-        "UserAccount", foreign_keys=[competitor_a_id], lazy="joined"
+        "UserAccount", foreign_keys=[competitor_a_id], lazy="noload"
     )
     competitor_b: Mapped[Optional["UserAccount"]] = relationship(
-        "UserAccount", foreign_keys=[competitor_b_id], lazy="joined"
+        "UserAccount", foreign_keys=[competitor_b_id], lazy="noload"
     )
     competitor_a_enrollment: Mapped[Optional["EventEnrollment"]] = relationship(
         "EventEnrollment", foreign_keys=[competitor_a_enrollment_id]
