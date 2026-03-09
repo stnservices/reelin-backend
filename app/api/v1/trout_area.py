@@ -58,7 +58,6 @@ from app.models.trout_area import (
     TAKnockoutBracket,
     TAKnockoutMatch,
     TAQualifierStanding,
-    TAMatchOutcome,
     TATournamentPhase,
     TAMatchStatus,
     TAGameCardStatus,
@@ -110,7 +109,6 @@ from app.schemas.trout_area import (
     TAAlgorithmOption,
     TAAlgorithmPreviewResponse,
     # Schedule
-    TARoundResponse,
     TAScheduleResponse,
     # Enums
     PairingAlgorithmAPI,
@@ -1439,32 +1437,32 @@ async def get_event_schedule(
             legs_dict[leg_key] = []
 
         # Build match response with player names
-        match_data = TAMatchResponse(
-            id=match.id,
-            event_id=match.event_id,
-            leg_number=match.round_number,  # Map to leg_number for API
-            match_number=match.match_number,
-            phase=TATournamentPhaseAPI(match.phase) if match.phase else TATournamentPhaseAPI.QUALIFIER,
-            player_a_id=match.competitor_a_id,
-            player_b_id=match.competitor_b_id,
-            seat_a=match.seat_a,
-            seat_b=match.seat_b,
-            player_a_catches=match.competitor_a_catches or 0,
-            player_b_catches=match.competitor_b_catches or 0,
-            player_a_points=match.competitor_a_points or 0,
-            player_b_points=match.competitor_b_points or 0,
-            player_a_outcome=TAMatchOutcomeAPI(match.competitor_a_outcome_code) if match.competitor_a_outcome_code else None,
-            player_b_outcome=TAMatchOutcomeAPI(match.competitor_b_outcome_code) if match.competitor_b_outcome_code else None,
-            status=TAMatchStatusAPI(match.status) if match.status else TAMatchStatusAPI.PENDING,
-            started_at=match.started_at,
-            completed_at=match.completed_at,
-            created_at=match.created_at,
-            player_a_name=match.competitor_a.profile.full_name if match.competitor_a and match.competitor_a.profile else None,
-            player_b_name=match.competitor_b.profile.full_name if match.competitor_b and match.competitor_b.profile else None,
-            player_a_avatar=match.competitor_a.effective_avatar_url if match.competitor_a else None,
-            player_b_avatar=match.competitor_b.effective_avatar_url if match.competitor_b else None,
+        match_data = {
+            "id": match.id,
+            "event_id": match.event_id,
+            "leg_number": match.round_number,
+            "match_number": match.match_number,
+            "phase": match.phase or TATournamentPhaseAPI.QUALIFIER.value,
+            "player_a_id": match.competitor_a_id,
+            "player_b_id": match.competitor_b_id,
+            "seat_a": match.seat_a,
+            "seat_b": match.seat_b,
+            "player_a_catches": match.competitor_a_catches or 0,
+            "player_b_catches": match.competitor_b_catches or 0,
+            "player_a_points": float(match.competitor_a_points) if match.competitor_a_points else 0,
+            "player_b_points": float(match.competitor_b_points) if match.competitor_b_points else 0,
+            "player_a_outcome": match.competitor_a_outcome_code,
+            "player_b_outcome": match.competitor_b_outcome_code,
+            "status": match.status or TAMatchStatusAPI.SCHEDULED.value,
+            "started_at": match.started_at,
+            "completed_at": match.completed_at,
+            "created_at": match.created_at,
+            "player_a_name": match.competitor_a.profile.full_name if match.competitor_a and match.competitor_a.profile else None,
+            "player_b_name": match.competitor_b.profile.full_name if match.competitor_b and match.competitor_b.profile else None,
+            "player_a_avatar": match.competitor_a.effective_avatar_url if match.competitor_a else None,
+            "player_b_avatar": match.competitor_b.effective_avatar_url if match.competitor_b else None,
             **_game_card_summary(match),
-        )
+        }
         legs_dict[leg_key].append(match_data)
 
         if match.status == TAMatchStatus.COMPLETED:
@@ -1488,7 +1486,7 @@ async def get_event_schedule(
     if current_leg_key is None:
         for leg_key in sorted_keys:
             leg_matches = legs_dict[leg_key]
-            if any(m.status != TAMatchStatusAPI.COMPLETED for m in leg_matches):
+            if any(m["status"] != TAMatchStatusAPI.COMPLETED.value for m in leg_matches):
                 current_leg_key = leg_key
                 break
 
@@ -1497,17 +1495,17 @@ async def get_event_schedule(
     for leg_key in sorted_keys:
         leg_num, leg_phase = leg_key
         leg_matches = legs_dict[leg_key]
-        completed_in_leg = sum(1 for m in leg_matches if m.status == TAMatchStatusAPI.COMPLETED)
+        completed_in_leg = sum(1 for m in leg_matches if m["status"] == TAMatchStatusAPI.COMPLETED.value)
         is_completed = completed_in_leg == len(leg_matches)
-        legs_list.append(TARoundResponse(
-            leg_number=leg_num,
-            phase=TATournamentPhaseAPI(leg_phase) if leg_phase else TATournamentPhaseAPI.QUALIFIER,
-            matches=leg_matches,
-            matches_completed=completed_in_leg,
-            total_matches=len(leg_matches),
-            is_current=(leg_key == current_leg_key),
-            is_completed=is_completed,
-        ))
+        legs_list.append({
+            "leg_number": leg_num,
+            "phase": leg_phase or TATournamentPhaseAPI.QUALIFIER.value,
+            "matches": leg_matches,
+            "matches_completed": completed_in_leg,
+            "total_matches": len(leg_matches),
+            "is_current": (leg_key == current_leg_key),
+            "is_completed": is_completed,
+        })
 
     # Extract leg number from key for backwards compatibility (just the number)
     current_leg_num = current_leg_key[0] if current_leg_key else None
@@ -1643,31 +1641,31 @@ async def get_my_matches(
             player_b_name = match.competitor_b.profile.full_name
             player_b_avatar = match.competitor_b.effective_avatar_url
 
-        item = TAMatchResponse(
-            id=match.id,
-            event_id=match.event_id,
-            phase=TATournamentPhaseAPI(match.phase) if match.phase else TATournamentPhaseAPI.QUALIFIER,
-            leg_number=match.round_number,  # Map to leg_number for API
-            match_number=match.match_number,
-            player_a_id=match.competitor_a_id,
-            player_b_id=match.competitor_b_id,
-            seat_a=match.seat_a,
-            seat_b=match.seat_b,
-            player_a_catches=match.competitor_a_catches,
-            player_b_catches=match.competitor_b_catches,
-            player_a_points=match.competitor_a_points,
-            player_b_points=match.competitor_b_points,
-            player_a_outcome=TAMatchOutcome(match.competitor_a_outcome_code) if match.competitor_a_outcome_code else None,
-            player_b_outcome=TAMatchOutcome(match.competitor_b_outcome_code) if match.competitor_b_outcome_code else None,
-            status=match.status,
-            started_at=match.started_at,
-            completed_at=match.completed_at,
-            created_at=match.created_at,
-            player_a_name=player_a_name,
-            player_b_name=player_b_name,
-            player_a_avatar=player_a_avatar,
-            player_b_avatar=player_b_avatar,
-        )
+        item = {
+            "id": match.id,
+            "event_id": match.event_id,
+            "phase": match.phase or TATournamentPhaseAPI.QUALIFIER.value,
+            "leg_number": match.round_number,
+            "match_number": match.match_number,
+            "player_a_id": match.competitor_a_id,
+            "player_b_id": match.competitor_b_id,
+            "seat_a": match.seat_a,
+            "seat_b": match.seat_b,
+            "player_a_catches": match.competitor_a_catches,
+            "player_b_catches": match.competitor_b_catches,
+            "player_a_points": float(match.competitor_a_points) if match.competitor_a_points is not None else None,
+            "player_b_points": float(match.competitor_b_points) if match.competitor_b_points is not None else None,
+            "player_a_outcome": match.competitor_a_outcome_code,
+            "player_b_outcome": match.competitor_b_outcome_code,
+            "status": match.status,
+            "started_at": match.started_at,
+            "completed_at": match.completed_at,
+            "created_at": match.created_at,
+            "player_a_name": player_a_name,
+            "player_b_name": player_b_name,
+            "player_a_avatar": player_a_avatar,
+            "player_b_avatar": player_b_avatar,
+        }
         items.append(item)
 
         leg_num = match.round_number
@@ -2319,32 +2317,32 @@ async def list_matches(
             player_b_name = match.competitor_b.profile.full_name
             player_b_avatar = match.competitor_b.effective_avatar_url
 
-        item = TAMatchResponse(
-            id=match.id,
-            event_id=match.event_id,
-            phase=TATournamentPhaseAPI(match.phase),
-            leg_number=match.round_number,  # Map to leg_number for API
-            match_number=match.match_number,
-            player_a_id=match.competitor_a_id,
-            player_b_id=match.competitor_b_id,
-            seat_a=match.seat_a,
-            seat_b=match.seat_b,
-            player_a_catches=match.competitor_a_catches,
-            player_b_catches=match.competitor_b_catches,
-            player_a_points=match.competitor_a_points,
-            player_b_points=match.competitor_b_points,
-            player_a_outcome=TAMatchOutcome(match.competitor_a_outcome_code) if match.competitor_a_outcome_code else None,
-            player_b_outcome=TAMatchOutcome(match.competitor_b_outcome_code) if match.competitor_b_outcome_code else None,
-            status=match.status,
-            started_at=match.started_at,
-            completed_at=match.completed_at,
-            created_at=match.created_at,
-            player_a_name=player_a_name,
-            player_b_name=player_b_name,
-            player_a_avatar=player_a_avatar,
-            player_b_avatar=player_b_avatar,
+        item = {
+            "id": match.id,
+            "event_id": match.event_id,
+            "phase": match.phase,
+            "leg_number": match.round_number,
+            "match_number": match.match_number,
+            "player_a_id": match.competitor_a_id,
+            "player_b_id": match.competitor_b_id,
+            "seat_a": match.seat_a,
+            "seat_b": match.seat_b,
+            "player_a_catches": match.competitor_a_catches,
+            "player_b_catches": match.competitor_b_catches,
+            "player_a_points": float(match.competitor_a_points) if match.competitor_a_points is not None else None,
+            "player_b_points": float(match.competitor_b_points) if match.competitor_b_points is not None else None,
+            "player_a_outcome": match.competitor_a_outcome_code,
+            "player_b_outcome": match.competitor_b_outcome_code,
+            "status": match.status,
+            "started_at": match.started_at,
+            "completed_at": match.completed_at,
+            "created_at": match.created_at,
+            "player_a_name": player_a_name,
+            "player_b_name": player_b_name,
+            "player_a_avatar": player_a_avatar,
+            "player_b_avatar": player_b_avatar,
             **_game_card_summary(match),
-        )
+        }
         items.append(item)
 
         leg_num = match.round_number
@@ -2354,9 +2352,9 @@ async def list_matches(
 
     # Build response
     response = {
-        "items": [item.model_dump() for item in items],
+        "items": items,
         "total": len(items),
-        "by_leg": {k: [m.model_dump() for m in v] for k, v in by_leg.items()},
+        "by_leg": by_leg,
     }
 
     # Cache for 5 seconds to prevent API loops
