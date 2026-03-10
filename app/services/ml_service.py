@@ -541,7 +541,7 @@ class MLService:
             if model_id:
                 await self._log_prediction(
                     model_id=model_id,
-                    user_id=0,
+                    user_id=None,
                     entity_type="event_attendance",
                     entity_id=0,
                     score=float(predicted),
@@ -557,6 +557,7 @@ class MLService:
     async def predict_user_performance(
         self,
         user_features: dict,
+        user_id: Optional[int] = None,
     ) -> Optional[dict]:
         """
         Predict user's likely finish bracket in an event.
@@ -612,7 +613,7 @@ class MLService:
             if model_id:
                 await self._log_prediction(
                     model_id=model_id,
-                    user_id=0,
+                    user_id=user_id,
                     entity_type="performance",
                     entity_id=0,
                     score=float(max(probas)),

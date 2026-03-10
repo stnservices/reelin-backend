@@ -472,7 +472,7 @@ async def get_my_performance_prediction(
 
     # Get ML prediction
     ml_service = MLService(db)
-    prediction = await ml_service.predict_user_performance(features)
+    prediction = await ml_service.predict_user_performance(features, user_id=current_user.id)
 
     if prediction:
         bracket = prediction["predicted_bracket"]
