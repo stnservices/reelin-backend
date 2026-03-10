@@ -8,11 +8,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.core.permissions import AdminOnly
 from app.models.enrollment import EventEnrollment
 from app.models.event import Event, EventFishScoring, EventSpeciesBonusPoints, EventPrize, EventScoringRule
+from app.models.event_sponsor import EventSponsor
+from app.models.team import Team, TeamMember
 from app.models.trout_area import TAEventSettings, TAEventPointConfig
 from app.models.user import UserAccount
 
@@ -58,8 +61,9 @@ async def clone_event(
 ) -> EventCloneResponse:
     """Clone an existing event into a new draft event.
 
-    Copies config and game setup — but NOT enrollments, catches, lineups, matches,
-    game cards, standings, bracket, contestations, scoreboards, or teams.
+    Copies config, game setup, sponsors, and optionally enrollments with teams.
+    Does NOT copy catches, lineups, matches, game cards, standings, bracket,
+    contestations, or scoreboards.
     """
     now = datetime.now(timezone.utc)
     tomorrow = now + timedelta(days=1)
@@ -115,6 +119,11 @@ async def clone_event(
         select(EventScoringRule).where(EventScoringRule.event_id == event_id)
     )
     scoring_rules = rules_res.scalars().all()
+
+    sponsors_res = await db.execute(
+        select(EventSponsor).where(EventSponsor.event_id == event_id)
+    )
+    sponsors = sponsors_res.scalars().all()
 
     # ── 2. Create new Event ───────────────────────────────────────────────────
     new_name = data.name or f"{source.name} (copy)"
@@ -250,6 +259,15 @@ async def clone_event(
             points_formula=rule.points_formula,
         ))
 
+    # ── 5. Copy sponsors ─────────────────────────────────────────────────────
+    for sp in sponsors:
+        db.add(EventSponsor(
+            event_id=new_event.id,
+            sponsor_id=sp.sponsor_id,
+            display_order=sp.display_order,
+        ))
+
+    # ── 6. Copy enrollments (+ teams for team events) ─────────────────────
     if data.include_enrollments:
         enr_res = await db.execute(
             select(EventEnrollment).where(
@@ -257,8 +275,12 @@ async def clone_event(
                 EventEnrollment.status == "approved",
             )
         )
-        for enr in enr_res.scalars().all():
-            db.add(EventEnrollment(
+        old_enrollments = enr_res.scalars().all()
+
+        # Create new enrollments and build old→new ID mapping
+        new_enrollments = []
+        for enr in old_enrollments:
+            new_enr = EventEnrollment(
                 event_id=new_event.id,
                 user_id=enr.user_id,
                 status="approved",
@@ -266,7 +288,55 @@ async def clone_event(
                 enrollment_number=None,
                 enrolled_at=now,
                 updated_at=now,
-            ))
+            )
+            db.add(new_enr)
+            new_enrollments.append((enr.id, new_enr))
+
+        await db.flush()  # populate new enrollment IDs
+
+        enrollment_map: dict[int, int] = {
+            old_id: new_enr.id for old_id, new_enr in new_enrollments
+        }
+
+        # Clone teams + members for team events
+        if source.is_team_event and enrollment_map:
+            teams_res = await db.execute(
+                select(Team)
+                .where(Team.event_id == event_id, Team.is_active == True)
+                .options(selectinload(Team.members))
+            )
+            old_teams = teams_res.scalars().all()
+
+            new_teams = []
+            for team in old_teams:
+                new_team = Team(
+                    event_id=new_event.id,
+                    name=team.name,
+                    team_number=team.team_number,
+                    created_by_id=team.created_by_id,
+                    description=team.description,
+                    logo_url=team.logo_url,
+                    is_active=True,
+                )
+                db.add(new_team)
+                new_teams.append((team, new_team))
+
+            await db.flush()  # single flush — populate all new team IDs
+
+            for old_team, new_team in new_teams:
+                for member in old_team.members:
+                    if not member.is_active:
+                        continue
+                    new_enrollment_id = enrollment_map.get(member.enrollment_id)
+                    if new_enrollment_id is None:
+                        continue  # enrollment wasn't cloned (non-approved edge case)
+                    db.add(TeamMember(
+                        team_id=new_team.id,
+                        enrollment_id=new_enrollment_id,
+                        role=member.role,
+                        added_by_id=member.added_by_id,
+                        is_active=True,
+                    ))
 
     await db.commit()
     await db.refresh(new_event)
