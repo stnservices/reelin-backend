@@ -27,6 +27,7 @@ class AdminActionType(str, Enum):
     EVENT_VALIDATOR_REMOVED = "event_validator_removed"
     EVENT_STATUS_CHANGED = "event_status_changed"
     EVENT_STATUS_FORCE_CHANGED = "event_status_force_changed"
+    USER_IMPERSONATED = "user_impersonated"
 
 
 class AdminActionLog(Base):

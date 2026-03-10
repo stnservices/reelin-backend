@@ -1,5 +1,6 @@
 """Admin user management endpoints."""
 
+from datetime import timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -8,7 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
+from app.config import get_settings
 from app.core.permissions import AdminOnly
+from app.core.security import create_access_token
 from app.models.user import UserAccount, UserProfile
 from app.schemas.user import UserResponse, AdminUserProfileUpdate
 from app.schemas.common import PaginatedResponse, MessageResponse
@@ -263,3 +266,76 @@ async def update_user_profile(
     await db.refresh(user)
 
     return user
+
+
+WEB_ROLES = {"administrator", "organizer", "validator"}
+
+
+@router.post("/{user_id}/impersonate")
+async def impersonate_user(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(AdminOnly),
+) -> dict:
+    """
+    Generate an access token to impersonate a user.
+    Admin only. Target must have a web-dashboard role.
+    """
+    if user_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot impersonate yourself",
+        )
+
+    query = (
+        select(UserAccount)
+        .options(selectinload(UserAccount.profile))
+        .where(UserAccount.id == user_id)
+    )
+    result = await db.execute(query)
+    target = result.scalar_one_or_none()
+
+    if not target:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    if not target.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot impersonate an inactive user",
+        )
+
+    target_roles = set(target.profile.roles) if target.profile else set()
+    if not target_roles & WEB_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Target user does not have a web dashboard role",
+        )
+
+    settings = get_settings()
+    expires_delta = timedelta(minutes=settings.access_token_expire_minutes)
+    access_token = create_access_token(
+        data={"sub": str(target.id), "act": str(current_user.id)},
+        expires_delta=expires_delta,
+    )
+
+    # Audit log
+    audit_log = AdminActionLog(
+        admin_id=current_user.id,
+        action_type=AdminActionType.USER_IMPERSONATED.value,
+        target_user_id=target.id,
+        details={
+            "target_email": target.email,
+            "target_roles": target.profile.roles if target.profile else [],
+        },
+    )
+    db.add(audit_log)
+    await db.commit()
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "expires_in": settings.access_token_expire_minutes * 60,
+    }
