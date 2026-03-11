@@ -281,6 +281,82 @@ def _sync_check_hall_of_fame_achievements(
     return newly_awarded
 
 
+async def _check_hall_of_fame_achievements(
+    db,
+    user_id: int,
+) -> List:
+    """Async version of Hall of Fame achievement check for use in async endpoints."""
+    from app.models.hall_of_fame import HallOfFameEntry
+
+    newly_awarded = []
+
+    # Check for SF Champion
+    sf_hof_stmt = (
+        select(HallOfFameEntry.id)
+        .where(HallOfFameEntry.user_id == user_id)
+        .where(HallOfFameEntry.format_code == "sf")
+        .where(HallOfFameEntry.position == 1)
+        .where(HallOfFameEntry.achievement_type == "national_champion")
+    )
+    result = await db.execute(sf_hof_stmt)
+    has_sf_title = result.scalar() is not None
+
+    if has_sf_title:
+        existing_stmt = (
+            select(UserAchievement.id)
+            .join(AchievementDefinition, AchievementDefinition.id == UserAchievement.achievement_id)
+            .where(UserAchievement.user_id == user_id)
+            .where(AchievementDefinition.code == "sf_champion")
+        )
+        result = await db.execute(existing_stmt)
+        if not result.scalar():
+            ach_stmt = select(AchievementDefinition).where(AchievementDefinition.code == "sf_champion")
+            result = await db.execute(ach_stmt)
+            sf_ach = result.scalar_one_or_none()
+            if sf_ach:
+                user_ach = UserAchievement(
+                    user_id=user_id,
+                    achievement_id=sf_ach.id,
+                )
+                db.add(user_ach)
+                newly_awarded.append(sf_ach)
+                logger.info(f"Awarded SF Champion to user {user_id}")
+
+    # Check for TA Champion
+    ta_hof_stmt = (
+        select(HallOfFameEntry.id)
+        .where(HallOfFameEntry.user_id == user_id)
+        .where(HallOfFameEntry.format_code == "ta")
+        .where(HallOfFameEntry.position == 1)
+        .where(HallOfFameEntry.achievement_type == "national_champion")
+    )
+    result = await db.execute(ta_hof_stmt)
+    has_ta_title = result.scalar() is not None
+
+    if has_ta_title:
+        existing_stmt = (
+            select(UserAchievement.id)
+            .join(AchievementDefinition, AchievementDefinition.id == UserAchievement.achievement_id)
+            .where(UserAchievement.user_id == user_id)
+            .where(AchievementDefinition.code == "ta_champion")
+        )
+        result = await db.execute(existing_stmt)
+        if not result.scalar():
+            ach_stmt = select(AchievementDefinition).where(AchievementDefinition.code == "ta_champion")
+            result = await db.execute(ach_stmt)
+            ta_ach = result.scalar_one_or_none()
+            if ta_ach:
+                user_ach = UserAchievement(
+                    user_id=user_id,
+                    achievement_id=ta_ach.id,
+                )
+                db.add(user_ach)
+                newly_awarded.append(ta_ach)
+                logger.info(f"Awarded TA Champion to user {user_id}")
+
+    return newly_awarded
+
+
 # === Celery Tasks ===
 
 
