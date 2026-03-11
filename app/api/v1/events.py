@@ -1694,11 +1694,11 @@ async def add_fish_scoring(
             detail="Not authorized to modify this event",
         )
 
-    # Can only modify draft events
-    if event.status != EventStatus.DRAFT.value:
+    # Can only modify draft or published events
+    if event.status not in (EventStatus.DRAFT.value, EventStatus.PUBLISHED.value):
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST,
-            detail="Can only modify fish scoring for draft events",
+            detail="Can only modify fish scoring for draft or published events",
         )
 
     # Verify fish exists
@@ -1785,10 +1785,10 @@ async def update_fish_scoring(
             detail="Not authorized to modify this event",
         )
 
-    if event.status != EventStatus.DRAFT.value:
+    if event.status not in (EventStatus.DRAFT.value, EventStatus.PUBLISHED.value):
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST,
-            detail="Can only modify fish scoring for draft events",
+            detail="Can only modify fish scoring for draft or published events",
         )
 
     # Apply updates
@@ -1842,10 +1842,10 @@ async def delete_fish_scoring(
             detail="Not authorized to modify this event",
         )
 
-    if event.status != EventStatus.DRAFT.value:
+    if event.status not in (EventStatus.DRAFT.value, EventStatus.PUBLISHED.value):
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST,
-            detail="Can only modify fish scoring for draft events",
+            detail="Can only modify fish scoring for draft or published events",
         )
 
     await db.delete(fish_scoring)
@@ -1906,11 +1906,11 @@ async def add_bonus_points(
             detail="Not authorized to modify this event",
         )
 
-    # Can only modify draft events
-    if event.status != EventStatus.DRAFT.value:
+    # Can only modify draft or published events
+    if event.status not in (EventStatus.DRAFT.value, EventStatus.PUBLISHED.value):
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST,
-            detail="Can only modify bonus points for draft events",
+            detail="Can only modify bonus points for draft or published events",
         )
 
     # Check if species count already exists for this event
@@ -1970,10 +1970,10 @@ async def delete_bonus_points(
             detail="Not authorized to modify this event",
         )
 
-    if event.status != EventStatus.DRAFT.value:
+    if event.status not in (EventStatus.DRAFT.value, EventStatus.PUBLISHED.value):
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST,
-            detail="Can only modify bonus points for draft events",
+            detail="Can only modify bonus points for draft or published events",
         )
 
     await db.delete(bonus_points)
