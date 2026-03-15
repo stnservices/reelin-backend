@@ -1,0 +1,315 @@
+{
+  "timestamp": "2026-03-15T15:52:25Z",
+  "config": {
+    "num_users": 20,
+    "rounds": 10,
+    "spectator_count": 15,
+    "ta_event": 300,
+    "sf_event": 301
+  },
+  "summary": {
+    "total_requests": 2650,
+    "total_errors": 0,
+    "error_rate_pct": 0.0,
+    "global_avg_ms": 703.5,
+    "global_p50_ms": 506.8,
+    "global_p95_ms": 1968.8,
+    "global_p99_ms": 3290.2
+  },
+  "endpoints": {
+    "rankings": {
+      "name": "TA rankings",
+      "n": 200,
+      "avg": 464.8,
+      "p50": 451.7,
+      "p90": 769.0,
+      "p95": 862.0,
+      "p99": 968.8,
+      "max": 970.4,
+      "errors": 0,
+      "status_counts": {
+        "200": 200
+      }
+    },
+    "statistics": {
+      "name": "TA statistics",
+      "n": 200,
+      "avg": 539.9,
+      "p50": 577.6,
+      "p90": 779.4,
+      "p95": 890.5,
+      "p99": 1045.0,
+      "max": 1075.7,
+      "errors": 0,
+      "status_counts": {
+        "200": 200
+      }
+    },
+    "my_matches": {
+      "name": "TA my_matches",
+      "n": 200,
+      "avg": 682.9,
+      "p50": 587.5,
+      "p90": 1303.2,
+      "p95": 1725.4,
+      "p99": 2529.3,
+      "max": 2614.6,
+      "errors": 0,
+      "status_counts": {
+        "200": 200
+      }
+    },
+    "game_cards_my": {
+      "name": "TA game_cards_my",
+      "n": 200,
+      "avg": 796.6,
+      "p50": 726.8,
+      "p90": 1445.8,
+      "p95": 1882.8,
+      "p99": 3036.6,
+      "max": 3189.7,
+      "errors": 0,
+      "status_counts": {
+        "200": 200
+      }
+    },
+    "public_standings": {
+      "name": "TA public_standings",
+      "n": 150,
+      "avg": 290.5,
+      "p50": 267.6,
+      "p90": 431.5,
+      "p95": 811.5,
+      "p99": 839.7,
+      "max": 846.0,
+      "errors": 0,
+      "status_counts": {
+        "200": 150
+      }
+    },
+    "public_status": {
+      "name": "TA public_status",
+      "n": 150,
+      "avg": 433.8,
+      "p50": 330.6,
+      "p90": 981.1,
+      "p95": 1183.8,
+      "p99": 1683.5,
+      "max": 1843.3,
+      "errors": 0,
+      "status_counts": {
+        "200": 150
+      }
+    },
+    "public_bracket": {
+      "name": "TA public_bracket",
+      "n": 150,
+      "avg": 598.9,
+      "p50": 474.8,
+      "p90": 1217.7,
+      "p95": 1329.4,
+      "p99": 1350.9,
+      "max": 1367.0,
+      "errors": 0,
+      "status_counts": {
+        "404": 150
+      }
+    },
+    "sf_leaderboard": {
+      "name": "SF leaderboard",
+      "n": 150,
+      "avg": 140.0,
+      "p50": 112.0,
+      "p90": 303.7,
+      "p95": 369.2,
+      "p99": 390.6,
+      "max": 399.7,
+      "errors": 0,
+      "status_counts": {
+        "200": 150
+      }
+    },
+    "notifications": {
+      "name": "Auth notifications",
+      "n": 35,
+      "avg": 335.6,
+      "p50": 315.4,
+      "p90": 446.8,
+      "p95": 590.6,
+      "p99": 599.8,
+      "max": 599.8,
+      "errors": 0,
+      "status_counts": {
+        "200": 35
+      }
+    },
+    "notifications_stats": {
+      "name": "Auth notifications_stats",
+      "n": 37,
+      "avg": 287.0,
+      "p50": 273.7,
+      "p90": 413.9,
+      "p95": 435.8,
+      "p99": 503.6,
+      "max": 503.6,
+      "errors": 0,
+      "status_counts": {
+        "200": 37
+      }
+    },
+    "achievements_me": {
+      "name": "Auth achievements_me",
+      "n": 34,
+      "avg": 639.6,
+      "p50": 652.7,
+      "p90": 796.0,
+      "p95": 1071.1,
+      "p99": 1077.7,
+      "max": 1077.7,
+      "errors": 0,
+      "status_counts": {
+        "200": 34
+      }
+    },
+    "rules": {
+      "name": "Auth rules",
+      "n": 33,
+      "avg": 289.2,
+      "p50": 276.8,
+      "p90": 427.2,
+      "p95": 472.6,
+      "p99": 565.1,
+      "max": 565.1,
+      "errors": 0,
+      "status_counts": {
+        "200": 33
+      }
+    },
+    "rules_defaults": {
+      "name": "Auth rules_defaults",
+      "n": 26,
+      "avg": 311.2,
+      "p50": 288.8,
+      "p90": 450.0,
+      "p95": 455.9,
+      "p99": 457.6,
+      "max": 457.6,
+      "errors": 0,
+      "status_counts": {
+        "200": 26
+      }
+    },
+    "follows_me": {
+      "name": "Auth follows_me",
+      "n": 35,
+      "avg": 370.3,
+      "p50": 345.5,
+      "p90": 512.3,
+      "p95": 626.7,
+      "p99": 661.7,
+      "max": 661.7,
+      "errors": 0,
+      "status_counts": {
+        "200": 35
+      }
+    },
+    "mixed_statistics": {
+      "name": "Mixed statistics",
+      "n": 145,
+      "avg": 853.3,
+      "p50": 746.3,
+      "p90": 1820.8,
+      "p95": 2474.2,
+      "p99": 2891.7,
+      "max": 3079.5,
+      "errors": 0,
+      "status_counts": {
+        "200": 145
+      }
+    },
+    "mixed_game_cards": {
+      "name": "Mixed game_cards",
+      "n": 140,
+      "avg": 1123.6,
+      "p50": 1031.5,
+      "p90": 2074.5,
+      "p95": 2587.8,
+      "p99": 3700.3,
+      "max": 3964.2,
+      "errors": 0,
+      "status_counts": {
+        "200": 140
+      }
+    },
+    "mixed_my_matches": {
+      "name": "Mixed my_matches",
+      "n": 156,
+      "avg": 878.0,
+      "p50": 806.2,
+      "p90": 1677.8,
+      "p95": 2151.3,
+      "p99": 3274.4,
+      "max": 3447.3,
+      "errors": 0,
+      "status_counts": {
+        "200": 156
+      }
+    },
+    "mixed_rankings": {
+      "name": "Mixed rankings",
+      "n": 159,
+      "avg": 756.4,
+      "p50": 633.5,
+      "p90": 1427.6,
+      "p95": 1747.3,
+      "p99": 2140.2,
+      "max": 2182.8,
+      "errors": 0,
+      "status_counts": {
+        "200": 159
+      }
+    },
+    "mixed_pub_standings": {
+      "name": "Mixed pub_standings",
+      "n": 150,
+      "avg": 1058.1,
+      "p50": 813.5,
+      "p90": 2143.0,
+      "p95": 2737.0,
+      "p99": 3148.3,
+      "max": 3187.1,
+      "errors": 0,
+      "status_counts": {
+        "200": 150
+      }
+    },
+    "mixed_pub_status": {
+      "name": "Mixed pub_status",
+      "n": 150,
+      "avg": 1149.8,
+      "p50": 906.0,
+      "p90": 2200.5,
+      "p95": 3308.7,
+      "p99": 3724.7,
+      "max": 3784.7,
+      "errors": 0,
+      "status_counts": {
+        "200": 150
+      }
+    },
+    "mixed_sf_leaderboard": {
+      "name": "Mixed sf_leaderboard",
+      "n": 150,
+      "avg": 1358.2,
+      "p50": 845.1,
+      "p90": 2361.8,
+      "p95": 4997.2,
+      "p99": 5165.6,
+      "max": 5251.4,
+      "errors": 0,
+      "status_counts": {
+        "200": 150
+      }
+    }
+  }
+}
