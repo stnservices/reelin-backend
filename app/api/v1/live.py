@@ -25,7 +25,7 @@ from app.models.event import Event, EventStatus
 from app.models.event_validator import EventValidator
 from app.models.route_history import RouteHistory
 from app.models.user import UserAccount
-from app.dependencies import get_current_user, get_current_user_optional
+from app.dependencies import get_current_user, get_current_user_id_cached, get_current_user_optional
 from app.services.redis_cache import redis_cache
 
 
@@ -272,17 +272,16 @@ async def start_tracking(
 @router.post("/events/{event_id}/tracking/stop")
 async def stop_tracking(
     event_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     Stop tracking session for current user.
     Removes their position from Redis.
     """
     # Remove from Redis
-    await redis_cache.remove_participant_position(event_id, current_user.id)
+    await redis_cache.remove_participant_position(event_id, user_id)
 
-    logger.info(f"User {current_user.id} stopped tracking for event {event_id}")
+    logger.info(f"User {user_id} stopped tracking for event {event_id}")
 
     return {"status": "tracking_stopped", "event_id": event_id}
 
@@ -292,7 +291,7 @@ async def update_position(
     event_id: int,
     position: PositionUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     Update current user's position in Redis.
@@ -302,21 +301,21 @@ async def update_position(
     This stores positions for quick lookup by organizers/validators.
     """
     # Check if user has an active tracking session
-    existing = await redis_cache.get_participant_position(event_id, current_user.id)
+    existing = await redis_cache.get_participant_position(event_id, user_id)
     if not existing:
         # Auto-start tracking if not started
         event = await _get_event(db, event_id)
         if not event or event.status != EventStatus.ONGOING.value:
             raise HTTPException(status_code=400, detail="Event not trackable")
 
-        display_name, avatar_url = await _get_user_display_info(db, current_user.id)
+        display_name, avatar_url = await _get_user_display_info(db, user_id)
     else:
-        display_name = existing.get("display_name", f"User {current_user.id}")
+        display_name = existing.get("display_name", f"User {user_id}")
         avatar_url = existing.get("avatar_url")
 
     # Update position
     position_data = {
-        "user_id": current_user.id,
+        "user_id": user_id,
         "display_name": display_name,
         "avatar_url": avatar_url,
         "lat": position.lat,
@@ -329,7 +328,7 @@ async def update_position(
         "updated_at": datetime.utcnow().isoformat(),
     }
 
-    await redis_cache.update_participant_position(event_id, current_user.id, position_data)
+    await redis_cache.update_participant_position(event_id, user_id, position_data)
 
     return {"status": "position_updated"}
 
@@ -372,18 +371,18 @@ async def get_tracking_participants(
 @router.post("/events/{event_id}/tracking/heartbeat")
 async def tracking_heartbeat(
     event_id: int,
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     Send heartbeat to maintain online status in Redis.
     Called periodically even when position hasn't changed.
     """
-    existing = await redis_cache.get_participant_position(event_id, current_user.id)
+    existing = await redis_cache.get_participant_position(event_id, user_id)
     if existing:
         existing["is_online"] = True
         existing["updated_at"] = datetime.utcnow().isoformat()
         await redis_cache.update_participant_position(
-            event_id, current_user.id, existing
+            event_id, user_id, existing
         )
         return {"status": "heartbeat_received"}
 

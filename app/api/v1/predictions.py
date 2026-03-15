@@ -9,8 +9,7 @@ from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import get_current_user
-from app.models.user import UserAccount
+from app.dependencies import get_current_user_id_cached
 from app.models.event import Event
 from app.models.catch import Catch, CatchStatus
 from app.models.enrollment import EventEnrollment, EnrollmentStatus
@@ -91,7 +90,7 @@ def format_hour(hour: int) -> str:
 async def get_optimal_catch_times(
     event_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ) -> CatchTimeResponse:
     """
     Get optimal fishing times for a user in an event.
@@ -104,7 +103,7 @@ async def get_optimal_catch_times(
 
     # Get user's catch history for features
     stmt = select(func.count()).where(
-        Catch.user_id == current_user.id,
+        Catch.user_id == user_id,
         Catch.status == CatchStatus.APPROVED.value,
     )
     result = await db.execute(stmt)
@@ -119,7 +118,7 @@ async def get_optimal_catch_times(
             func.count().label('count')
         )
         .where(
-            Catch.user_id == current_user.id,
+            Catch.user_id == user_id,
             Catch.status == CatchStatus.APPROVED.value,
             Catch.catch_time.isnot(None),
         )
@@ -142,7 +141,7 @@ async def get_optimal_catch_times(
 
     # Get ML predictions
     ml_service = MLService(db)
-    predictions = await ml_service.predict_catch_time(current_user.id, features)
+    predictions = await ml_service.predict_catch_time(user_id, features)
 
     if predictions:
         # Take top 6 hours
@@ -191,7 +190,7 @@ async def get_optimal_catch_times(
 async def get_species_forecast(
     event_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ) -> SpeciesForecastResponse:
     """
     Predict which species a user is likely to catch in an event.
@@ -204,7 +203,7 @@ async def get_species_forecast(
 
     # Get user stats
     stats_stmt = select(UserEventTypeStats).where(
-        UserEventTypeStats.user_id == current_user.id,
+        UserEventTypeStats.user_id == user_id,
         UserEventTypeStats.event_type_id.is_(None),
     )
     stats_result = await db.execute(stats_stmt)
@@ -214,7 +213,7 @@ async def get_species_forecast(
     species_stmt = (
         select(Catch.fish_id, func.count().label('count'))
         .where(
-            Catch.user_id == current_user.id,
+            Catch.user_id == user_id,
             Catch.status == CatchStatus.APPROVED.value,
             Catch.fish_id.isnot(None),
         )
@@ -250,7 +249,7 @@ async def get_species_forecast(
 
     # Get ML predictions
     ml_service = MLService(db)
-    predictions = await ml_service.predict_species(current_user.id, features, top_k=5)
+    predictions = await ml_service.predict_species(user_id, features, top_k=5)
 
     if predictions:
         # Fetch fish details
@@ -276,7 +275,7 @@ async def get_species_forecast(
         common_stmt = (
             select(Catch.fish_id, func.count().label('count'))
             .where(
-                Catch.user_id == current_user.id,
+                Catch.user_id == user_id,
                 Catch.status == CatchStatus.APPROVED.value,
                 Catch.fish_id.isnot(None),
             )
@@ -318,7 +317,7 @@ async def get_species_forecast(
 async def get_my_performance_prediction(
     event_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ) -> PerformancePrediction:
     """
     Get predicted performance bracket for user in an event.
@@ -331,14 +330,14 @@ async def get_my_performance_prediction(
 
     # Get user stats
     stats_stmt = select(UserEventTypeStats).where(
-        UserEventTypeStats.user_id == current_user.id,
+        UserEventTypeStats.user_id == user_id,
         UserEventTypeStats.event_type_id.is_(None),
     )
     stats_result = await db.execute(stats_stmt)
     user_stats = stats_result.scalar_one_or_none()
 
     # Get user's Hall of Fame entries
-    user_hof_stmt = select(HallOfFameEntry).where(HallOfFameEntry.user_id == current_user.id)
+    user_hof_stmt = select(HallOfFameEntry).where(HallOfFameEntry.user_id == user_id)
     user_hof_result = await db.execute(user_hof_stmt)
     user_hof_entries = user_hof_result.scalars().all()
 
@@ -364,7 +363,7 @@ async def get_my_performance_prediction(
     enrolled_user_ids = [r[0] for r in enrollment_result.all()]
 
     # Exclude current user from competitors
-    competitor_ids = [uid for uid in enrolled_user_ids if uid != current_user.id]
+    competitor_ids = [uid for uid in enrolled_user_ids if uid != user_id]
     enrolled_count = len(enrolled_user_ids)
 
     # Get competitor stats
@@ -472,7 +471,7 @@ async def get_my_performance_prediction(
 
     # Get ML prediction
     ml_service = MLService(db)
-    prediction = await ml_service.predict_user_performance(features, user_id=current_user.id)
+    prediction = await ml_service.predict_user_performance(features, user_id=user_id)
 
     if prediction:
         bracket = prediction["predicted_bracket"]

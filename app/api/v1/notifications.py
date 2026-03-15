@@ -8,8 +8,7 @@ from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import get_current_user
-from app.models.user import UserAccount
+from app.dependencies import get_current_user_id_cached
 from app.models.notification import Notification
 from app.schemas.notification import (
     NotificationResponse,
@@ -28,13 +27,13 @@ async def list_notifications(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     List notifications for current user.
     """
     # Build query
-    query = select(Notification).where(Notification.user_id == current_user.id)
+    query = select(Notification).where(Notification.user_id == user_id)
 
     if unread_only:
         query = query.where(Notification.is_read == False)
@@ -44,7 +43,7 @@ async def list_notifications(
 
     # Get total count
     count_query = select(func.count(Notification.id)).where(
-        Notification.user_id == current_user.id
+        Notification.user_id == user_id
     )
     if unread_only:
         count_query = count_query.where(Notification.is_read == False)
@@ -55,7 +54,7 @@ async def list_notifications(
 
     # Get unread count
     unread_count_query = select(func.count(Notification.id)).where(
-        Notification.user_id == current_user.id,
+        Notification.user_id == user_id,
         Notification.is_read == False,
     )
     unread_result = await db.execute(unread_count_query)
@@ -81,21 +80,21 @@ async def list_notifications(
 @router.get("/stats", response_model=NotificationStats)
 async def get_notification_stats(
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     Get notification statistics for current user.
     """
     # Total count
     total_query = select(func.count(Notification.id)).where(
-        Notification.user_id == current_user.id
+        Notification.user_id == user_id
     )
     total_result = await db.execute(total_query)
     total = total_result.scalar()
 
     # Unread count
     unread_query = select(func.count(Notification.id)).where(
-        Notification.user_id == current_user.id,
+        Notification.user_id == user_id,
         Notification.is_read == False,
     )
     unread_result = await db.execute(unread_query)
@@ -108,14 +107,14 @@ async def get_notification_stats(
 async def get_notification(
     notification_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     Get a specific notification.
     """
     query = select(Notification).where(
         Notification.id == notification_id,
-        Notification.user_id == current_user.id,
+        Notification.user_id == user_id,
     )
     result = await db.execute(query)
     notification = result.scalar_one_or_none()
@@ -130,14 +129,14 @@ async def get_notification(
 async def mark_as_read(
     notification_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     Mark a notification as read.
     """
     query = select(Notification).where(
         Notification.id == notification_id,
-        Notification.user_id == current_user.id,
+        Notification.user_id == user_id,
     )
     result = await db.execute(query)
     notification = result.scalar_one_or_none()
@@ -157,7 +156,7 @@ async def mark_as_read(
 @router.post("/read-all", response_model=MessageResponse)
 async def mark_all_as_read(
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     Mark all notifications as read for current user.
@@ -165,7 +164,7 @@ async def mark_all_as_read(
     stmt = (
         update(Notification)
         .where(
-            Notification.user_id == current_user.id,
+            Notification.user_id == user_id,
             Notification.is_read == False,
         )
         .values(
@@ -183,14 +182,14 @@ async def mark_all_as_read(
 async def delete_notification(
     notification_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     Delete a notification.
     """
     query = select(Notification).where(
         Notification.id == notification_id,
-        Notification.user_id == current_user.id,
+        Notification.user_id == user_id,
     )
     result = await db.execute(query)
     notification = result.scalar_one_or_none()
@@ -208,7 +207,7 @@ async def delete_notification(
 async def delete_all_read_notifications(
     all: bool = Query(False, description="Delete all notifications, not just read ones"),
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     Delete notifications for current user.
@@ -217,7 +216,7 @@ async def delete_all_read_notifications(
     Pass ?all=true to delete all notifications (read + unread).
     """
     query = select(Notification).where(
-        Notification.user_id == current_user.id,
+        Notification.user_id == user_id,
     )
     if not all:
         query = query.where(Notification.is_read == True)

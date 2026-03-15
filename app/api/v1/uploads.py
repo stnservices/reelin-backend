@@ -6,8 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, UploadFile, Query
 from pydantic import BaseModel
 
-from app.core.permissions import get_current_user
-from app.models.user import UserAccount
+from app.dependencies import get_current_user_id_cached
 from app.services.uploads import save_upload, delete_upload
 
 router = APIRouter()
@@ -41,7 +40,7 @@ async def upload_image(
         default=None,
         description="Entity ID for path organization (club_id, sponsor_id, event_id). For profiles, uses current user ID automatically.",
     ),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     Upload an image file.
@@ -55,7 +54,7 @@ async def upload_image(
     """
     # For profiles, always use current user's ID
     if category == UploadCategory.PROFILES:
-        resolved_entity_id = current_user.id
+        resolved_entity_id = user_id
     else:
         resolved_entity_id = entity_id
 
@@ -71,7 +70,7 @@ async def upload_image(
 @router.delete("")
 async def remove_upload(
     url: str = Query(..., description="The URL path of the file to delete"),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     Delete an uploaded file.

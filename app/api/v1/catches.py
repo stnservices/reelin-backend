@@ -44,6 +44,7 @@ from app.schemas.common import MessageResponse
 from app.core.permissions import ValidatorOrAdmin, check_is_event_validator
 from app.core.storage import storage_service
 from app.tasks.leaderboard import queue_leaderboard_recalculation
+from app.services.redis_cache import redis_cache, invalidate_event_caches
 from app.tasks.notifications import send_catch_notification, send_catch_response_notification
 from app.tasks.ai_analysis import queue_catch_analysis
 from app.tasks.notifications import send_catch_like_notification
@@ -981,6 +982,7 @@ async def validate_catch(
 
     # Queue leaderboard recalculation
     queue_leaderboard_recalculation(catch.event_id, "catch_validated")
+    await invalidate_event_caches(catch.event_id)
 
     # Send notification to catch owner about the result
     send_catch_response_notification.delay(
@@ -1161,6 +1163,7 @@ async def revalidate_catch(
 
     # Queue leaderboard recalculation
     queue_leaderboard_recalculation(catch.event_id, "catch_revalidated")
+    await invalidate_event_caches(catch.event_id)
 
     # Send notification to catch owner about the revalidation result
     send_catch_response_notification.delay(
@@ -1236,6 +1239,11 @@ async def get_leaderboard(
     """
     Get event leaderboard (public endpoint).
     """
+    cache_key = f"sf:leaderboard:{event_id}"
+    cached = await redis_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     # Check event exists
     event_query = select(Event).where(Event.id == event_id)
     event_result = await db.execute(event_query)
@@ -1267,12 +1275,16 @@ async def get_leaderboard(
     if scoreboards:
         last_updated = max(s.updated_at for s in scoreboards)
 
-    return LeaderboardResponse(
+    result = LeaderboardResponse(
         event_id=event_id,
         entries=[ScoreboardEntry.from_scoreboard(s) for s in scoreboards],
         total_participants=total,
         last_updated=last_updated,
     )
+
+    await redis_cache.set(cache_key, result.model_dump(), ttl=15)
+
+    return result
 
 
 async def calculate_catch_points(

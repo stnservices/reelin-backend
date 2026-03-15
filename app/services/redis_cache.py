@@ -9,6 +9,16 @@ import redis.asyncio as redis
 from app.config import get_settings
 
 
+def _json_default(obj):
+    """JSON serializer for cache values. Converts Decimal to float, datetime to ISO string."""
+    from decimal import Decimal
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
 class RedisCache:
     """Async Redis cache for chat and live tracking data."""
 
@@ -69,7 +79,7 @@ class RedisCache:
     async def set(self, key: str, value: Any, ttl: int = DEFAULT_TTL):
         """Set a value in cache with TTL."""
         client = await self.get_client()
-        await client.setex(key, ttl, json.dumps(value, default=str))
+        await client.setex(key, ttl, json.dumps(value, default=_json_default))
 
     async def delete(self, key: str):
         """Delete a key from cache."""
@@ -346,3 +356,22 @@ class RedisCache:
 
 # Global singleton
 redis_cache = RedisCache()
+
+
+async def invalidate_event_caches(event_id: int, user_ids: list[int] | None = None):
+    """Invalidate all cached data for an event. Call on match/catch completion."""
+    keys = [
+        f"ta:rankings:{event_id}",
+        f"ta:public:standings:{event_id}",
+        f"ta:public:status:{event_id}",
+        f"ta:statistics:{event_id}",
+        f"ta:public:bracket:{event_id}",
+        f"sf:leaderboard:{event_id}",
+    ]
+    if user_ids:
+        for uid in user_ids:
+            if uid is not None:
+                keys.append(f"ta:gamecards:{event_id}:{uid}")
+                keys.append(f"ta:mymatches:{event_id}:{uid}")
+    for key in keys:
+        await redis_cache.delete(key)

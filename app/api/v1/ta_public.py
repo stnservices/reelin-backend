@@ -10,7 +10,6 @@ Security:
 - Rate limiting should be applied at the infrastructure level
 """
 
-import json
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -32,7 +31,7 @@ from app.models.trout_area import (
     TAMatchStatus,
     TAGameCardStatus,
 )
-from app.services.redis_cache import redis_cache
+from app.services.redis_cache import redis_cache, invalidate_event_caches
 
 router = APIRouter(prefix="/ta/public", tags=["TA Public"])
 
@@ -159,8 +158,7 @@ async def get_previous_standings(event_id: int) -> dict[int, int]:
     try:
         cached = await redis_cache.get(cache_key)
         if cached:
-            data = json.loads(cached)
-            return {s['user_id']: s['rank'] for s in data}
+            return {s['user_id']: s['rank'] for s in cached}
     except Exception:
         pass
     return {}
@@ -172,7 +170,7 @@ async def save_current_standings(event_id: int, standings: list[dict]):
     try:
         await redis_cache.set(
             cache_key,
-            json.dumps([{"user_id": s['user_id'], "rank": s['rank']} for s in standings]),
+            [{"user_id": s['user_id'], "rank": s['rank']} for s in standings],
             ttl=86400  # 24 hours
         )
     except Exception:
@@ -197,6 +195,11 @@ async def get_public_event_status(
     - Knockout bracket availability
     - Leg progress
     """
+    cache_key = f"ta:public:status:{event_id}"
+    cached = await redis_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     event = await verify_public_event(db, event_id)
     ta_settings = await get_ta_settings(db, event_id)
 
@@ -266,7 +269,7 @@ async def get_public_event_status(
     if event.event_type:
         event_type_code = event.event_type.code
 
-    return PublicEventStatusResponse(
+    result = PublicEventStatusResponse(
         event_id=event.id,
         event_type=event_type_code,
         name=event.name,
@@ -279,6 +282,10 @@ async def get_public_event_status(
         completed_legs=completed_legs,
         is_live=event.status == EventStatus.ONGOING.value,
     )
+
+    await redis_cache.set(cache_key, result.model_dump(), ttl=10)
+
+    return result
 
 
 @router.get("/events/{event_id}/standings", response_model=PublicStandingsResponse)
@@ -298,6 +305,11 @@ async def get_public_standings(
 
     Position changes are calculated by comparing with cached previous standings.
     """
+    cache_key = f"ta:public:standings:{event_id}"
+    cached = await redis_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     await verify_public_event(db, event_id)
 
     # Compute standings on-the-fly from completed qualifier matches
@@ -336,12 +348,16 @@ async def get_public_standings(
     # Save current standings for next comparison
     await save_current_standings(event_id, standings_list)
 
-    return PublicStandingsResponse(
+    result = PublicStandingsResponse(
         event_id=event_id,
         phase=phase or "all",
         standings=[PublicStandingEntry(**s) for s in standings_list],
         last_updated=datetime.now(timezone.utc).isoformat(),
     )
+
+    await redis_cache.set(cache_key, result.model_dump(), ttl=10)
+
+    return result
 
 
 @router.get("/events/{event_id}/schedule", response_model=PublicScheduleResponse)
@@ -415,6 +431,11 @@ async def get_public_bracket(
     - Semifinal matches
     - Grand/Small final matches
     """
+    cache_key = f"ta:public:bracket:{event_id}"
+    cached = await redis_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     event = await verify_public_event(db, event_id)
     ta_settings = await get_ta_settings(db, event_id)
 
@@ -574,7 +595,7 @@ async def get_public_bracket(
         else:
             current_phase = "requalification"
 
-    return PublicBracketResponse(
+    result = PublicBracketResponse(
         event_id=event_id,
         event_name=event.name,
         current_phase=current_phase,
@@ -584,3 +605,7 @@ async def get_public_bracket(
         grand_final=grand_final_matches[0] if grand_final_matches else None,
         small_final=small_final_matches[0] if small_final_matches else None,
     )
+
+    await redis_cache.set(cache_key, result.model_dump(), ttl=30)
+
+    return result

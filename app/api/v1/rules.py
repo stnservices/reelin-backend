@@ -8,9 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user_id_cached
 from app.core.storage import storage_service
-from app.models.user import UserAccount
 from app.models.event import Event, EventType
 from app.models.rules import OrganizerRule, OrganizerRuleDefault
 from app.schemas.rules import (
@@ -49,21 +48,21 @@ async def list_rules(
     page_size: int = Query(20, ge=1, le=100),
     include_inactive: bool = Query(False),
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     List organizer's rules.
     Only returns rules owned by the current user.
     """
     # Base query - only own rules
-    query = select(OrganizerRule).where(OrganizerRule.owner_id == current_user.id)
+    query = select(OrganizerRule).where(OrganizerRule.owner_id == user_id)
 
     if not include_inactive:
         query = query.where(OrganizerRule.is_active == True)
 
     # Count total
     count_query = select(func.count(OrganizerRule.id)).where(
-        OrganizerRule.owner_id == current_user.id
+        OrganizerRule.owner_id == user_id
     )
     if not include_inactive:
         count_query = count_query.where(OrganizerRule.is_active == True)
@@ -107,7 +106,7 @@ async def list_rules(
 async def create_rule(
     rule_data: RuleCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     Create a new rule.
@@ -123,7 +122,7 @@ async def create_rule(
 
     # Check for duplicate name
     existing_query = select(OrganizerRule).where(
-        OrganizerRule.owner_id == current_user.id,
+        OrganizerRule.owner_id == user_id,
         OrganizerRule.name == rule_data.name,
         OrganizerRule.is_active == True,
     )
@@ -135,7 +134,7 @@ async def create_rule(
         )
 
     rule = OrganizerRule(
-        owner_id=current_user.id,
+        owner_id=user_id,
         name=rule_data.name,
         description=rule_data.description,
         content=rule_data.content,
@@ -157,7 +156,7 @@ async def create_rule_with_document(
     content: str = Query(None),
     external_url: str = Query(None, max_length=500),
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     Create a new rule with a document upload.
@@ -165,7 +164,7 @@ async def create_rule_with_document(
     """
     # Check for duplicate name
     existing_query = select(OrganizerRule).where(
-        OrganizerRule.owner_id == current_user.id,
+        OrganizerRule.owner_id == user_id,
         OrganizerRule.name == name,
         OrganizerRule.is_active == True,
     )
@@ -177,11 +176,11 @@ async def create_rule_with_document(
         )
 
     # Upload the document
-    document_url = await storage_service.upload_rule_document(file, current_user.id)
+    document_url = await storage_service.upload_rule_document(file, user_id)
 
     # Create the rule
     rule = OrganizerRule(
-        owner_id=current_user.id,
+        owner_id=user_id,
         name=name,
         description=description,
         content=content,
@@ -205,7 +204,7 @@ async def create_rule_with_document(
 @router.get("/defaults", response_model=RuleDefaultsListResponse)
 async def list_rule_defaults(
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     Get default rules for all Event Types.
@@ -220,7 +219,7 @@ async def list_rule_defaults(
     defaults_query = (
         select(OrganizerRuleDefault)
         .options(selectinload(OrganizerRuleDefault.rule))
-        .where(OrganizerRuleDefault.owner_id == current_user.id)
+        .where(OrganizerRuleDefault.owner_id == user_id)
     )
     defaults_result = await db.execute(defaults_query)
     defaults = {d.event_type_id: d for d in defaults_result.scalars().all()}
@@ -244,7 +243,7 @@ async def list_rule_defaults(
 async def set_rule_default(
     default_data: RuleDefaultSet,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     Set or update the default rule for an Event Type.
@@ -262,7 +261,7 @@ async def set_rule_default(
     if default_data.rule_id:
         rule_query = select(OrganizerRule).where(
             OrganizerRule.id == default_data.rule_id,
-            OrganizerRule.owner_id == current_user.id,
+            OrganizerRule.owner_id == user_id,
             OrganizerRule.is_active == True,
         )
         rule_result = await db.execute(rule_query)
@@ -273,7 +272,7 @@ async def set_rule_default(
 
     # Check for existing default
     existing_query = select(OrganizerRuleDefault).where(
-        OrganizerRuleDefault.owner_id == current_user.id,
+        OrganizerRuleDefault.owner_id == user_id,
         OrganizerRuleDefault.event_type_id == default_data.event_type_id,
     )
     existing_result = await db.execute(existing_query)
@@ -285,7 +284,7 @@ async def set_rule_default(
             existing.rule_id = default_data.rule_id
         else:
             new_default = OrganizerRuleDefault(
-                owner_id=current_user.id,
+                owner_id=user_id,
                 event_type_id=default_data.event_type_id,
                 rule_id=default_data.rule_id,
             )
@@ -324,13 +323,13 @@ async def set_rule_default(
 async def remove_rule_default(
     event_type_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     Remove the default rule for an Event Type.
     """
     query = select(OrganizerRuleDefault).where(
-        OrganizerRuleDefault.owner_id == current_user.id,
+        OrganizerRuleDefault.owner_id == user_id,
         OrganizerRuleDefault.event_type_id == event_type_id,
     )
     result = await db.execute(query)
@@ -354,7 +353,7 @@ async def remove_rule_default(
 async def get_rule(
     rule_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     Get a specific rule.
@@ -367,7 +366,7 @@ async def get_rule(
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
 
-    if rule.owner_id != current_user.id:
+    if rule.owner_id != user_id:
         raise HTTPException(status_code=403, detail="Not authorized to view this rule")
 
     # Get usage count
@@ -383,7 +382,7 @@ async def update_rule(
     rule_id: int,
     rule_data: RuleUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     Update a rule.
@@ -396,13 +395,13 @@ async def update_rule(
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
 
-    if rule.owner_id != current_user.id:
+    if rule.owner_id != user_id:
         raise HTTPException(status_code=403, detail="Not authorized to update this rule")
 
     # Check for duplicate name if name is being changed
     if rule_data.name and rule_data.name != rule.name:
         existing_query = select(OrganizerRule).where(
-            OrganizerRule.owner_id == current_user.id,
+            OrganizerRule.owner_id == user_id,
             OrganizerRule.name == rule_data.name,
             OrganizerRule.is_active == True,
             OrganizerRule.id != rule_id,
@@ -450,7 +449,7 @@ async def update_rule(
 async def delete_rule(
     rule_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     Delete a rule (soft delete - sets is_active=False).
@@ -463,7 +462,7 @@ async def delete_rule(
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
 
-    if rule.owner_id != current_user.id:
+    if rule.owner_id != user_id:
         raise HTTPException(status_code=403, detail="Not authorized to delete this rule")
 
     # Soft delete
@@ -478,7 +477,7 @@ async def upload_rule_document(
     rule_id: int,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     Upload a document (PDF/DOC/DOCX) for a rule.
@@ -492,7 +491,7 @@ async def upload_rule_document(
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
 
-    if rule.owner_id != current_user.id:
+    if rule.owner_id != user_id:
         raise HTTPException(status_code=403, detail="Not authorized to update this rule")
 
     # Delete old document if exists
@@ -500,7 +499,7 @@ async def upload_rule_document(
         await storage_service.delete_file(rule.document_url)
 
     # Upload new document
-    document_url = await storage_service.upload_rule_document(file, current_user.id)
+    document_url = await storage_service.upload_rule_document(file, user_id)
 
     # Update rule
     rule.document_url = document_url
@@ -519,7 +518,7 @@ async def upload_rule_document(
 async def delete_rule_document(
     rule_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
 ):
     """
     Delete the document from a rule.
@@ -532,7 +531,7 @@ async def delete_rule_document(
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
 
-    if rule.owner_id != current_user.id:
+    if rule.owner_id != user_id:
         raise HTTPException(status_code=403, detail="Not authorized to update this rule")
 
     if not rule.document_url:

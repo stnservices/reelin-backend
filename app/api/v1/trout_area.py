@@ -42,7 +42,7 @@ from app.dependencies import get_current_user, get_current_user_id_cached
 from app.core.permissions import OrganizerOrAdmin, EventOwnerOrAdmin
 from app.core.i18n import get_error_message
 from app.core.exceptions import NotFoundError, ValidationError, ConflictError
-from app.services.redis_cache import redis_cache
+from app.services.redis_cache import redis_cache, invalidate_event_caches
 from app.services.firebase_leaderboard_service import sync_ta_standings_to_firebase
 from app.utils.lifecycle_guards import require_modifiable_status, require_draft_status
 
@@ -1640,6 +1640,11 @@ async def get_my_matches(
     Returns all matches where the user is a competitor, including completed matches.
     This is used for the "Match History" view in the mobile app.
     """
+    cache_key = f"ta:mymatches:{event_id}:{user_id}"
+    cached = await redis_cache.get(cache_key)
+    if cached is not None:
+        return ORJSONResponse(cached)
+
     # Skip get_ta_event() — pure read endpoint, empty match query = empty response
     # Find all matches where user is competitor A or B (load_only to reduce ORM hydration)
     match_query = (
@@ -1704,11 +1709,15 @@ async def get_my_matches(
     for item in items:
         by_leg.setdefault(item["leg_number"], []).append(item)
 
-    return ORJSONResponse({
+    result = {
         "items": items,
         "total": len(items),
         "by_leg": by_leg,
-    })
+    }
+
+    await redis_cache.set(cache_key, result, ttl=10)
+
+    return ORJSONResponse(result)
 
 
 # =============================================================================
@@ -2845,6 +2854,11 @@ async def get_my_game_cards(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Get current user's game cards for a TA event (all legs)."""
+    cache_key = f"ta:gamecards:{event_id}:{current_user.id}"
+    cached = await redis_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     event = await get_ta_event(event_id, db, request)
     settings = event.ta_settings
 
@@ -2912,12 +2926,16 @@ async def get_my_game_cards(
             opponent_avatar=card.opponent.effective_avatar_url if card.opponent else None,
         ))
 
-    return {
-        "items": items,
+    result = {
+        "items": [item.model_dump(mode="json") for item in items],
         "total": len(items),
         "current_leg": current_leg,
         "event_id": event_id,
     }
+
+    await redis_cache.set(cache_key, result, ttl=5)
+
+    return result
 
 
 @router.post(
@@ -3068,6 +3086,9 @@ async def submit_game_card(
                 )
 
         await db.commit()
+
+        # Invalidate event caches (rankings, standings, game cards, etc.)
+        await invalidate_event_caches(event_id, [card.user_id, card.opponent_id])
 
         # Re-fetch card with relationships for response
         refresh_query = (
@@ -3312,6 +3333,9 @@ async def validate_opponent_card(
             )
 
         await db.commit()
+
+        # Invalidate event caches (rankings, standings, game cards, etc.)
+        await invalidate_event_caches(event_id, [opponent_card.user_id, opponent_card.opponent_id])
 
         # Re-fetch card with relationships for response
         refresh_query = (
@@ -3609,6 +3633,10 @@ async def admin_update_game_card(
                     ta_leg_completed.delay(card.event_id, match.leg_number)
 
     await db.commit()
+
+    # Invalidate event caches
+    await invalidate_event_caches(card.event_id, [card.user_id, card.opponent_id])
+
     await db.refresh(card)
 
     return {
@@ -4560,6 +4588,13 @@ async def get_overall_ranking(
 
     Returns rankings with V/T/T0/L/L0 breakdown and proper tiebreaker sorting.
     """
+    # Cache only for default phase (hot path during live events)
+    cache_key = f"ta:rankings:{event_id}" if phase is None else None
+    if cache_key:
+        cached = await redis_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
     from app.services.ta_ranking import TARankingService
 
     event = await get_ta_event(event_id, db, request)
@@ -4572,7 +4607,7 @@ async def get_overall_ranking(
         settings.additional_rules.get("current_phase", "qualifier") if settings else "qualifier"
     )
 
-    return {
+    result = {
         "event_id": event_id,
         "leg_number": None,
         "phase": current_phase,
@@ -4580,6 +4615,11 @@ async def get_overall_ranking(
         "rankings": rankings,
         "total_participants": len(rankings),
     }
+
+    if cache_key:
+        await redis_cache.set(cache_key, result, ttl=10)
+
+    return result
 
 
 @router.get("/events/{event_id}/leg-status/{leg_number}")
@@ -4654,12 +4694,19 @@ async def get_event_statistics(
 
     Returns total participants, matches, catches, and top performers.
     """
+    cache_key = f"ta:statistics:{event_id}"
+    cached = await redis_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     from app.services.ta_ranking import TARankingService
 
     event = await get_ta_event(event_id, db, request)
 
     ranking_service = TARankingService(db)
     stats = await ranking_service.get_event_statistics(event_id)
+
+    await redis_cache.set(cache_key, stats, ttl=30)
 
     return stats
 

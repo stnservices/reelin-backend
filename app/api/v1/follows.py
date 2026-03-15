@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, get_current_user_id_cached
 from app.models import UserAccount, UserProfile, UserFollow
 from app.models.notification import UserDeviceToken, Notification
 from app.models.statistics import UserEventTypeStats
@@ -310,7 +310,7 @@ async def get_top_badges(db: AsyncSession, user_id: int, limit: int | None = Non
 async def get_my_following(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    current_user: UserAccount = Depends(get_current_user),
+    user_id: int = Depends(get_current_user_id_cached),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -318,7 +318,7 @@ async def get_my_following(
     """
     # Get total count
     count_result = await db.execute(
-        select(func.count(UserFollow.id)).where(UserFollow.follower_id == current_user.id)
+        select(func.count(UserFollow.id)).where(UserFollow.follower_id == user_id)
     )
     total = count_result.scalar() or 0
 
@@ -327,7 +327,7 @@ async def get_my_following(
     following_result = await db.execute(
         select(UserFollow)
         .options(selectinload(UserFollow.following).selectinload(UserAccount.profile))
-        .where(UserFollow.follower_id == current_user.id)
+        .where(UserFollow.follower_id == user_id)
         .order_by(UserFollow.created_at.desc())
         .offset(offset)
         .limit(page_size)
@@ -378,7 +378,7 @@ async def get_my_following(
 @router.get("/{user_id}/card", response_model=AnglerCardResponse)
 async def get_angler_card(
     user_id: int,
-    current_user: UserAccount = Depends(get_current_user),
+    current_user_id: int = Depends(get_current_user_id_cached),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -427,7 +427,7 @@ async def get_angler_card(
     following_count = await get_following_count(db, user_id)
 
     # Check if current user is following this user
-    is_following_user = await is_following(db, current_user.id, user_id)
+    is_following_user = await is_following(db, current_user_id, user_id)
 
     # Check privacy setting
     is_public = profile.is_profile_public if profile else True
@@ -546,7 +546,7 @@ async def follow_user(
 @router.delete("/{user_id}/follow", response_model=FollowUserResponse)
 async def unfollow_user(
     user_id: int,
-    current_user: UserAccount = Depends(get_current_user),
+    current_user_id: int = Depends(get_current_user_id_cached),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -555,7 +555,7 @@ async def unfollow_user(
     Returns 400 if not following this user.
     """
     # Cannot unfollow yourself
-    if user_id == current_user.id:
+    if user_id == current_user_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="You cannot unfollow yourself",
@@ -578,7 +578,7 @@ async def unfollow_user(
     # Find the follow relationship
     follow_result = await db.execute(
         select(UserFollow).where(
-            UserFollow.follower_id == current_user.id,
+            UserFollow.follower_id == current_user_id,
             UserFollow.following_id == user_id,
         )
     )
@@ -618,7 +618,7 @@ async def get_user_followers(
     user_id: int,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    current_user: UserAccount = Depends(get_current_user),
+    current_user_id: int = Depends(get_current_user_id_cached),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -655,7 +655,7 @@ async def get_user_followers(
     # Get IDs of users current user is following (for is_following flag)
     following_ids_result = await db.execute(
         select(UserFollow.following_id).where(
-            UserFollow.follower_id == current_user.id
+            UserFollow.follower_id == current_user_id
         )
     )
     following_ids = {row[0] for row in following_ids_result.fetchall()}
@@ -706,7 +706,7 @@ async def get_user_following(
     user_id: int,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    current_user: UserAccount = Depends(get_current_user),
+    current_user_id: int = Depends(get_current_user_id_cached),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -743,7 +743,7 @@ async def get_user_following(
     # Get IDs of users current user is following (for is_following flag)
     following_ids_result = await db.execute(
         select(UserFollow.following_id).where(
-            UserFollow.follower_id == current_user.id
+            UserFollow.follower_id == current_user_id
         )
     )
     following_ids = {row[0] for row in following_ids_result.fetchall()}
@@ -792,7 +792,7 @@ async def get_user_following(
 @router.get("/{user_id}/follow-stats", response_model=FollowStatsResponse)
 async def get_follow_stats(
     user_id: int,
-    current_user: UserAccount = Depends(get_current_user),
+    current_user_id: int = Depends(get_current_user_id_cached),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -810,7 +810,7 @@ async def get_follow_stats(
 
     follower_count = await get_follower_count(db, user_id)
     following_count = await get_following_count(db, user_id)
-    is_following_user = await is_following(db, current_user.id, user_id)
+    is_following_user = await is_following(db, current_user_id, user_id)
 
     return FollowStatsResponse(
         follower_count=follower_count,
