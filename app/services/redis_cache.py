@@ -59,7 +59,7 @@ class RedisCache:
         """Get a value from cache by key."""
         client = await self.get_client()
         data = await client.get(key)
-        if data:
+        if data is not None:
             try:
                 return json.loads(data)
             except (json.JSONDecodeError, TypeError):
