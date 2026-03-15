@@ -1,17 +1,20 @@
 """Celery tasks for format-aware achievement processing.
 
-Handles achievement processing after TA event completion,
+Handles achievement processing after event completion (TA and SF),
 with proper format filtering and participant discovery.
+Catch-based achievements are also batch-processed here (deferred from per-catch).
 """
 
 import logging
+from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery_app
 from app.database import SyncSessionLocal
 from app.models.event import Event
+from app.models.catch import Catch, CatchStatus
 from app.services.achievement_service import AchievementService
 from app.services.statistics_service import StatisticsService
 from app.utils.event_formats import get_event_participant_ids_sync
@@ -92,6 +95,77 @@ def _sync_process_format_event_achievements(
                     logger.error(f"Error processing achievements for user {user_id}: {e}")
                     errors += 1
                     continue
+
+            # --- Batch catch-based achievements (deferred from per-catch) ---
+            try:
+                from app.models.fish import Fish
+                catches = db.execute(
+                    select(Catch)
+                    .options(selectinload(Catch.fish))
+                    .where(
+                        Catch.event_id == event_id,
+                        Catch.status == CatchStatus.APPROVED.value,
+                    )
+                    .order_by(Catch.submitted_at)
+                ).scalars().all()
+
+                # Track personal bests per user during batch
+                user_best_length: dict[int, float] = {}
+
+                for catch in catches:
+                    try:
+                        uid = catch.user_id
+                        # Personal best: compare against running max for this user
+                        if uid not in user_best_length:
+                            prev = db.execute(
+                                select(func.max(Catch.length))
+                                .where(Catch.user_id == uid)
+                                .where(Catch.status == CatchStatus.APPROVED.value)
+                                .where(Catch.event_id != event_id)
+                            ).scalar() or 0
+                            user_best_length[uid] = float(prev)
+
+                        is_pb = float(catch.length or 0) > user_best_length[uid]
+                        if is_pb and catch.length:
+                            user_best_length[uid] = float(catch.length)
+
+                        context = {
+                            "catch_length": catch.length,
+                            "catch_weight": catch.weight,
+                            "fish_id": catch.fish_id,
+                            "fish_slug": catch.fish.slug if catch.fish else None,
+                            "is_personal_best": is_pb,
+                        }
+
+                        # Early bird / last minute checks
+                        catch_time = catch.catch_time or catch.submitted_at
+                        if event.start_date and catch_time:
+                            context["is_early_bird"] = catch_time <= event.start_date + timedelta(minutes=30)
+                        if event.end_date and catch_time:
+                            context["is_last_minute"] = catch_time >= event.end_date - timedelta(minutes=30)
+
+                        awarded = AchievementService.check_and_award_achievements_sync(
+                            db=db,
+                            user_id=uid,
+                            trigger="catch_approved",
+                            event_id=event_id,
+                            catch_id=catch.id,
+                            context=context,
+                        )
+                        total_awarded += len(awarded)
+
+                        if awarded:
+                            from app.tasks.achievements import send_achievement_notification
+                            for achievement in awarded:
+                                send_achievement_notification.delay(uid, achievement.id, event_id)
+
+                    except Exception as e:
+                        logger.error(f"Error processing catch {catch.id} achievements: {e}")
+                        errors += 1
+
+            except Exception as e:
+                logger.error(f"Error batch-processing catch achievements for event {event_id}: {e}")
+                errors += 1
 
             db.commit()
 

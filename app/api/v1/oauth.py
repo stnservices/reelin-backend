@@ -113,6 +113,9 @@ async def _audit_oauth_login(request_or_none, db, user, provider: str):
     """Shared audit logic for OAuth mobile endpoints."""
     if request_or_none is None:
         return
+    from app.utils import is_test_account
+    if is_test_account(user.email):
+        return
     ctx = audit_service.extract_request_context(request_or_none)
     audit_entry = audit_service.log_event(
         db,

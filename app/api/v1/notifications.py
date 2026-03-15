@@ -1,12 +1,9 @@
 """Notification endpoints."""
 
-import asyncio
-import json
 from datetime import datetime, timezone
 from math import ceil
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,119 +19,6 @@ from app.schemas.notification import (
 from app.schemas.common import MessageResponse
 
 router = APIRouter()
-
-
-# ============================================================================
-# SSE (Server-Sent Events) for Real-Time Notifications
-# ============================================================================
-
-
-@router.get("/stream")
-async def notification_stream(
-    request: Request,
-    current_user: UserAccount = Depends(get_current_user),
-):
-    """
-    Server-Sent Events stream for real-time notifications.
-
-    The client connects to this endpoint and receives:
-    - Heartbeat events every 15 seconds to keep connection alive
-    - Stats events every 5 seconds with current unread count
-    - New notification events when they are created
-
-    Event format:
-    - event: heartbeat
-      data: {"timestamp": "..."}
-
-    - event: stats
-      data: {"total": N, "unread": N}
-
-    - event: notification
-      data: {notification object}
-    """
-    async def event_generator():
-        last_check_id = 0
-
-        # Get initial latest notification ID
-        from app.database import async_session_factory
-        async with async_session_factory() as db:
-            latest_query = select(func.max(Notification.id)).where(
-                Notification.user_id == current_user.id
-            )
-            result = await db.execute(latest_query)
-            last_check_id = result.scalar() or 0
-
-        while True:
-            # Check if client disconnected
-            if await request.is_disconnected():
-                break
-
-            try:
-                async with async_session_factory() as db:
-                    # Check for new notifications since last check
-                    new_notifs_query = (
-                        select(Notification)
-                        .where(
-                            Notification.user_id == current_user.id,
-                            Notification.id > last_check_id,
-                        )
-                        .order_by(Notification.id)
-                    )
-                    result = await db.execute(new_notifs_query)
-                    new_notifications = result.scalars().all()
-
-                    # Send new notification events
-                    for notif in new_notifications:
-                        notif_data = {
-                            "id": notif.id,
-                            "user_id": notif.user_id,
-                            "type": notif.type,
-                            "title": notif.title,
-                            "message": notif.message,
-                            "data": notif.data,
-                            "is_read": notif.is_read,
-                            "created_at": notif.created_at.isoformat() if notif.created_at else None,
-                        }
-                        yield f"event: notification\ndata: {json.dumps(notif_data)}\n\n"
-                        last_check_id = max(last_check_id, notif.id)
-
-                    # Send stats update
-                    unread_query = select(func.count(Notification.id)).where(
-                        Notification.user_id == current_user.id,
-                        Notification.is_read == False,
-                    )
-                    unread_result = await db.execute(unread_query)
-                    unread = unread_result.scalar()
-
-                    total_query = select(func.count(Notification.id)).where(
-                        Notification.user_id == current_user.id
-                    )
-                    total_result = await db.execute(total_query)
-                    total = total_result.scalar()
-
-                    stats_data = {"total": total, "unread": unread}
-                    yield f"event: stats\ndata: {json.dumps(stats_data)}\n\n"
-
-            except Exception as e:
-                # Log error but keep connection alive
-                yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
-
-            # Wait 5 seconds before next check
-            await asyncio.sleep(5)
-
-            # Send heartbeat
-            heartbeat_data = {"timestamp": datetime.now(timezone.utc).isoformat()}
-            yield f"event: heartbeat\ndata: {json.dumps(heartbeat_data)}\n\n"
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # Disable nginx buffering
-        },
-    )
 
 
 @router.get("", response_model=NotificationListResponse)

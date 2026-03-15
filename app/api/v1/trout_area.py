@@ -1280,6 +1280,7 @@ async def create_event_settings(
 
     await db.commit()
     await db.refresh(settings)
+    await redis_cache.delete(f"ta:settings:{event_id}")
 
     return settings
 
@@ -1289,10 +1290,17 @@ async def get_event_settings(
     event_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-) -> TAEventSettings:
+):
     """Get TA settings for an event."""
+    cache_key = f"ta:settings:{event_id}"
+    cached = await redis_cache.get(cache_key)
+    if cached:
+        return ORJSONResponse(cached)
+
     event = await get_ta_event(event_id, db, request)
-    return event.ta_settings
+    response = TAEventSettingsResponse.model_validate(event.ta_settings).model_dump(mode="json")
+    await redis_cache.set(cache_key, response, ttl=43200)  # 12 hours
+    return ORJSONResponse(response)
 
 
 @router.patch("/events/{event_id}/settings", response_model=TAEventSettingsResponse)
@@ -1344,6 +1352,7 @@ async def update_event_settings(
     settings.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(settings)
+    await redis_cache.delete(f"ta:settings:{event_id}")
 
     return settings
 

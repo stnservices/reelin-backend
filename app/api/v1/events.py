@@ -1533,12 +1533,11 @@ async def update_event_status(
         from app.tasks.statistics import recalculate_event_stats
         recalculate_event_stats.delay(event_id)
 
-        # Trigger achievement processing for TA events (SF handled separately)
+        # Trigger batch achievement processing for all event formats
         from app.utils.event_formats import get_format_code
         format_code = get_format_code(event.event_type)
-        if format_code == "ta":
-            from app.tasks.achievement_processing import process_format_event_achievements
-            process_format_event_achievements.delay(event_id, format_code)
+        from app.tasks.achievement_processing import process_format_event_achievements
+        process_format_event_achievements.delay(event_id, format_code)
 
     response = {
         "id": event.id,
@@ -2163,6 +2162,12 @@ async def stop_event(
     # Trigger stats recalculation for all event participants
     from app.tasks.statistics import recalculate_event_stats
     recalculate_event_stats.delay(event_id)
+
+    # Trigger batch achievement processing
+    from app.utils.event_formats import get_format_code
+    format_code = get_format_code(event.event_type)
+    from app.tasks.achievement_processing import process_format_event_achievements
+    process_format_event_achievements.delay(event_id, format_code)
 
     return event
 

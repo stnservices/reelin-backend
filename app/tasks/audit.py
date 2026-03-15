@@ -209,6 +209,15 @@ def enrich_audit_log(self, audit_log_id: int):
         if not log:
             return {"status": "not_found", "id": audit_log_id}
 
+        # Skip enrichment for test accounts — save ip-api.com rate limit
+        if log.user_id:
+            from app.utils import is_test_account
+            user = session.execute(
+                select(UserAccount).where(UserAccount.id == log.user_id)
+            ).scalar_one_or_none()
+            if user and is_test_account(user.email):
+                return {"status": "test_account", "id": audit_log_id}
+
         details = dict(log.details) if log.details else {}
 
         # Skip if already enriched

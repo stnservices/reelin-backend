@@ -54,6 +54,7 @@ if not os.getenv("CELERY_WORKER"):
         pool_size=DB_POOL_SIZE,
         max_overflow=DB_MAX_OVERFLOW,
         pool_timeout=DB_POOL_TIMEOUT,
+        connect_args={"statement_cache_size": 0},  # PgBouncer transaction pooling compat
     )
 
     # Create async session factory

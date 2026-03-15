@@ -1,6 +1,7 @@
 """Shared FastAPI dependencies."""
 
 import logging
+import time
 from typing import Optional
 
 from fastapi import Depends, HTTPException, status
@@ -22,16 +23,15 @@ logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
 
 # Cache TTLs
-_BLACKLIST_VALID_TTL = 60       # "not blacklisted" cached 60s (max logout delay)
 _BLACKLIST_REVOKED_TTL = 300    # "blacklisted" cached 5 min (won't un-blacklist)
-_USER_STATUS_TTL = 30           # user active status cached 30s (max ban delay)
+_USER_STATUS_TTL = 600          # user active status cached 10 min (all state changes invalidate)
 
 
 # =============================================================================
 # Redis-Cached Auth Helpers
 # =============================================================================
 
-async def _is_token_blacklisted_cached(token_jti: str, db: AsyncSession) -> bool:
+async def _is_token_blacklisted_cached(token_jti: str, token_exp: int, db: AsyncSession) -> bool:
     """Check token blacklist with Redis cache. Returns True if blacklisted."""
     cache_key = f"auth:bl:{token_jti}"
     try:
@@ -48,7 +48,11 @@ async def _is_token_blacklisted_cached(token_jti: str, db: AsyncSession) -> bool
     is_blacklisted = result.scalar_one_or_none() is not None
 
     try:
-        ttl = _BLACKLIST_REVOKED_TTL if is_blacklisted else _BLACKLIST_VALID_TTL
+        if is_blacklisted:
+            ttl = _BLACKLIST_REVOKED_TTL
+        else:
+            # Cache for remaining token lifetime — logout/refresh immediately overwrites
+            ttl = max(token_exp - int(time.time()), 60)
         await redis_cache.set(cache_key, 1 if is_blacklisted else 0, ttl=ttl)
     except Exception:
         pass  # Redis down — still works, just no caching
@@ -107,8 +111,8 @@ async def invalidate_token_cache(token_jti: str):
 # JWT Decode Helper (shared logic)
 # =============================================================================
 
-def _decode_access_token(token: str) -> tuple[int, str]:
-    """Decode JWT and extract (user_id, jti). Raises HTTPException on failure."""
+def _decode_access_token(token: str) -> tuple[int, str, int]:
+    """Decode JWT and extract (user_id, jti, exp). Raises HTTPException on failure."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -120,6 +124,7 @@ def _decode_access_token(token: str) -> tuple[int, str]:
         user_id_str: str = payload.get("sub")
         token_type: str = payload.get("type")
         token_jti: str = payload.get("jti")
+        token_exp: int = payload.get("exp", 0)
 
         if user_id_str is None:
             raise credentials_exception
@@ -136,7 +141,7 @@ def _decode_access_token(token: str) -> tuple[int, str]:
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        return user_id, token_jti
+        return user_id, token_jti, token_exp
 
     except JWTError:
         raise credentials_exception
@@ -163,10 +168,10 @@ async def get_current_user_id_cached(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user_id, token_jti = _decode_access_token(credentials.credentials)
+    user_id, token_jti, token_exp = _decode_access_token(credentials.credentials)
 
     # Cached blacklist check
-    if await _is_token_blacklisted_cached(token_jti, db):
+    if await _is_token_blacklisted_cached(token_jti, token_exp, db):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has been revoked",
@@ -211,10 +216,10 @@ async def get_current_user(
     if credentials is None:
         raise credentials_exception
 
-    user_id, token_jti = _decode_access_token(credentials.credentials)
+    user_id, token_jti, token_exp = _decode_access_token(credentials.credentials)
 
     # CACHED blacklist check (was: DB query every time)
-    if await _is_token_blacklisted_cached(token_jti, db):
+    if await _is_token_blacklisted_cached(token_jti, token_exp, db):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has been revoked",

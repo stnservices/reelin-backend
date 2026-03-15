@@ -45,7 +45,6 @@ from app.core.permissions import ValidatorOrAdmin, check_is_event_validator
 from app.core.storage import storage_service
 from app.tasks.leaderboard import queue_leaderboard_recalculation
 from app.tasks.notifications import send_catch_notification, send_catch_response_notification
-from app.tasks.achievements import process_achievements_for_catch
 from app.tasks.ai_analysis import queue_catch_analysis
 from app.tasks.notifications import send_catch_like_notification
 from app.models.ai_analysis import CatchAiAnalysis
@@ -977,13 +976,7 @@ async def validate_catch(
             fish_length=float(catch.length) if catch.length else None,
             event_name=event.name,
         )
-        # Process achievements for the approved catch
-        process_achievements_for_catch.delay(
-            catch_id=catch.id,
-            event_id=catch.event_id,
-            user_id=catch.user_id,
-        )
-        # Trigger stats recalculation for user
+        # Trigger stats recalculation for user (achievements deferred to event completion)
         await statistics_service.update_user_stats_for_event(db, catch.user_id, catch.event_id)
 
     # Queue leaderboard recalculation
@@ -1163,13 +1156,7 @@ async def revalidate_catch(
             fish_length=float(catch.length) if catch.length else None,
             event_name=event.name,
         )
-        # Process achievements for the revalidated catch
-        process_achievements_for_catch.delay(
-            catch_id=catch.id,
-            event_id=catch.event_id,
-            user_id=catch.user_id,
-        )
-        # Trigger stats recalculation for user
+        # Trigger stats recalculation for user (achievements deferred to event completion)
         await statistics_service.update_user_stats_for_event(db, catch.user_id, catch.event_id)
 
     # Queue leaderboard recalculation

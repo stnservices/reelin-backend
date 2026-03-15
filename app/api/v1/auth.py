@@ -268,38 +268,41 @@ async def login(
     # Update last login
     user.last_login = datetime.now(timezone.utc)
 
-    # Audit: log successful login + register device
-    ctx = audit_service.extract_request_context(request)
-    audit_entry = audit_service.log_event(
-        db,
-        event_type="login",
-        user_id=user.id,
-        ip=ctx["ip"],
-        user_agent=ctx["user_agent"],
-        device_id=ctx["device_id"],
-        device_info=ctx["device_info"],
-        success=True,
-    )
-    is_new_device = False
-    if ctx["device_id"]:
-        _, is_new_device = await audit_service.register_or_update_device(
-            db, user.id, ctx["device_id"], ip=ctx["ip"], device_info=ctx["device_info"]
+    # Audit: log successful login + register device (skip for test accounts)
+    from app.utils import is_test_account
+    if not is_test_account(user.email):
+        ctx = audit_service.extract_request_context(request)
+        audit_entry = audit_service.log_event(
+            db,
+            event_type="login",
+            user_id=user.id,
+            ip=ctx["ip"],
+            user_agent=ctx["user_agent"],
+            device_id=ctx["device_id"],
+            device_info=ctx["device_info"],
+            success=True,
         )
+        is_new_device = False
+        if ctx["device_id"]:
+            _, is_new_device = await audit_service.register_or_update_device(
+                db, user.id, ctx["device_id"], ip=ctx["ip"], device_info=ctx["device_info"]
+            )
 
     await db.commit()
 
     # Fire Celery tasks (non-blocking)
-    try:
-        from app.tasks.audit import enrich_audit_log
-        enrich_audit_log.delay(audit_entry.id)
-    except Exception:
-        pass
-    if is_new_device:
+    if not is_test_account(user.email):
         try:
-            from app.tasks.audit import check_repeat_offender
-            check_repeat_offender.delay(user.id, ctx["device_id"], ctx["ip"], user.email)
+            from app.tasks.audit import enrich_audit_log
+            enrich_audit_log.delay(audit_entry.id)
         except Exception:
             pass
+        if is_new_device:
+            try:
+                from app.tasks.audit import check_repeat_offender
+                check_repeat_offender.delay(user.id, ctx["device_id"], ctx["ip"], user.email)
+            except Exception:
+                pass
 
     # Create tokens - sub must be a string for JWT
     token_data = {"sub": str(user.id)}

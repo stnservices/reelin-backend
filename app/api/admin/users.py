@@ -127,6 +127,10 @@ async def toggle_user_status(
     user.is_active = is_active
     await db.commit()
 
+    # Invalidate cached auth status so change takes effect immediately
+    from app.dependencies import invalidate_user_auth_cache
+    await invalidate_user_auth_cache(user_id)
+
     action = "activated" if is_active else "deactivated"
     return {"message": f"User {action} successfully"}
 
