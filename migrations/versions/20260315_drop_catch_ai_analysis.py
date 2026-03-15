@@ -17,9 +17,9 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.drop_index("idx_ai_analysis_anomaly", table_name="catch_ai_analysis")
-    op.drop_index("idx_ai_analysis_status", table_name="catch_ai_analysis")
-    op.drop_index("idx_ai_analysis_catch", table_name="catch_ai_analysis")
+    op.execute("DROP INDEX IF EXISTS idx_ai_analysis_anomaly")
+    op.execute("DROP INDEX IF EXISTS idx_ai_analysis_status")
+    op.execute("DROP INDEX IF EXISTS idx_ai_analysis_catch")
     op.drop_table("catch_ai_analysis")
 
 
