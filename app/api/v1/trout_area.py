@@ -2233,6 +2233,7 @@ async def generate_lineups(
     settings.updated_at = datetime.now(timezone.utc)
 
     await db.commit()
+    await redis_cache.delete(f"ta:settings:{event_id}")
 
     # Calculate duration estimate
     duration = TAPairingService.calculate_event_duration(
