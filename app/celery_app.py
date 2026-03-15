@@ -24,7 +24,7 @@ celery_app = Celery(
     "reelin",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=["app.tasks.leaderboard", "app.tasks.billing", "app.tasks.notifications", "app.tasks.achievements", "app.tasks.achievement_processing", "app.tasks.content_moderation", "app.tasks.ai_analysis", "app.tasks.statistics", "app.tasks.audit", "app.tasks.ta_match"],
+    include=["app.tasks.leaderboard", "app.tasks.billing", "app.tasks.notifications", "app.tasks.achievements", "app.tasks.achievement_processing", "app.tasks.content_moderation", "app.tasks.statistics", "app.tasks.audit", "app.tasks.ta_match"],
     broker_use_ssl=ssl_options if settings.celery_broker_url.startswith("rediss://") else None,
     redis_backend_use_ssl=ssl_options if settings.celery_result_backend.startswith("rediss://") else None,
 )

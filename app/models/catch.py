@@ -113,10 +113,6 @@ class Catch(Base):
     uploaded_by: Mapped[Optional["UserAccount"]] = relationship(
         "UserAccount", foreign_keys=[uploaded_by_id], lazy="joined"
     )
-    ai_analysis: Mapped[Optional["CatchAiAnalysis"]] = relationship(
-        "CatchAiAnalysis", back_populates="catch", uselist=False, lazy="joined"
-    )
-
     @property
     def is_pending(self) -> bool:
         return self.status == CatchStatus.PENDING.value
@@ -286,4 +282,3 @@ from app.models.user import UserAccount
 from app.models.fish import Fish
 from app.models.team import Team
 from app.models.club import Club
-from app.models.ai_analysis import CatchAiAnalysis

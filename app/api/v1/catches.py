@@ -46,9 +46,7 @@ from app.core.storage import storage_service
 from app.tasks.leaderboard import queue_leaderboard_recalculation
 from app.services.redis_cache import redis_cache, invalidate_event_caches
 from app.tasks.notifications import send_catch_notification, send_catch_response_notification
-from app.tasks.ai_analysis import queue_catch_analysis
 from app.tasks.notifications import send_catch_like_notification
-from app.models.ai_analysis import CatchAiAnalysis
 from app.services.statistics_service import statistics_service
 from app.services.firebase_leaderboard_service import sync_validator_event
 
@@ -145,7 +143,6 @@ async def list_catches(
             selectinload(Catch.user).selectinload(UserAccount.profile),
             selectinload(Catch.fish),
             selectinload(Catch.validated_by),
-            selectinload(Catch.ai_analysis).selectinload(CatchAiAnalysis.detected_species),
         )
         .where(Catch.event_id == event_id)
     )
@@ -235,7 +232,6 @@ async def list_catches(
             c,
             enrollment_number=enrollment_info[0],
             draw_number=enrollment_info[1],
-            include_ai_analysis=can_see_all,
         ))
 
     return CatchListResponse(
@@ -355,13 +351,6 @@ async def submit_catch(
     db.add(catch)
     await db.commit()
     await db.refresh(catch)
-
-    # Queue AI analysis if enabled for this event (non-blocking, runs in background)
-    if event.use_ai_analysis:
-        try:
-            queue_catch_analysis(catch.id, delay_seconds=5)
-        except Exception as e:
-            logger.warning(f"Failed to queue AI analysis for catch {catch.id}: {e}")
 
     # Broadcast to validators that a new catch was submitted
     background_tasks.add_task(
@@ -618,13 +607,6 @@ async def submit_catch_with_image(
             await db.commit()
             await db.refresh(catch)
 
-            # Queue AI analysis if enabled for this event (non-blocking, runs in background)
-            if event.use_ai_analysis:
-                try:
-                    queue_catch_analysis(catch.id, delay_seconds=5)
-                except Exception as e:
-                    logger.warning(f"Failed to queue AI analysis for catch {catch.id}: {e}")
-
             # Broadcast to validators that a new catch was submitted
             if background_tasks:
                 background_tasks.add_task(
@@ -841,7 +823,6 @@ async def get_catch(
             selectinload(Catch.user).selectinload(UserAccount.profile),
             selectinload(Catch.fish),
             selectinload(Catch.validated_by),
-            selectinload(Catch.ai_analysis).selectinload(CatchAiAnalysis.detected_species),
         )
         .where(Catch.id == catch_id)
     )
@@ -860,7 +841,7 @@ async def get_catch(
         raise HTTPException(status_code=403, detail="Not authorized to view this catch")
 
     # Include AI analysis for validators
-    return CatchDetailResponse.from_catch(catch, include_ai_analysis=is_validator)
+    return CatchDetailResponse.from_catch(catch)
 
 
 @router.post("/{catch_id}/validate", response_model=CatchDetailResponse)

@@ -6,7 +6,6 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.catch import CatchStatus
-from app.schemas.ai_analysis import AiAnalysisResponse, build_ai_analysis_response
 
 
 class CatchCreate(BaseModel):
@@ -129,9 +128,6 @@ class CatchDetailResponse(CatchResponse):
     # Enrollment info
     enrollment_number: Optional[int] = None
     draw_number: Optional[int] = None
-    # AI Analysis (for validators only)
-    ai_analysis: Optional[AiAnalysisResponse] = None
-
     model_config = ConfigDict(from_attributes=True)
 
     @classmethod
@@ -142,7 +138,6 @@ class CatchDetailResponse(CatchResponse):
         team_name: str = None,
         enrollment_number: int = None,
         draw_number: int = None,
-        include_ai_analysis: bool = False,
     ) -> "CatchDetailResponse":
         """Create response from catch model with nested relationships."""
         # Determine if proxy upload
@@ -187,7 +182,6 @@ class CatchDetailResponse(CatchResponse):
             team_name=team_name,
             enrollment_number=enrollment_number,
             draw_number=draw_number,
-            ai_analysis=build_ai_analysis_response(catch.ai_analysis) if include_ai_analysis and hasattr(catch, 'ai_analysis') else None,
         )
 
 

@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status as http_status, UploadFile, File
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -14,6 +14,7 @@ from app.dependencies import get_current_user, get_current_user_optional
 from app.core.permissions import OrganizerOrAdmin, ValidatorOrAdmin, AdminOnly, EventOwnerOrAdmin
 from app.models.user import UserAccount, UserProfile
 from app.models.event import Event, EventType, ScoringConfig, EventPrize, EventScoringRule, EventFishScoring, EventSpeciesBonusPoints, EventStatus
+from app.models.catch import Catch
 from app.models.event_validator import EventValidator
 from app.models.club import Club, ClubMembership, MembershipStatus
 from app.models.fish import Fish
@@ -1278,9 +1279,42 @@ async def update_event(
                 detail="Cannot change event type for non-draft events",
             )
         if event_data.scoring_config_id is not None and event_data.scoring_config_id != event.scoring_config_id:
-            raise HTTPException(
-                status_code=http_status.HTTP_400_BAD_REQUEST,
-                detail="Cannot change scoring configuration for non-draft events",
+            # Allow scoring change for draft + published, block for ongoing/completed/cancelled
+            if event.status not in [EventStatus.DRAFT.value, EventStatus.PUBLISHED.value]:
+                raise HTTPException(
+                    status_code=http_status.HTTP_400_BAD_REQUEST,
+                    detail="Cannot change scoring for ongoing/completed events",
+                )
+
+            # Block if catches exist
+            catch_count = (await db.execute(
+                select(func.count(Catch.id)).where(Catch.event_id == event.id)
+            )).scalar() or 0
+            if catch_count > 0:
+                raise HTTPException(
+                    status_code=http_status.HTTP_400_BAD_REQUEST,
+                    detail="Cannot change scoring: event has submitted catches",
+                )
+
+            # Validate new config exists and is active
+            new_config = (await db.execute(
+                select(ScoringConfig).where(
+                    ScoringConfig.id == event_data.scoring_config_id,
+                    ScoringConfig.is_active == True,
+                )
+            )).scalar_one_or_none()
+            if not new_config:
+                raise HTTPException(
+                    status_code=http_status.HTTP_404_NOT_FOUND,
+                    detail="Scoring configuration not found",
+                )
+
+            # Delete all existing fish scoring and bonus points rows (will be reconfigured by organizer)
+            await db.execute(
+                delete(EventFishScoring).where(EventFishScoring.event_id == event.id)
+            )
+            await db.execute(
+                delete(EventSpeciesBonusPoints).where(EventSpeciesBonusPoints.event_id == event.id)
             )
 
     # Validate rule_id if provided and changed

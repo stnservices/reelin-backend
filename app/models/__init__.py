@@ -48,7 +48,6 @@ from app.models.catch_reaction import CatchReaction, ReactionType
 from app.models.waypoint import UserWaypoint, WaypointIcon, WaypointCategory
 from app.models.recommendation import RecommendationDismissal
 from app.models.app_settings import AppSettings
-from app.models.ai_analysis import CatchAiAnalysis, AiAnalysisStatus
 from app.models.profile_moderation import ProfilePictureModeration, ModerationStatus, RejectionReason
 from app.models.ml_model import MLModel, MLPredictionLog
 from app.models.organizer_permissions import OrganizerEventTypeAccess, NationalEventOrganizer
@@ -186,9 +185,6 @@ __all__ = [
     "RecommendationDismissal",
     # App Settings
     "AppSettings",
-    # AI Analysis
-    "CatchAiAnalysis",
-    "AiAnalysisStatus",
     # Profile Moderation
     "ProfilePictureModeration",
     "ModerationStatus",
