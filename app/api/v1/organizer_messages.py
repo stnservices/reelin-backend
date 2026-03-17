@@ -95,7 +95,7 @@ def send_organizer_notification(
                     <!-- Header -->
                     <tr>
                         <td style="padding: 40px 30px; text-align: center; background-color: #ffc107; border-radius: 8px 8px 0 0;">
-                            <img src="https://streetfishing.fra1.cdn.digitaloceanspaces.com/media/assets/logo_orange_yellow_transparent.png" alt="ReelIn Logo" width="120" style="margin-bottom: 10px;">
+                            <img src="https://cdn.reelin.ro/legacy/media/assets/logo_orange_yellow_transparent.png" alt="ReelIn Logo" width="120" style="margin-bottom: 10px;">
                             <h1 style="color: #000000; font-size: 24px; margin: 0;">
                                 New Message Received
                             </h1>
