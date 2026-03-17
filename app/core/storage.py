@@ -45,11 +45,13 @@ class StorageService:
     @property
     def cdn_base_url(self) -> str:
         """Get the CDN base URL for serving files."""
-        # Digital Ocean Spaces CDN format
+        import os
+        custom_base = os.environ.get("STORAGE_PUBLIC_URL_BASE")
+        if custom_base:
+            return custom_base
+        # Digital Ocean Spaces CDN format (legacy fallback)
         endpoint = self.settings.storage_endpoint_url
         if endpoint and "digitaloceanspaces.com" in endpoint:
-            # Convert endpoint to CDN URL
-            # e.g., https://fra1.digitaloceanspaces.com -> https://bucket.fra1.cdn.digitaloceanspaces.com
             endpoint_host = endpoint.replace("https://", "")
             region = endpoint_host.split(".")[0]
             return f"https://{self.bucket_name}.{region}.cdn.digitaloceanspaces.com"

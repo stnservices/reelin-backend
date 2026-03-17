@@ -222,7 +222,7 @@ class DOSpacesBackend:
         )
 
         # Public URL base (CDN or direct)
-        self.public_url_base = f"https://{self.bucket}.{self.region}.digitaloceanspaces.com"
+        self.public_url_base = os.environ.get("STORAGE_PUBLIC_URL_BASE", f"https://{self.bucket}.{self.region}.digitaloceanspaces.com")
 
     async def save(self, filename: str, contents: bytes) -> str:
         """Save file to DO Spaces and return public URL."""
