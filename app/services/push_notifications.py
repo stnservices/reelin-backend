@@ -83,8 +83,13 @@ def initialize_firebase() -> bool:
         except ValueError:
             pass
 
-        # Parse credentials from JSON string
-        firebase_credentials = json.loads(settings.firebase_credentials)
+        # Parse credentials from JSON string or file path
+        cred_value = settings.firebase_credentials
+        if cred_value.strip().startswith('{'):
+            firebase_credentials = json.loads(cred_value)
+        else:
+            with open(cred_value) as f:
+                firebase_credentials = json.load(f)
         cred = credentials.Certificate(firebase_credentials)
 
         # Initialize with database URL if configured (for Realtime Database)
