@@ -300,8 +300,15 @@ async def _calculate_catch_details_for_fallback(
     details = []
 
     if "top_x_overall" in scoring_code:
-        # Global top X scoring - first N catches count
-        sorted_catches = sorted(catches, key=lambda c: c.length, reverse=True)
+        # Global top X scoring — sort by effective points (not raw length)
+        # so under-min catches don't steal slots from full-value catches
+        def _eff_pts(c):
+            fc = fish_scoring.get(c.fish_id)
+            ml = fc.accountable_min_length if fc else 0
+            um = fc.under_min_length_points if fc else 0
+            return c.length if c.length >= ml else um
+
+        sorted_catches = sorted(catches, key=lambda c: (_eff_pts(c), c.length), reverse=True)
         for i, catch in enumerate(sorted_catches):
             is_scored = i < top_x_overall
             fish_config = fish_scoring.get(catch.fish_id)
