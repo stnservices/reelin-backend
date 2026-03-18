@@ -852,6 +852,16 @@ def _calculate_catch_details(
     details = []
 
     if "top_x_overall" in scoring_code:
+        # Re-sort by effective points (not raw length) so under-min catches
+        # don't steal slots from full-value catches
+        def _eff_pts(c):
+            fc = fish_scoring.get(c.fish_id)
+            ml = fc.accountable_min_length if fc else 0
+            um = fc.under_min_length_points if fc else 0
+            return c.length if c.length >= ml else um
+
+        catches = sorted(catches, key=lambda c: (_eff_pts(c), c.length), reverse=True)
+
         for i, catch in enumerate(catches):
             is_scored = i < top_x_overall
             rank_in_category = i + 1

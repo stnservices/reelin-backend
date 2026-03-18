@@ -189,8 +189,15 @@ class ScoringCalculator:
 
         # Check for top_x_overall scoring (handles both 'top_x_overall' and 'sf_top_x_overall')
         if "top_x_overall" in self.scoring_code:
-            # Top X catches globally regardless of species
-            all_catches = sorted(catches, key=lambda c: c.length, reverse=True)
+            # Top X catches globally — sort by effective points (not raw length)
+            # so under-min catches don't steal slots from full-value catches
+            def _eff_pts(c):
+                fc = self.fish_scoring.get(c.fish_id)
+                ml = fc.accountable_min_length if fc else 0
+                um = fc.under_min_length_points if fc else 0
+                return c.length if c.length >= ml else um
+
+            all_catches = sorted(catches, key=lambda c: (_eff_pts(c), c.length), reverse=True)
             for catch in all_catches[:self.top_x_overall]:
                 # Apply under-min scoring rules
                 fish_config = self.fish_scoring.get(catch.fish_id)
