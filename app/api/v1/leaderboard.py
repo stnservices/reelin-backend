@@ -34,6 +34,100 @@ def _entries_are_tied(entry1: dict, entry2: dict) -> bool:
     )
 
 
+def _find_biggest_catch_winner(
+    entity_catches: dict[int, list],
+    fs_map: dict,
+    entity_names: dict[int, str],
+    is_team: bool = False,
+    team_info: dict | None = None,
+) -> dict | None:
+    """Find the biggest catch winner using accountable catches with cascade tiebreaker.
+
+    Only considers accountable catches (length >= accountable_min_length).
+    Falls back to non-accountable catches only if NO entity has ANY accountable catches.
+    Tiebreaker: cascade comparison of sorted catch lengths (element by element).
+    """
+    if not entity_catches:
+        return None
+
+    entity_accountable: dict[int, list] = {}
+    entity_non_accountable: dict[int, list] = {}
+
+    for entity_id, catches in entity_catches.items():
+        accountable = []
+        non_accountable = []
+        for c in catches:
+            fs = fs_map.get(c.fish_id)
+            if not fs:
+                continue
+            if c.length >= fs.accountable_min_length:
+                accountable.append(c)
+            else:
+                non_accountable.append(c)
+        accountable.sort(key=lambda x: x.length, reverse=True)
+        non_accountable.sort(key=lambda x: x.length, reverse=True)
+        if accountable:
+            entity_accountable[entity_id] = accountable
+        if non_accountable:
+            entity_non_accountable[entity_id] = non_accountable
+
+    use_accountable = True
+    if entity_accountable:
+        candidates = entity_accountable
+    elif entity_non_accountable:
+        candidates = entity_non_accountable
+        use_accountable = False
+    else:
+        return None
+
+    # Cascade comparison: compare sorted length arrays element by element
+    winner_id = None
+    for entity_id in candidates:
+        if winner_id is None:
+            winner_id = entity_id
+            continue
+        w_lengths = [c.length for c in candidates[winner_id]]
+        e_lengths = [c.length for c in candidates[entity_id]]
+        for wl, el in zip(w_lengths, e_lengths):
+            if el > wl:
+                winner_id = entity_id
+                break
+            elif el < wl:
+                break
+        else:
+            if len(e_lengths) > len(w_lengths):
+                winner_id = entity_id
+
+    top_catch = candidates[winner_id][0]
+
+    result = {
+        "user_id": top_catch.user_id,
+        "catch_id": top_catch.id,
+        "length": top_catch.length,
+        "species": (top_catch.fish.name_en or top_catch.fish.name) if top_catch.fish else None,
+        "species_ro": (top_catch.fish.name_ro or top_catch.fish.name) if top_catch.fish else None,
+        "photo_url": top_catch.photo_url,
+        "is_accountable": use_accountable,
+        "team_id": None,
+        "team_name": None,
+        "caught_by_name": None,
+    }
+
+    if is_team and team_info:
+        result["team_id"] = winner_id
+        result["team_name"] = team_info.get(winner_id, {}).get("name")
+        caught_by = (
+            f"{top_catch.user.profile.first_name} {top_catch.user.profile.last_name}"
+            if top_catch.user and top_catch.user.profile else None
+        )
+        result["caught_by_name"] = caught_by
+        result["user_name"] = caught_by or f"User {top_catch.user_id}"
+    else:
+        result["user_name"] = entity_names.get(winner_id, "Unknown")
+
+    return result
+
+
 class ScoringCalculator:
     """
     Calculates scores based on event's scoring config code.
@@ -625,6 +719,15 @@ async def _get_individual_leaderboard(
             no_catch_count = len(no_catch_entries)
             all_entries = all_entries + no_catch_entries
 
+    # Compute biggest catch winner (separate from ranking logic)
+    user_names = {}
+    for uid, catches in user_catches.items():
+        u = catches[0].user
+        user_names[uid] = f"{u.profile.first_name} {u.profile.last_name}" if u.profile else f"User {uid}"
+    biggest_catch_winner = _find_biggest_catch_winner(
+        user_catches, calculator.fish_scoring, user_names
+    )
+
     return {
         "event_id": event.id,
         "event_name": event.name,
@@ -636,6 +739,7 @@ async def _get_individual_leaderboard(
         "disqualified_count": len(disqualified_entries),
         "no_catch_participants_count": no_catch_count,
         "last_updated": last_catch_time.isoformat() if last_catch_time else None,
+        "biggest_catch_winner": biggest_catch_winner,
     }
 
 
@@ -911,6 +1015,13 @@ async def _get_team_leaderboard(
     total_dq_catches = sum(disqualified_catch_count.values())
     total_dq_users = len(disqualified_user_ids)
 
+    # Compute biggest catch winner (separate from ranking logic)
+    team_names = {tid: info["name"] for tid, info in team_info.items()}
+    biggest_catch_winner = _find_biggest_catch_winner(
+        team_catches, calculator.fish_scoring, team_names,
+        is_team=True, team_info=team_info,
+    )
+
     return {
         "event_id": event.id,
         "event_name": event.name,
@@ -922,6 +1033,7 @@ async def _get_team_leaderboard(
         "disqualified_members_count": total_dq_users,
         "disqualified_catches_excluded": total_dq_catches,
         "last_updated": last_catch_time.isoformat() if last_catch_time else None,
+        "biggest_catch_winner": biggest_catch_winner,
     }
 
 

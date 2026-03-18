@@ -106,6 +106,21 @@ def sync_leaderboard_to_firebase(
             "entries": firebase_entries,
         }
 
+        # Sync biggest catch winner if available
+        bcw = leaderboard_data.get("biggest_catch_winner")
+        if bcw:
+            firebase_leaderboard["biggestCatchWinner"] = {
+                "displayName": bcw.get("team_name") or bcw.get("user_name", ""),
+                "length": bcw.get("length"),
+                "species": bcw.get("species"),
+                "speciesRo": bcw.get("species_ro"),
+                "catchId": bcw.get("catch_id"),
+                "isAccountable": bcw.get("is_accountable", True),
+                "userId": bcw.get("user_id"),
+                "teamName": bcw.get("team_name"),
+                "caughtByName": bcw.get("caught_by_name"),
+            }
+
         # Write leaderboard
         ref.child("leaderboard").set(firebase_leaderboard)
         logger.info(f"Leaderboard synced to Firebase for event {event_id}")
