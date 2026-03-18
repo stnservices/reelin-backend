@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status, Body
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -643,10 +644,23 @@ async def register_device_token(
         device_type=token_data.device_type,
     )
     db.add(device_token)
-    await db.commit()
-    await db.refresh(device_token)
-
-    return device_token
+    try:
+        await db.commit()
+        await db.refresh(device_token)
+        return device_token
+    except IntegrityError:
+        await db.rollback()
+        # Race condition: another request inserted the same token
+        query = select(UserDeviceToken).where(UserDeviceToken.token == token_data.token)
+        result = await db.execute(query)
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.user_id = current_user.id
+            existing.device_type = token_data.device_type
+            await db.commit()
+            await db.refresh(existing)
+            return existing
+        raise
 
 
 @router.delete("/devices/{token}", response_model=MessageResponse)
