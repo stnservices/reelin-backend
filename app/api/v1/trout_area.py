@@ -2997,7 +2997,8 @@ async def submit_game_card(
 
     The card can only be submitted by its owner.
     """
-    await get_ta_event(event_id, db, request)
+    # Skip get_ta_event() — card fetch with event_id filter is the implicit check.
+    # If card doesn't exist for this event → 404. No stale data risk.
 
     async def _do_submit():
         # Get game card (no FOR UPDATE — use ordered UPDATE statements instead)
@@ -3036,6 +3037,11 @@ async def submit_game_card(
             )
 
         now = datetime.now(timezone.utc)
+
+        # Capture profile info before commit expires ORM objects (avoids re-fetch)
+        _user_name = card.user.profile.full_name if card.user and card.user.profile else None
+        _user_avatar = card.user.effective_avatar_url if card.user else None
+        _opponent_name = card.opponent.profile.full_name if card.opponent and card.opponent.profile else None
 
         # Build base card updates
         card_updates = {
@@ -3121,50 +3127,41 @@ async def submit_game_card(
                     update(TAGameCard).where(TAGameCard.id == cid).values(**vals)
                 )
 
-        await db.commit()
-
-        # Invalidate event caches (rankings, standings, game cards, etc.)
-        await invalidate_event_caches(event_id, [card.user_id, card.opponent_id])
-
-        # Re-fetch card with relationships for response
-        refresh_query = (
-            select(TAGameCard)
-            .options(
-                selectinload(TAGameCard.user).selectinload(UserAccount.profile),
-                selectinload(TAGameCard.opponent).selectinload(UserAccount.profile),
-            )
-            .where(TAGameCard.id == card_id)
-        )
-        refresh_result = await db.execute(refresh_query)
-        card = refresh_result.scalar_one()
-
-        return {
+        # Build response from already-loaded card + written values (skip re-fetch = -3 queries)
+        response = {
             "id": card.id,
             "event_id": card.event_id,
             "match_id": card.match_id,
             "leg_number": card.leg_number,
             "user_id": card.user_id,
-            "my_catches": card.my_catches,
+            "my_catches": card_updates.get("my_catches", card.my_catches),
             "my_seat": card.my_seat,
             "opponent_id": card.opponent_id,
-            "opponent_catches": card.opponent_catches,
+            "opponent_catches": card_updates.get("opponent_catches", card.opponent_catches),
             "opponent_seat": card.opponent_seat,
-            "is_submitted": card.is_submitted,
-            "is_validated": card.is_validated,
-            "validated_at": card.validated_at,
-            "i_validated_opponent": card.i_validated_opponent,
-            "i_validated_at": card.i_validated_at,
+            "is_submitted": card_updates.get("is_submitted", card.is_submitted),
+            "is_validated": card_updates.get("is_validated", card.is_validated),
+            "validated_at": card_updates.get("validated_at", card.validated_at),
+            "i_validated_opponent": card_updates.get("i_validated_opponent", card.i_validated_opponent),
+            "i_validated_at": card_updates.get("i_validated_at", card.i_validated_at),
             "is_disputed": card.is_disputed,
             "dispute_reason": card.dispute_reason,
-            "status": TAGameCardStatusAPI(card.status),
+            "status": TAGameCardStatusAPI(card_updates.get("status", card.status)),
             "is_ghost_opponent": card.is_ghost_opponent,
-            "submitted_at": card.submitted_at,
+            "submitted_at": card_updates.get("submitted_at", card.submitted_at),
             "created_at": card.created_at,
-            "updated_at": card.updated_at,
-            "user_name": card.user.profile.full_name if card.user and card.user.profile else None,
-            "user_avatar": card.user.effective_avatar_url if card.user else None,
-            "opponent_name": card.opponent.profile.full_name if card.opponent and card.opponent.profile else None,
+            "updated_at": card_updates.get("updated_at", now),
+            "user_name": _user_name,
+            "user_avatar": _user_avatar,
+            "opponent_name": _opponent_name,
         }
+
+        await db.commit()
+
+        # Invalidate event caches (rankings, standings, game cards, etc.)
+        await invalidate_event_caches(event_id, [card.user_id, card.opponent_id])
+
+        return response
 
     return await execute_with_deadlock_retry(db, _do_submit)
 
@@ -3193,7 +3190,7 @@ async def validate_opponent_card(
 
     This endpoint allows a participant to validate their opponent's card.
     """
-    await get_ta_event(event_id, db, request)
+    # Skip get_ta_event() — card fetch with event_id filter is the implicit check.
 
     async def _do_validate():
         # Get the opponent's game card (no FOR UPDATE — use ordered UPDATE statements instead)
@@ -3245,6 +3242,11 @@ async def validate_opponent_card(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=get_error_message("ta_already_validated", request),
             )
+
+        # Capture profile info before commit expires ORM objects (avoids re-fetch)
+        _user_name = opponent_card.user.profile.full_name if opponent_card.user and opponent_card.user.profile else None
+        _user_avatar = opponent_card.user.effective_avatar_url if opponent_card.user else None
+        _opponent_name = opponent_card.opponent.profile.full_name if opponent_card.opponent and opponent_card.opponent.profile else None
 
         # Get my card to update i_validated_opponent
         my_card_query = select(TAGameCard).where(
@@ -3368,50 +3370,71 @@ async def validate_opponent_card(
                 )
             )
 
+        # Build response from already-loaded card + written values (skip re-fetch = -3 queries)
+        if data.is_valid:
+            opp_catches = my_card.my_catches if both_validated else opponent_card.opponent_catches
+            response = {
+                "id": opponent_card.id,
+                "event_id": opponent_card.event_id,
+                "match_id": opponent_card.match_id,
+                "leg_number": opponent_card.leg_number,
+                "user_id": opponent_card.user_id,
+                "my_catches": opponent_card.my_catches,
+                "my_seat": opponent_card.my_seat,
+                "opponent_id": opponent_card.opponent_id,
+                "opponent_catches": opp_catches,
+                "opponent_seat": opponent_card.opponent_seat,
+                "is_submitted": opponent_card.is_submitted,
+                "is_validated": True,
+                "validated_at": now,
+                "i_validated_opponent": opponent_card.i_validated_opponent,
+                "i_validated_at": opponent_card.i_validated_at,
+                "is_disputed": False,
+                "dispute_reason": None,
+                "status": TAGameCardStatusAPI(TAGameCardStatus.VALIDATED.value),
+                "is_ghost_opponent": opponent_card.is_ghost_opponent,
+                "submitted_at": opponent_card.submitted_at,
+                "created_at": opponent_card.created_at,
+                "updated_at": now,
+                "user_name": _user_name,
+                "user_avatar": _user_avatar,
+                "opponent_name": _opponent_name,
+            }
+        else:
+            response = {
+                "id": opponent_card.id,
+                "event_id": opponent_card.event_id,
+                "match_id": opponent_card.match_id,
+                "leg_number": opponent_card.leg_number,
+                "user_id": opponent_card.user_id,
+                "my_catches": opponent_card.my_catches,
+                "my_seat": opponent_card.my_seat,
+                "opponent_id": opponent_card.opponent_id,
+                "opponent_catches": opponent_card.opponent_catches,
+                "opponent_seat": opponent_card.opponent_seat,
+                "is_submitted": opponent_card.is_submitted,
+                "is_validated": False,
+                "validated_at": opponent_card.validated_at,
+                "i_validated_opponent": opponent_card.i_validated_opponent,
+                "i_validated_at": opponent_card.i_validated_at,
+                "is_disputed": True,
+                "dispute_reason": data.dispute_reason,
+                "status": TAGameCardStatusAPI(TAGameCardStatus.DISPUTED.value),
+                "is_ghost_opponent": opponent_card.is_ghost_opponent,
+                "submitted_at": opponent_card.submitted_at,
+                "created_at": opponent_card.created_at,
+                "updated_at": now,
+                "user_name": _user_name,
+                "user_avatar": _user_avatar,
+                "opponent_name": _opponent_name,
+            }
+
         await db.commit()
 
         # Invalidate event caches (rankings, standings, game cards, etc.)
         await invalidate_event_caches(event_id, [opponent_card.user_id, opponent_card.opponent_id])
 
-        # Re-fetch card with relationships for response
-        refresh_query = (
-            select(TAGameCard)
-            .options(
-                selectinload(TAGameCard.user).selectinload(UserAccount.profile),
-                selectinload(TAGameCard.opponent).selectinload(UserAccount.profile),
-            )
-            .where(TAGameCard.id == card_id)
-        )
-        refresh_result = await db.execute(refresh_query)
-        opponent_card = refresh_result.scalar_one()
-
-        return {
-            "id": opponent_card.id,
-            "event_id": opponent_card.event_id,
-            "match_id": opponent_card.match_id,
-            "leg_number": opponent_card.leg_number,
-            "user_id": opponent_card.user_id,
-            "my_catches": opponent_card.my_catches,
-            "my_seat": opponent_card.my_seat,
-            "opponent_id": opponent_card.opponent_id,
-            "opponent_catches": opponent_card.opponent_catches,
-            "opponent_seat": opponent_card.opponent_seat,
-            "is_submitted": opponent_card.is_submitted,
-            "is_validated": opponent_card.is_validated,
-            "validated_at": opponent_card.validated_at,
-            "i_validated_opponent": opponent_card.i_validated_opponent,
-            "i_validated_at": opponent_card.i_validated_at,
-            "is_disputed": opponent_card.is_disputed,
-            "dispute_reason": opponent_card.dispute_reason,
-            "status": TAGameCardStatusAPI(opponent_card.status),
-            "is_ghost_opponent": opponent_card.is_ghost_opponent,
-            "submitted_at": opponent_card.submitted_at,
-            "created_at": opponent_card.created_at,
-            "updated_at": opponent_card.updated_at,
-            "user_name": opponent_card.user.profile.full_name if opponent_card.user and opponent_card.user.profile else None,
-            "user_avatar": opponent_card.user.effective_avatar_url if opponent_card.user else None,
-            "opponent_name": opponent_card.opponent.profile.full_name if opponent_card.opponent and opponent_card.opponent.profile else None,
-        }
+        return response
 
     return await execute_with_deadlock_retry(db, _do_validate)
 
