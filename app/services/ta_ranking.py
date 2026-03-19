@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import load_only, selectinload
 
 from app.models.trout_area import (
     TAPointsRule,
@@ -669,8 +669,23 @@ class TARankingService:
         from collections import defaultdict
         from functools import cmp_to_key
 
-        # Build query for matches
-        query = select(TAMatch).where(TAMatch.event_id == event_id)
+        # Build query for matches — load only columns needed for ranking
+        query = (
+            select(TAMatch)
+            .options(load_only(
+                TAMatch.id,
+                TAMatch.competitor_a_id,
+                TAMatch.competitor_b_id,
+                TAMatch.competitor_a_catches,
+                TAMatch.competitor_b_catches,
+                TAMatch.competitor_a_points,
+                TAMatch.competitor_b_points,
+                TAMatch.competitor_a_outcome_code,
+                TAMatch.competitor_b_outcome_code,
+                TAMatch.status,
+            ))
+            .where(TAMatch.event_id == event_id)
+        )
 
         if leg_number is not None:
             query = query.where(TAMatch.leg_number <= leg_number)
@@ -785,8 +800,36 @@ class TARankingService:
                 c["losses_without_fish"],
             )
 
-        # Clear direct match cache for fresh calculation
-        self._direct_match_cache.clear()
+        # Build direct-match lookup from already-loaded matches (no extra DB queries)
+        # Key: (user_a, user_b) -> {user_a_wins: int, user_b_wins: int}
+        _dm_wins: dict[tuple[int, int], list[int]] = {}
+        for match in matches:
+            a_id, b_id = match.competitor_a_id, match.competitor_b_id
+            if not a_id or not b_id:
+                continue
+            pair_key = (min(a_id, b_id), max(a_id, b_id))
+            if pair_key not in _dm_wins:
+                _dm_wins[pair_key] = [0, 0]  # [min_id_wins, max_id_wins]
+            if match.competitor_a_outcome_code == 'V':
+                idx = 0 if a_id == pair_key[0] else 1
+                _dm_wins[pair_key][idx] += 1
+            elif match.competitor_b_outcome_code == 'V':
+                idx = 0 if b_id == pair_key[0] else 1
+                _dm_wins[pair_key][idx] += 1
+
+        def _direct_match_from_lookup(user_a: int, user_b: int) -> int:
+            """Return 1 if user_a won, -1 if user_b won, 0 if tied/no match."""
+            pair_key = (min(user_a, user_b), max(user_a, user_b))
+            wins = _dm_wins.get(pair_key)
+            if not wins:
+                return 0
+            a_wins = wins[0 if user_a == pair_key[0] else 1]
+            b_wins = wins[1 if user_a == pair_key[0] else 0]
+            if a_wins > b_wins:
+                return 1
+            elif b_wins > a_wins:
+                return -1
+            return 0
 
         # Track direct match results between consecutive competitors for rank sharing
         direct_match_results: dict[tuple[int, int], int] = {}
@@ -804,14 +847,12 @@ class TARankingService:
             if tie_end - tie_start > 1:
                 tie_group = comp_list[tie_start:tie_end]
 
-                # Resolve ties using direct match (8th tiebreaker)
+                # Resolve ties using direct match (8th tiebreaker) — from in-memory lookup
                 for j in range(len(tie_group)):
                     for k in range(j + 1, len(tie_group)):
-                        direct_result = await self._get_direct_match_result(
-                            event_id,
+                        direct_result = _direct_match_from_lookup(
                             tie_group[j]["user_id"],
                             tie_group[k]["user_id"],
-                            phase,
                         )
                         # Store result for rank sharing decision
                         direct_match_results[(tie_group[j]["user_id"], tie_group[k]["user_id"])] = direct_result

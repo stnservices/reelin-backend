@@ -368,10 +368,17 @@ async def invalidate_event_caches(event_id: int, user_ids: list[int] | None = No
         f"ta:public:bracket:{event_id}",
         f"sf:leaderboard:{event_id}",
     ]
+    # Invalidate standings + schedule caches for all known phases (no KEYS scan)
+    _phases = ["qualifier", "requalification", "semifinal", "final_grand", "final_small", "all"]
+    for prefix in ("ta:standings:", "ta:schedule:"):
+        for p in _phases:
+            keys.append(f"{prefix}{event_id}:{p}")
     if user_ids:
         for uid in user_ids:
             if uid is not None:
                 keys.append(f"ta:gamecards:{event_id}:{uid}")
                 keys.append(f"ta:mymatches:{event_id}:{uid}")
-    for key in keys:
-        await redis_cache.delete(key)
+    # Batch delete in a single Redis call
+    if keys:
+        client = await redis_cache.get_client()
+        await client.delete(*keys)

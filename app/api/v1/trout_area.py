@@ -974,24 +974,46 @@ async def get_effective_point_config(db: AsyncSession, event_id: int) -> TAEvent
     """
     Get point config for an event. Returns per-event config if it exists,
     otherwise creates a transient TAEventPointConfig from ta_points_rules defaults.
+    Cached in Redis for 1h — invalidated on config update.
     """
+    cache_key = f"ta:point_config:{event_id}"
+    cached = await redis_cache.get(cache_key)
+    if cached is not None:
+        return TAEventPointConfig(
+            event_id=event_id,
+            victory_points=Decimal(str(cached["victory_points"])),
+            tie_points=Decimal(str(cached["tie_points"])),
+            tie_zero_points=Decimal(str(cached["tie_zero_points"])),
+            loss_points=Decimal(str(cached["loss_points"])),
+            loss_zero_points=Decimal(str(cached["loss_zero_points"])),
+        )
+
     query = select(TAEventPointConfig).where(TAEventPointConfig.event_id == event_id)
     result = await db.execute(query)
     config = result.scalar_one_or_none()
 
-    if config:
-        return config
+    if not config:
+        # Build from global defaults (queries ta_points_rules table)
+        defaults = await get_global_point_defaults(db)
+        config = TAEventPointConfig(
+            event_id=event_id,
+            victory_points=defaults["victory_points"],
+            tie_points=defaults["tie_points"],
+            tie_zero_points=defaults["tie_zero_points"],
+            loss_points=defaults["loss_points"],
+            loss_zero_points=defaults["loss_zero_points"],
+        )
 
-    # Build from global defaults (queries ta_points_rules table)
-    defaults = await get_global_point_defaults(db)
-    return TAEventPointConfig(
-        event_id=event_id,
-        victory_points=defaults["victory_points"],
-        tie_points=defaults["tie_points"],
-        tie_zero_points=defaults["tie_zero_points"],
-        loss_points=defaults["loss_points"],
-        loss_zero_points=defaults["loss_zero_points"],
-    )
+    # Cache for 1h — serialize Decimals as strings to preserve precision
+    await redis_cache.set(cache_key, {
+        "victory_points": str(config.victory_points),
+        "tie_points": str(config.tie_points),
+        "tie_zero_points": str(config.tie_zero_points),
+        "loss_points": str(config.loss_points),
+        "loss_zero_points": str(config.loss_zero_points),
+    }, ttl=3600)
+
+    return config
 
 
 @router.get("/point-defaults", response_model=TAGlobalPointDefaultsResponse)
@@ -1152,6 +1174,9 @@ async def update_ta_point_config(
     await db.commit()
     await db.refresh(config)
 
+    # Invalidate cached point config
+    await redis_cache.delete(f"ta:point_config:{event_id}")
+
     return {
         "victory_points": config.victory_points,
         "tie_points": config.tie_points,
@@ -1206,6 +1231,9 @@ async def reset_ta_point_config(
 
     await db.commit()
     await db.refresh(config)
+
+    # Invalidate cached point config
+    await redis_cache.delete(f"ta:point_config:{event_id}")
 
     return {
         "victory_points": config.victory_points,
@@ -1430,6 +1458,12 @@ async def get_event_schedule(
     This endpoint provides a structured view of the competition schedule,
     organized by legs with match details.
     """
+    # Check Redis cache first (5s TTL — invalidated on submit/validate)
+    cache_key = f"ta:schedule:{event_id}:{phase.value if phase else 'all'}"
+    cached = await redis_cache.get(cache_key)
+    if cached is not None:
+        return ORJSONResponse(cached)
+
     # Skip get_ta_event() — pure read endpoint, empty match query = empty response
     # Build match query with load_only() to reduce ORM hydration
     match_query = (
@@ -1546,7 +1580,7 @@ async def get_event_schedule(
     # Extract leg number from key for backwards compatibility (just the number)
     current_leg_num = current_leg_key[0] if current_leg_key else None
 
-    return ORJSONResponse({
+    response_data = {
         "legs": legs_list,
         "current_leg": current_leg_num,
         "total_legs": len(legs_list),
@@ -1556,7 +1590,9 @@ async def get_event_schedule(
         "rounds": legs_list,
         "current_round": current_leg_num,
         "total_rounds": len(legs_list),
-    })
+    }
+    await redis_cache.set(cache_key, response_data, ttl=5)
+    return ORJSONResponse(response_data)
 
 
 @router.get("/events/{event_id}/my-match", response_model=TAMatchResponse)
@@ -4393,10 +4429,23 @@ async def get_standings(
     For qualifier phase (or no phase specified): Returns stored TAQualifierStanding records.
     For knockout phases: Dynamically calculates standings from completed matches in that phase.
     """
+    # Check Redis cache first (5s TTL — invalidated on submit/validate)
+    cache_key = f"ta:standings:{event_id}:{phase.value if phase else 'qualifier'}"
+    cached = await redis_cache.get(cache_key)
+    if cached is not None:
+        return ORJSONResponse(cached)
+
     from app.services.ta_ranking import TARankingService
 
-    event = await get_ta_event(event_id, db, request)
-    settings = event.ta_settings
+    # Direct settings query — skips event type/deletion check for performance (read-only, 5s TTL)
+    settings_query = select(TAEventSettings).where(TAEventSettings.event_id == event_id)
+    settings_result = await db.execute(settings_query)
+    settings = settings_result.scalar_one_or_none()
+    if not settings:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=get_error_message("ta_settings_not_found", request),
+        )
 
     items = []
 
@@ -4525,8 +4574,8 @@ async def get_standings(
     # Knockout results are shown in the bracket section — no overlay needed here
     # Standings always reflect qualifier performance (who qualified for knockout)
 
-    return {
-        "items": items,
+    response_data = {
+        "items": [item.model_dump(mode="json") for item in items],
         "total": len(items),
         "phase": phase.value if phase else current_phase.value,
         "qualified_count": min(len(items), settings.knockout_qualifiers),
@@ -4534,6 +4583,8 @@ async def get_standings(
         "has_knockout_bracket": settings.has_knockout_stage,
         "available_phases": available_phases,
     }
+    await redis_cache.set(cache_key, response_data, ttl=5)
+    return ORJSONResponse(response_data)
 
 
 # =============================================================================

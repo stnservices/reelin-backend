@@ -18,7 +18,7 @@ from enum import Enum
 from typing import Optional
 
 from sqlalchemy import (
-    Boolean, DateTime, Float, ForeignKey, Integer, Numeric,
+    Boolean, DateTime, Float, ForeignKey, Index, Integer, Numeric,
     String, Text, UniqueConstraint, CheckConstraint, func
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -513,6 +513,9 @@ class TAMatch(Base):
         CheckConstraint("round_number >= 1", name="ck_ta_match_round_positive"),
         CheckConstraint("seat_a >= 1", name="ck_ta_match_seat_a_positive"),
         CheckConstraint("seat_b >= 1", name="ck_ta_match_seat_b_positive"),
+        # Composite indexes for hot query patterns
+        Index("idx_ta_matches_event_status", "event_id", "status"),
+        Index("idx_ta_matches_event_phase_round", "event_id", "phase", "round_number"),
     )
 
     def __repr__(self) -> str:
