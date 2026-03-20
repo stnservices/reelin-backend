@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.dependencies import get_current_user, get_current_user_optional
-from app.core.permissions import OrganizerOrAdmin, ValidatorOrAdmin, AdminOnly, EventOwnerOrAdmin
+from app.core.permissions import OrganizerOrAdmin, ValidatorOrAdmin, AdminOnly, EventOwnerOrAdmin, EventOwnerOrValidatorOrAdmin
 from app.models.user import UserAccount, UserProfile
 from app.models.event import Event, EventType, ScoringConfig, EventPrize, EventScoringRule, EventFishScoring, EventSpeciesBonusPoints, EventStatus
 from app.models.catch import Catch
@@ -1508,7 +1508,7 @@ async def update_event_status(
     request: EventStatusUpdateRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(OrganizerOrAdmin),
+    current_user: UserAccount = Depends(EventOwnerOrValidatorOrAdmin()),
 ) -> dict:
     """
     Unified endpoint for all event status transitions.

@@ -77,7 +77,7 @@ class EventStatusService:
             )
         return event
 
-    def check_authorization(
+    async def check_authorization(
         self,
         event: Event,
         user: UserAccount,
@@ -87,11 +87,28 @@ class EventStatusService:
         is_admin = user.profile and user.profile.has_role("administrator")
         is_owner = event.created_by_id == user.id
 
-        if not (is_admin or is_owner):
-            raise AuthorizationError(
-                message=f"Not authorized to {action} this event",
-                details={"action": action, "event_id": event.id},
+        if is_admin or is_owner:
+            return
+
+        # Validators can only start/stop/cancel — not delete, restore, or force
+        validator_allowed_actions = {"start", "stop", "cancel", "publish", "recall"}
+        if action in validator_allowed_actions and user.profile and user.profile.has_role("validator"):
+            from app.models.event_validator import EventValidator
+
+            result = await self.db.execute(
+                select(EventValidator).where(
+                    EventValidator.event_id == event.id,
+                    EventValidator.validator_id == user.id,
+                    EventValidator.is_active == True,
+                )
             )
+            if result.scalar_one_or_none():
+                return
+
+        raise AuthorizationError(
+            message=f"Not authorized to {action} this event",
+            details={"action": action, "event_id": event.id},
+        )
 
     def validate_transition(
         self,
@@ -253,7 +270,7 @@ class EventStatusService:
             previous_status = event.status
 
             # Authorization check
-            self.check_authorization(event, user, action)
+            await self.check_authorization(event, user, "force" if force else action)
 
             # Get target status
             target_status = ACTION_TO_STATUS.get(action)
@@ -336,7 +353,7 @@ class EventStatusService:
             event = await self.get_event(event_id)
             previous_status = event.status
 
-            self.check_authorization(event, user, "delete")
+            await self.check_authorization(event, user, "delete")
 
             # Cannot delete ongoing events
             if event.status == EventStatus.ONGOING.value:
@@ -374,7 +391,7 @@ class EventStatusService:
                 )
 
             previous_status = event.status
-            self.check_authorization(event, user, "restore")
+            await self.check_authorization(event, user, "restore")
 
             event.is_deleted = False
             event.deleted_at = None
